@@ -405,7 +405,6 @@ export async function getMyPositions({ force = false } = {}) {
     uniquePools.forEach((pool, i) => { pnlByPool[pool] = pnlMaps[i]; });
 
     // SDK fallback for positions the API missed
-    const walletPubkey = new PublicKey(walletAddress);
     const sdkFallbacks = {};
     const missing = raw.filter((r) => !pnlByPool[r.pool]?.[r.position]);
     if (missing.length > 0) {
