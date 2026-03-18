@@ -199,11 +199,16 @@ const toolMap = {
       log("config", `Cron restarted — management: ${config.schedule.managementIntervalMin}m, screening: ${config.schedule.screeningIntervalMin}m`);
     }
 
-    // Save as a lesson so it's visible in future prompts
-    addLesson(
-      `[SELF-TUNED] Changed ${Object.entries(applied).map(([k,v]) => `${k}=${v}`).join(", ")} — ${reason}`,
-      ["self_tune", "config_change"]
+    // Save as a lesson — but skip ephemeral per-deploy interval changes
+    // (managementIntervalMin / screeningIntervalMin change every deploy based on volatility;
+    //  the rule is already in the system prompt, storing it 75+ times is pure noise)
+    const lessonsKeys = Object.keys(applied).filter(
+      k => k !== "managementIntervalMin" && k !== "screeningIntervalMin"
     );
+    if (lessonsKeys.length > 0) {
+      const summary = lessonsKeys.map(k => `${k}=${applied[k]}`).join(", ");
+      addLesson(`[SELF-TUNED] Changed ${summary} — ${reason}`, ["self_tune", "config_change"]);
+    }
 
     log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
     return { success: true, applied, unknown, reason };
