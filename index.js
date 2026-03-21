@@ -206,7 +206,18 @@ REPORT FORMAT (one per position):
     } finally {
       _managementBusy = false;
       if (telegramEnabled()) {
-        const rangeLines = positionData
+        // Re-fetch positions after agent may have closed some — only show currently open ones
+        let liveData = [];
+        try {
+          const livePositions = await getMyPositions().catch(() => null);
+          const openPositions = livePositions?.positions || [];
+          liveData = await Promise.all(openPositions.map(async (p) => {
+            const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
+            return { ...p, pnl };
+          }));
+        } catch { /* non-fatal */ }
+
+        const rangeLines = liveData
           .filter(p => p.pnl?.lower_bin != null)
           .map(p => {
             const name = (p.pair || "?").padEnd(14).slice(0, 14);
@@ -217,9 +228,9 @@ REPORT FORMAT (one per position):
           ? `\n\n📊 Ranges:\n${rangeLines.join("\n")}`
           : "";
 
-        // Deterministic PnL summary
+        // Deterministic PnL summary (live positions only)
         let pnlBlock = "";
-        const pnlPositions = positionData.filter(p => p.pnl?.pnl_usd != null);
+        const pnlPositions = liveData.filter(p => p.pnl?.pnl_usd != null);
         if (pnlPositions.length > 0) {
           const totalPnlUsd = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_usd || 0), 0);
           const totalPnlSol = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_sol || 0), 0);
