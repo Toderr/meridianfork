@@ -61,6 +61,18 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 
 Chain: `cachedPos.pnl_sol` (from `tools/dlmm.js` → Meteora API `pnlSol`) → `recordPerformance` → `recordJournalClose` → `journal.json` → reports.
 
+## Management Cycle — Range & PnL Block
+
+The `finally` block in the management cron (`index.js`) sends the Telegram report. Range bars and PnL summary are built from a **fresh `getMyPositions()` call after the agent loop** — not from the pre-cycle snapshot. This ensures closed positions don't appear in the range/PnL block.
+
+## Telegram Notifications
+
+- **Deploy**: pair name, amount, position address (truncated), tx
+- **Close**: pool name (from state tracker via `getTrackedPosition`), PnL $ and %
+  - Source: `tools/executor.js` → `notifyClose()` in `telegram.js`
+  - Always show `pool_name`, fallback to `position_address.slice(0,8)`
+- **Out of range**: pair name, minutes OOR
+
 ## Telegram Commands
 
 | Command | Action |
