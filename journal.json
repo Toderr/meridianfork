@@ -1,0 +1,27 @@
+{
+  "entries": [
+    {
+      "id": 1774068848250,
+      "type": "open",
+      "timestamp": "2026-03-21T04:54:08.250Z",
+      "position": "G1tgcUPKVhFdo6QzMHqkS3CWAHL86cFzLEFAtfS7dvi4",
+      "pool": "7ZWsb2JwhqLtpBz8EvBZLsq8M8XaP9XdoYBBCSk9WGUJ",
+      "pool_name": "PISS-SOL",
+      "strategy": "bid_ask",
+      "amount_sol": 0.5,
+      "initial_value_usd": 45.1,
+      "sol_price": null,
+      "bin_step": 100,
+      "volatility": 2.81,
+      "fee_tvl_ratio": 0.3893,
+      "organic_score": 81.89,
+      "bin_range": {
+        "min": -574,
+        "max": -524,
+        "bins_below": 50,
+        "bins_above": 0
+      },
+      "_backfilled": true
+    }
+  ]
+}

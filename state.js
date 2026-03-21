@@ -137,6 +137,21 @@ export function recordClaim(position_address, fees_usd) {
   pos.total_fees_claimed_usd = (pos.total_fees_claimed_usd || 0) + (fees_usd || 0);
   pos.notes.push(`Claimed ~$${fees_usd?.toFixed(2) || "?"} fees at ${pos.last_claim_at}`);
   save(state);
+
+  // Fire-and-forget: record to trading journal
+  import("./tools/wallet.js").then(({ getWalletBalances }) =>
+    getWalletBalances({}).then(w => {
+      import("./journal.js").then(({ recordJournalClaim }) => {
+        recordJournalClaim({
+          position: position_address,
+          pool: pos.pool,
+          pool_name: pos.pool_name,
+          fees_usd: fees_usd || 0,
+          sol_price: w?.sol_price || 0,
+        });
+      });
+    })
+  ).catch(() => {});
 }
 
 /**

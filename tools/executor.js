@@ -273,6 +273,25 @@ export async function executeTool(name, args) {
     if (success) {
       if (name === "deploy_position") {
         notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.tx }).catch(() => {});
+        // Record open to trading journal
+        getWalletBalances({}).then(w => {
+          import("../journal.js").then(({ recordOpen }) => {
+            recordOpen({
+              position: result.position,
+              pool: args.pool_address,
+              pool_name: args.pool_name,
+              strategy: args.strategy,
+              amount_sol: args.amount_y ?? args.amount_sol ?? 0,
+              initial_value_usd: result.initial_value_usd,
+              sol_price: w?.sol_price || 0,
+              bin_step: args.bin_step,
+              volatility: args.volatility,
+              fee_tvl_ratio: args.fee_tvl_ratio,
+              organic_score: args.organic_score,
+              bin_range: args.bin_range,
+            });
+          });
+        }).catch(() => {});
       } else if (name === "close_position") {
         notifyClose({ pair: args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
         // Auto-swap base token back to SOL unless user said to hold

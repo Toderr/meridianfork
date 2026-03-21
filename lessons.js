@@ -10,6 +10,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { recordJournalClose } from "./journal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -75,6 +76,31 @@ export async function recordPerformance(perf) {
     range_efficiency: Math.round(range_efficiency * 10) / 10,
     recorded_at: new Date().toISOString(),
   };
+
+  // Record to trading journal (fetch SOL price for pnl_sol)
+  try {
+    const { getWalletBalances } = await import("./tools/wallet.js");
+    const walletData = await getWalletBalances({});
+    const sol_price = walletData?.sol_price || 0;
+    recordJournalClose({
+      position: entry.position,
+      pool: entry.pool,
+      pool_name: entry.pool_name,
+      strategy: entry.strategy,
+      amount_sol: entry.amount_sol,
+      initial_value_usd: entry.initial_value_usd,
+      final_value_usd: entry.final_value_usd,
+      fees_earned_usd: entry.fees_earned_usd,
+      pnl_usd: entry.pnl_usd,
+      pnl_pct: entry.pnl_pct,
+      sol_price,
+      minutes_held: entry.minutes_held,
+      range_efficiency: entry.range_efficiency,
+      close_reason: entry.close_reason,
+    });
+  } catch (e) {
+    log("journal_error", `Failed to journal close: ${e.message}`);
+  }
 
   data.performance.push(entry);
 

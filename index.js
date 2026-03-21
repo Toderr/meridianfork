@@ -11,6 +11,7 @@ import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
+import { generateReport } from "./reports.js";
 import { getLastBriefingDate, setLastBriefingDate } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
@@ -318,7 +319,29 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
-  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
+  // Weekly report — Sunday 1:00 AM UTC
+  const weeklyTask = cron.schedule(`0 1 * * 0`, async () => {
+    log("cron", "Sending weekly report");
+    try {
+      const report = await generateReport("weekly");
+      if (telegramEnabled()) await sendHTML(report);
+    } catch (e) {
+      log("cron_error", `Weekly report failed: ${e.message}`);
+    }
+  }, { timezone: 'UTC' });
+
+  // Monthly report — 1st of month 1:00 AM UTC
+  const monthlyTask = cron.schedule(`0 1 1 * *`, async () => {
+    log("cron", "Sending monthly report");
+    try {
+      const report = await generateReport("monthly");
+      if (telegramEnabled()) await sendHTML(report);
+    } catch (e) {
+      log("cron_error", `Monthly report failed: ${e.message}`);
+    }
+  }, { timezone: 'UTC' });
+
+  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask];
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
 
@@ -478,6 +501,18 @@ if (isTTY) {
       return;
     }
 
+    if (text.startsWith("/report")) {
+      const parts = text.split(" ");
+      const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
+      try {
+        const report = await generateReport(period);
+        await sendHTML(report);
+      } catch (e) {
+        await sendMessage(`Error: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
     busy = true;
     try {
       log("telegram", `Incoming: ${text}`);
@@ -503,6 +538,7 @@ Commands:
   /status        Refresh wallet + positions
   /candidates    Refresh top pool list
   /briefing      Show morning briefing (last 24h)
+  /report [daily|weekly|monthly]  Show trading report (default: daily)
   /learn         Study top LPers from the best current pool and save lessons
   /learn <addr>  Study top LPers from a specific pool address
   /thresholds    Show current screening thresholds + performance stats
@@ -578,6 +614,17 @@ Commands:
       await runBusy(async () => {
         const briefing = await generateBriefing();
         console.log(`\n${briefing.replace(/<[^>]*>/g, "")}\n`);
+      });
+      return;
+    }
+
+    if (input.startsWith("/report")) {
+      const parts = input.split(" ");
+      const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
+      await runBusy(async () => {
+        const report = await generateReport(period);
+        console.log(`\n${report.replace(/<[^>]*>/g, "")}\n`);
+        if (telegramEnabled()) sendHTML(report).catch(() => {});
       });
       return;
     }
@@ -709,7 +756,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       await agentLoop(`
 STARTUP CHECK
 1. get_wallet_balance. 2. get_my_positions. 3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy ${DEPLOY} SOL. 4. Report.
-      `, config.llm.maxSteps, [], "SCREENER");
+      `, config.llm.maxSteps, [], "SCREENER", config.llm.generalModel);
     } catch (e) {
       log("startup_error", e.message);
     }
