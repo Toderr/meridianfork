@@ -48,6 +48,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     { role: "user", content: goal },
   ];
 
+  const MAX_EMPTY_STREAK = 3;
   let emptyStreak = 0;
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
@@ -96,9 +97,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         // Hermes sometimes returns null content — pop the empty message and retry once
         if (!msg.content) {
           messages.pop(); // remove the empty assistant message
-          log("agent", "Empty response, retrying...");
+          emptyStreak++;
+          log("agent", `Empty response, retrying... (${emptyStreak}/${MAX_EMPTY_STREAK})`);
+          if (emptyStreak >= MAX_EMPTY_STREAK) {
+            log("agent", `Empty response streak limit reached — aborting loop`);
+            return { content: "Model returned empty responses repeatedly. Try again or switch model.", userMessage: goal };
+          }
           continue;
         }
+        emptyStreak = 0;
         log("agent", "Final answer reached");
         log("agent", msg.content);
         return { content: msg.content, userMessage: goal };
