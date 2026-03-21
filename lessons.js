@@ -63,9 +63,11 @@ export async function recordPerformance(perf) {
   const data = load();
 
   const pnl_usd = (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
-  const pnl_pct = perf.initial_value_usd > 0
-    ? (pnl_usd / perf.initial_value_usd) * 100
-    : 0;
+  // Use the API pnl_pct if passed in (matches what the agent saw and acted on),
+  // otherwise fall back to reconstructing from state values.
+  const pnl_pct = perf.pnl_pct != null
+    ? perf.pnl_pct
+    : (perf.initial_value_usd > 0 ? (pnl_usd / perf.initial_value_usd) * 100 : 0);
   const range_efficiency = perf.minutes_held > 0
     ? (perf.minutes_in_range / perf.minutes_held) * 100
     : 0;

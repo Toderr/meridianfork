@@ -274,6 +274,10 @@ WARNING: This executes a real on-chain transaction. Cannot be undone.`,
           skip_swap: {
             type: "boolean",
             description: "Set to true if user explicitly wants to hold/keep the base token after closing. Default: false (auto-swaps base token back to SOL)."
+          },
+          close_reason: {
+            type: "string",
+            description: "One-sentence reason for closing (e.g. 'Take-profit at 6.18%' or 'OOR for 45m'). Stored in journal and used for learning."
           }
         },
         required: ["position_address"]

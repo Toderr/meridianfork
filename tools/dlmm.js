@@ -575,7 +575,7 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
-export async function closePosition({ position_address }) {
+export async function closePosition({ position_address, close_reason }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
@@ -623,7 +623,7 @@ export async function closePosition({ position_address }) {
       txHashes.push(txHash);
     }
     log("close", `SUCCESS txs: ${txHashes.join(", ")}`);
-    recordClose(position_address, "agent decision");
+    recordClose(position_address, close_reason || "agent decision");
 
     // Record performance for learning
     const tracked = getTrackedPosition(position_address);
@@ -668,10 +668,11 @@ export async function closePosition({ position_address }) {
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
         initial_value_usd: initialUsd,
+        pnl_pct: pnlPct,       // pass API value so journal matches what agent saw
         pnl_sol: pnlSolNative,
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
-        close_reason: "agent decision",
+        close_reason: close_reason || "agent decision",
         variant: tracked.variant || null,
       });
 
