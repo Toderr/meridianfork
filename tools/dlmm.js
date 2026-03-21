@@ -50,6 +50,32 @@ function getConnection() {
   return _connection;
 }
 
+// ─── RPC Health Check + Fallback ──────────────────────────────
+const _rpcUrls = () => [process.env.RPC_URL, ...(config.fallbackRpcUrls || [])].filter(Boolean);
+let _connectionIndex = 0;
+
+export async function checkRpcHealth() {
+  const urls = _rpcUrls();
+  if (urls.length === 0) return false;
+  for (let i = 0; i < urls.length; i++) {
+    const idx = (_connectionIndex + i) % urls.length;
+    try {
+      const conn = new Connection(urls[idx], "confirmed");
+      await conn.getSlot();
+      if (idx !== _connectionIndex) {
+        log("rpc", `Switched to RPC index ${idx}: ${urls[idx].slice(0, 40)}...`);
+        _connectionIndex = idx;
+        // Reset cached connection so next getConnection() picks up the new URL
+        _connection = conn;
+      }
+      return true;
+    } catch {
+      log("rpc", `RPC ${idx} unhealthy, trying next...`);
+    }
+  }
+  return false;
+}
+
 function getWallet() {
   if (!_wallet) {
     if (!process.env.WALLET_PRIVATE_KEY) {

@@ -11,6 +11,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { recordJournalClose } from "./journal.js";
+import { notifyThresholdEvolved, isEnabled as telegramEnabled } from "./telegram.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -373,9 +374,21 @@ export function evolveThresholds(perfData, config) {
 
   // Apply to live config object immediately
   const s = config.screening;
-  if (changes.maxVolatility    != null) s.maxVolatility    = changes.maxVolatility;
-  if (changes.minFeeTvlRatio   != null) s.minFeeTvlRatio   = changes.minFeeTvlRatio;
-  if (changes.minOrganic       != null) s.minOrganic       = changes.minOrganic;
+  if (changes.maxVolatility    != null) {
+    const oldVal = s.maxVolatility;
+    s.maxVolatility = changes.maxVolatility;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "maxVolatility", oldVal, newVal: changes.maxVolatility, reason: rationale.maxVolatility }).catch(() => {});
+  }
+  if (changes.minFeeTvlRatio   != null) {
+    const oldVal = s.minFeeTvlRatio;
+    s.minFeeTvlRatio = changes.minFeeTvlRatio;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "minFeeTvlRatio", oldVal, newVal: changes.minFeeTvlRatio, reason: rationale.minFeeTvlRatio }).catch(() => {});
+  }
+  if (changes.minOrganic       != null) {
+    const oldVal = s.minOrganic;
+    s.minOrganic = changes.minOrganic;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "minOrganic", oldVal, newVal: changes.minOrganic, reason: rationale.minOrganic }).catch(() => {});
+  }
 
   // Log a lesson summarizing the evolution
   const data = load();

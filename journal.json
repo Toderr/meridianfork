@@ -242,6 +242,61 @@
         "bins_above": 0
       },
       "_backfilled": true
+    },
+    {
+      "id": 1774091421624,
+      "type": "close",
+      "timestamp": "2026-03-21T11:10:21.624Z",
+      "position": "CpyrEjJakaqq2vvetDpu2RuLsvZ8ex4ruRvfMYzApVG4",
+      "pool": "7ZWsb2JwhqLtpBz8EvBZLsq8M8XaP9XdoYBBCSk9WGUJ",
+      "pool_name": "PISS-SOL",
+      "strategy": "bid_ask",
+      "amount_sol": 0.5,
+      "initial_value_usd": 44.99,
+      "final_value_usd": 43.02,
+      "fees_earned_usd": 2.93,
+      "pnl_usd": 0.96,
+      "pnl_sol": 0.0107,
+      "pnl_pct": 2.13,
+      "sol_price": 89.95,
+      "minutes_held": 123,
+      "range_efficiency": 100,
+      "close_reason": "agent decision"
+    },
+    {
+      "id": 1774092954933,
+      "type": "open",
+      "timestamp": "2026-03-21T11:35:54.933Z",
+      "position": "435qdkHHfZzqUJjC7FdNrCZCFVjuyqkX8s2ALqMFbzQb",
+      "pool": "7WWteLHaj8d2NoDpcZsowxQ7reRQd87wHCWc26frwcSV",
+      "pool_name": "TERAFAB-SOL",
+      "strategy": "bid_ask",
+      "amount_sol": 0.5,
+      "sol_price": 89.94,
+      "bin_step": 100,
+      "volatility": 2.07,
+      "fee_tvl_ratio": 0.3846,
+      "organic_score": 67
+    },
+    {
+      "id": 1774097712554,
+      "type": "close",
+      "timestamp": "2026-03-21T12:55:12.554Z",
+      "position": "435qdkHHfZzqUJjC7FdNrCZCFVjuyqkX8s2ALqMFbzQb",
+      "pool": "7WWteLHaj8d2NoDpcZsowxQ7reRQd87wHCWc26frwcSV",
+      "pool_name": "TERAFAB-SOL",
+      "strategy": "bid_ask",
+      "amount_sol": 0.5,
+      "initial_value_usd": 44.96,
+      "final_value_usd": 45.07,
+      "fees_earned_usd": 0.03,
+      "pnl_usd": 0.14,
+      "pnl_sol": 0.0016,
+      "pnl_pct": 0.31,
+      "sol_price": 90.09,
+      "minutes_held": 79,
+      "range_efficiency": 62,
+      "close_reason": "agent decision"
     }
   ]
 }

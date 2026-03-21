@@ -8,6 +8,11 @@ import {
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+// Dynamic import to avoid circular dependency (dlmm.js ↔ wallet.js)
+async function _checkRpcHealth() {
+  const { checkRpcHealth } = await import("./dlmm.js");
+  return checkRpcHealth();
+}
 
 let _connection = null;
 let _wallet = null;
@@ -30,6 +35,106 @@ const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
 const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1";
 const JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
+// ─── Swap Failure Tracking ─────────────────────────────────────
+// Tracks tokens that repeatedly fail swaps to skip them temporarily.
+const _swapFailures = new Map(); // mint → { count, lastFailedAt }
+
+function isConnectionError(msg) {
+  return (
+    msg.includes("failed to fetch") ||
+    msg.includes("ECONNREFUSED") ||
+    msg.includes("503")
+  );
+}
+
+/**
+ * Internal: perform a single Ultra → quote-fallback swap attempt with a given slippageBps.
+ * Returns the result object on success, throws on failure.
+ */
+async function _attemptSwap({ wallet, connection, input_mint, output_mint, amountStr, slippageBps }) {
+  // ─── Get Ultra order ──────────────────────────────────────────
+  const orderUrl =
+    `${JUPITER_ULTRA_API}/order` +
+    `?inputMint=${input_mint}` +
+    `&outputMint=${output_mint}` +
+    `&amount=${amountStr}` +
+    `&taker=${wallet.publicKey.toString()}`;
+
+  const orderRes = await fetch(orderUrl, {
+    headers: { "x-api-key": JUPITER_API_KEY },
+  });
+
+  if (!orderRes.ok) {
+    const body = await orderRes.text();
+    if (orderRes.status === 500) {
+      log("swap", `Ultra failed for ${input_mint}, falling back to regular swap API`);
+      return await swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps });
+    }
+    throw new Error(`Ultra order failed: ${orderRes.status} ${body}`);
+  }
+
+  const order = await orderRes.json();
+  if (order.errorCode || order.errorMessage) {
+    log("swap", `Ultra error for ${input_mint}, falling back to regular swap API`);
+    return await swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps });
+  }
+
+  const { transaction: unsignedTx, requestId } = order;
+
+  // ─── Deserialize and sign ─────────────────────────────────
+  const tx = VersionedTransaction.deserialize(Buffer.from(unsignedTx, "base64"));
+  tx.sign([wallet]);
+  const signedTx = Buffer.from(tx.serialize()).toString("base64");
+
+  // ─── Execute ───────────────────────────────────────────────
+  const execRes = await fetch(`${JUPITER_ULTRA_API}/execute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": JUPITER_API_KEY,
+    },
+    body: JSON.stringify({ signedTransaction: signedTx, requestId }),
+  });
+  if (!execRes.ok) {
+    throw new Error(`Ultra execute failed: ${execRes.status} ${await execRes.text()}`);
+  }
+
+  const result = await execRes.json();
+  if (result.status === "Failed") {
+    throw new Error(`Swap failed on-chain: code=${result.code}`);
+  }
+
+  log("swap", `SUCCESS tx: ${result.signature}`);
+  return {
+    success: true,
+    tx: result.signature,
+    input_mint,
+    output_mint,
+    amount_in: result.inputAmountResult,
+    amount_out: result.outputAmountResult,
+  };
+}
+
+/**
+ * Retry wrapper: try up to 3 times with increasing slippage.
+ */
+async function swapWithRetry(wallet, connection, input_mint, output_mint, amountStr, initialSlippageBps = 1000) {
+  const slippageSteps = [
+    initialSlippageBps,
+    Math.round(initialSlippageBps * 1.5),
+    initialSlippageBps * 2,
+  ];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await _attemptSwap({ wallet, connection, input_mint, output_mint, amountStr, slippageBps: slippageSteps[attempt] });
+    } catch (e) {
+      if (attempt === 2) throw e;
+      log("swap", `Swap attempt ${attempt + 1} failed (${e.message}), retrying with higher slippage...`);
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+}
+
 /**
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
@@ -48,15 +153,28 @@ export async function getWalletBalances() {
     return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
   }
 
-  try {
+  async function fetchBalances() {
     const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
     const res = await fetch(url);
-    
     if (!res.ok) {
       throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
     }
+    return res.json();
+  }
 
-    const data = await res.json();
+  try {
+    let data;
+    try {
+      data = await fetchBalances();
+    } catch (e) {
+      if (isConnectionError(e.message)) {
+        log("wallet", `Connection error fetching balances, checking RPC health...`);
+        await _checkRpcHealth();
+        data = await fetchBalances();
+      } else {
+        throw e;
+      }
+    }
     const balances = data.balances || [];
 
     // ─── Find SOL and USDC ────────────────────────────────────
@@ -136,81 +254,56 @@ export async function swapToken({
     };
   }
 
+  // ─── Check if this token has failed too many times recently ──
+  const failure = _swapFailures.get(input_mint);
+  if (failure && failure.count >= 3) {
+    const minutesSinceLastFail = (Date.now() - failure.lastFailedAt) / 60000;
+    if (minutesSinceLastFail < 60) {
+      log("swap", `Skipping swap for ${input_mint} — failed ${failure.count}x in last hour`);
+      return { success: false, error: `Token skipped: ${failure.count} recent swap failures`, skipped: true };
+    } else {
+      // Reset stale failure record
+      _swapFailures.delete(input_mint);
+    }
+  }
+
   try {
     log("swap", `${amount} of ${input_mint} → ${output_mint}`);
     const wallet = getWallet();
-    const connection = getConnection();
+    let connection = getConnection();
 
     // ─── Convert to smallest unit ──────────────────────────────
     let decimals = 9; // SOL default
     if (input_mint !== config.tokens.SOL) {
-      const mintInfo = await connection.getParsedAccountInfo(new PublicKey(input_mint));
-      decimals = mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
+      try {
+        const mintInfo = await connection.getParsedAccountInfo(new PublicKey(input_mint));
+        decimals = mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
+      } catch (e) {
+        if (isConnectionError(e.message)) {
+          log("swap", `RPC error fetching mint info, checking health...`);
+          await _checkRpcHealth();
+          connection = getConnection();
+          const mintInfo = await connection.getParsedAccountInfo(new PublicKey(input_mint));
+          decimals = mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
+        } else {
+          throw e;
+        }
+      }
     }
     const amountStr = Math.floor(amount * Math.pow(10, decimals)).toString();
 
-    // ─── Get Ultra order (unsigned tx + requestId) ─────────────
-    const orderUrl =
-      `${JUPITER_ULTRA_API}/order` +
-      `?inputMint=${input_mint}` +
-      `&outputMint=${output_mint}` +
-      `&amount=${amountStr}` +
-      `&taker=${wallet.publicKey.toString()}`;
+    // ─── Swap with retry + adaptive slippage ──────────────────
+    const result = await swapWithRetry(wallet, connection, input_mint, output_mint, amountStr, 1000);
 
-    const orderRes = await fetch(orderUrl, {
-      headers: { "x-api-key": JUPITER_API_KEY },
-    });
-    if (!orderRes.ok) {
-      const body = await orderRes.text();
-      if (orderRes.status === 500) {
-        log("swap", `Ultra failed for ${input_mint}, falling back to regular swap API`);
-        return await swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr });
-      }
-      throw new Error(`Ultra order failed: ${orderRes.status} ${body}`);
-    }
+    // ─── Clear failure count on success ───────────────────────
+    _swapFailures.delete(input_mint);
 
-    const order = await orderRes.json();
-    if (order.errorCode || order.errorMessage) {
-      log("swap", `Ultra error for ${input_mint}, falling back to regular swap API`);
-      return await swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr });
-    }
-
-    const { transaction: unsignedTx, requestId } = order;
-
-    // ─── Deserialize and sign ─────────────────────────────────
-    const tx = VersionedTransaction.deserialize(Buffer.from(unsignedTx, "base64"));
-    tx.sign([wallet]);
-    const signedTx = Buffer.from(tx.serialize()).toString("base64");
-
-    // ─── Execute ───────────────────────────────────────────────
-    const execRes = await fetch(`${JUPITER_ULTRA_API}/execute`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": JUPITER_API_KEY,
-      },
-      body: JSON.stringify({ signedTransaction: signedTx, requestId }),
-    });
-    if (!execRes.ok) {
-      throw new Error(`Ultra execute failed: ${execRes.status} ${await execRes.text()}`);
-    }
-
-    const result = await execRes.json();
-    if (result.status === "Failed") {
-      throw new Error(`Swap failed on-chain: code=${result.code}`);
-    }
-
-    log("swap", `SUCCESS tx: ${result.signature}`);
-
-    return {
-      success: true,
-      tx: result.signature,
-      input_mint,
-      output_mint,
-      amount_in: result.inputAmountResult,
-      amount_out: result.outputAmountResult,
-    };
+    return result;
   } catch (error) {
+    // ─── Track swap failure ───────────────────────────────────
+    const prev = _swapFailures.get(input_mint) || { count: 0, lastFailedAt: 0 };
+    _swapFailures.set(input_mint, { count: prev.count + 1, lastFailedAt: Date.now() });
+
     log("swap_error", error.message);
     return { success: false, error: error.message };
   }
@@ -235,10 +328,10 @@ export async function sweepDustTokens() {
   return results;
 }
 
-async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr }) {
+async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps = 300 }) {
   // ─── Get quote ─────────────────────────────────────────────
   const quoteRes = await fetch(
-    `${JUPITER_QUOTE_API}/quote?inputMint=${input_mint}&outputMint=${output_mint}&amount=${amountStr}&slippageBps=300`,
+    `${JUPITER_QUOTE_API}/quote?inputMint=${input_mint}&outputMint=${output_mint}&amount=${amountStr}&slippageBps=${slippageBps}`,
     { headers: { "x-api-key": JUPITER_API_KEY } }
   );
   if (!quoteRes.ok) throw new Error(`Quote failed: ${quoteRes.status} ${await quoteRes.text()}`);
@@ -261,8 +354,21 @@ async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, am
   // ─── Sign and send ─────────────────────────────────────────
   const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
   tx.sign([wallet]);
-  const txHash = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  await connection.confirmTransaction(txHash, "confirmed");
+  let txHash;
+  try {
+    txHash = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    await connection.confirmTransaction(txHash, "confirmed");
+  } catch (e) {
+    if (isConnectionError(e.message)) {
+      log("swap", `RPC error sending transaction, checking health...`);
+      await _checkRpcHealth();
+      const freshConn = getConnection();
+      txHash = await freshConn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+      await freshConn.confirmTransaction(txHash, "confirmed");
+    } else {
+      throw e;
+    }
+  }
 
   log("swap", `SUCCESS (fallback) tx: ${txHash}`);
   return { success: true, tx: txHash, input_mint, output_mint };

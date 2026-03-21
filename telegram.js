@@ -166,6 +166,27 @@ export async function notifyCycleSummary({ cycleType, positions, walletSol }) {
   );
 }
 
+export async function notifySwapFailed({ pair, tokenSymbol, usdValue, error }) {
+  await sendHTML(`⚠️ <b>Swap Failed</b> — ${pair}\nToken: ${tokenSymbol} ($${(usdValue||0).toFixed(2)})\nReason: ${error?.slice(0,80) || "unknown"}`);
+}
+
+export async function notifyGasLow({ solBalance, needed }) {
+  await sendHTML(`⛽ <b>Low Gas Warning</b>\nSOL balance: ${solBalance.toFixed(3)} SOL\nNeeded: ${needed.toFixed(3)} SOL\nScreening paused until topped up.`);
+}
+
+export async function notifyMaxPositions({ count, max }) {
+  await sendHTML(`📵 <b>Max Positions Reached</b>\n${count}/${max} positions open — screening skipped.`);
+}
+
+export async function notifyThresholdEvolved({ field, oldVal, newVal, reason }) {
+  await sendHTML(`🧠 <b>Threshold Auto-Evolved</b>\n${field}: ${oldVal} → ${newVal}\nReason: ${reason?.slice(0,120) || "performance data"}`);
+}
+
+export async function notifyInstructionClose({ pair, instruction, pnlPct }) {
+  const sign = pnlPct >= 0 ? "+" : "";
+  await sendHTML(`📋 <b>Instruction Close</b> — ${pair}\nInstruction: ${instruction}\nPnL: ${sign}${(pnlPct||0).toFixed(2)}%`);
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }

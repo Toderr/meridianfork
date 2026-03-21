@@ -81,6 +81,9 @@ export const config = {
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "nvidia/nemotron-3-super-120b-a12b:free",
   },
 
+  // ─── RPC Fallbacks ────────────────────
+  fallbackRpcUrls: u.fallbackRpcUrls ?? [],
+
   // ─── Common Token Mints ────────────────
   tokens: {
     SOL:  "So11111111111111111111111111111111111111112",

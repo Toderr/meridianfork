@@ -259,6 +259,24 @@ export async function executeTool(name, args) {
 
   // ─── Execute ──────────────────────────────
   try {
+    // Validate pool data is still fresh before deploying
+    if (name === "deploy_position" && args.pool_address) {
+      const { validatePoolFresh } = await import("./screening.js");
+      const validation = await validatePoolFresh(args.pool_address, {
+        fee_tvl_ratio: args.fee_tvl_ratio,
+        tvl: args.tvl,
+        volume: args.volume,
+      });
+      if (!validation.ok) {
+        log("executor", `Deploy blocked — stale pool data: ${validation.reason}`);
+        return {
+          role: "tool",
+          blocked: true,
+          reason: `Pool conditions changed since screening: ${validation.reason}. Do not retry — run a fresh screening cycle instead.`,
+        };
+      }
+    }
+
     // Auto-resolve strategy from volatility when deploying a position
     if (name === "deploy_position") {
       if (!args.strategy || args.strategy === config.strategy.strategy) {
@@ -282,26 +300,39 @@ export async function executeTool(name, args) {
       if (name === "deploy_position") {
         _stats.positionsDeployed++;
         notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.tx }).catch(() => {});
-        // Record open to trading journal
-        getWalletBalances({}).then(w => {
-          import("../journal.js").then(({ recordOpen }) => {
-            recordOpen({
-              position: result.position,
-              pool: args.pool_address,
-              pool_name: args.pool_name,
-              strategy: args.strategy,
-              amount_sol: args.amount_y ?? args.amount_sol ?? 0,
-              initial_value_usd: result.initial_value_usd,
-              sol_price: w?.sol_price || 0,
-              bin_step: args.bin_step,
-              volatility: args.volatility,
-              fee_tvl_ratio: args.fee_tvl_ratio,
-              organic_score: args.organic_score,
-              bin_range: args.bin_range,
-              variant: args.variant,
-            });
-          });
-        }).catch(() => {});
+        // Record open to trading journal — retry up to 3 times in case of transient failure
+        (async () => {
+          let journalSuccess = false;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const w = await getWalletBalances({});
+              const { recordOpen } = await import("../journal.js");
+              recordOpen({
+                position: result.position,
+                pool: args.pool_address,
+                pool_name: args.pool_name,
+                strategy: args.strategy,
+                amount_sol: args.amount_y ?? args.amount_sol ?? 0,
+                initial_value_usd: result.initial_value_usd,
+                sol_price: w?.sol_price || 0,
+                bin_step: args.bin_step,
+                volatility: args.volatility,
+                fee_tvl_ratio: args.fee_tvl_ratio,
+                organic_score: args.organic_score,
+                bin_range: args.bin_range,
+                variant: args.variant,
+              });
+              journalSuccess = true;
+              break;
+            } catch (trackErr) {
+              log("executor", `Journal recordOpen attempt ${attempt + 1} failed: ${trackErr.message}`);
+              if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
+            }
+          }
+          if (!journalSuccess) {
+            log("executor", `CRITICAL: Position ${result.position} deployed on-chain but journal recording failed — manual reconciliation needed`);
+          }
+        })();
       } else if (name === "claim_fees") {
         _stats.feesClaimed++;
       } else if (name === "close_position") {

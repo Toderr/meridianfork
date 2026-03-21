@@ -177,6 +177,45 @@ function condensePool(p) {
   };
 }
 
+/**
+ * Validates that pool data is still fresh before deployment.
+ * Returns { ok: true } or { ok: false, reason: string }
+ */
+export async function validatePoolFresh(poolAddress, originalData = {}) {
+  try {
+    const fresh = await getPoolDetail({ pool_address: poolAddress, timeframe: "5m" });
+    if (!fresh) return { ok: false, reason: "Pool data unavailable" };
+
+    const checks = [];
+
+    // Fee/TVL ratio dropped >50%
+    if (originalData.fee_tvl_ratio != null && fresh.fee_active_tvl_ratio != null) {
+      const drop = (originalData.fee_tvl_ratio - fresh.fee_active_tvl_ratio) / originalData.fee_tvl_ratio;
+      if (drop > 0.5) checks.push(`fee/TVL dropped ${(drop * 100).toFixed(0)}% (${originalData.fee_tvl_ratio.toFixed(3)} → ${fresh.fee_active_tvl_ratio.toFixed(3)})`);
+    }
+
+    // TVL dropped >30%
+    if (originalData.tvl != null && fresh.active_tvl != null) {
+      const drop = (originalData.tvl - fresh.active_tvl) / originalData.tvl;
+      if (drop > 0.30) checks.push(`TVL dropped ${(drop * 100).toFixed(0)}% ($${originalData.tvl.toFixed(0)} → $${fresh.active_tvl.toFixed(0)})`);
+    }
+
+    // Volume dropped >50%
+    if (originalData.volume != null && fresh.volume != null) {
+      const drop = (originalData.volume - fresh.volume) / originalData.volume;
+      if (drop > 0.50) checks.push(`volume dropped ${(drop * 100).toFixed(0)}%`);
+    }
+
+    if (checks.length > 0) {
+      return { ok: false, reason: checks.join("; ") };
+    }
+    return { ok: true, fresh };
+  } catch (e) {
+    // On error, allow deploy (don't block on validation failure)
+    return { ok: true };
+  }
+}
+
 function round(n) {
   return n != null ? Math.round(n) : null;
 }

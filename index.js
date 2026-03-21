@@ -10,7 +10,7 @@ import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, U
 import fs from "fs";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { generateReport } from "./reports.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition } from "./state.js";
@@ -150,7 +150,18 @@ async function runManagementCycle() {
     const livePositions = await getMyPositions().catch(() => null);
     positions = livePositions?.positions || [];
 
-    if (positions.length === 0) {
+    if (positions.length === 0 && livePositions === null) {
+      // Fetch failed — try using tracked positions from state as fallback
+      const { getTrackedPositions } = await import("./state.js");
+      const tracked = getTrackedPositions(true); // open only
+      if (tracked.length > 0) {
+        log("cron", `getMyPositions() failed — using ${tracked.length} state-tracked position(s) as fallback`);
+        positions = tracked.map(t => ({ ...t, pair: t.pool_name, in_range: true, minutes_out_of_range: 0 }));
+      } else {
+        log("cron", "Management skipped — no open positions");
+        return;
+      }
+    } else if (positions.length === 0) {
       log("cron", "Management skipped — no open positions");
       return;
     }
@@ -191,6 +202,7 @@ async function runManagementCycle() {
           await executeTool("close_position", { position_address: p.position });
           skippedByInstruction.add(p.position);
           instructionClosePrefix.push(`Auto-closed by instruction: ${p.pair} — ${reason}`);
+          if (telegramEnabled()) notifyInstructionClose({ pair: p.pair, instruction: p.instruction, pnlPct: p.pnl?.pnl_pct ?? 0 }).catch(() => {});
         } catch (err) {
           log("cron_error", `Instruction pre-check: failed to close ${p.pair} (${p.position}): ${err.message}`);
           // Do not skip — let the agent handle it as a fallback
@@ -210,6 +222,25 @@ async function runManagementCycle() {
       return;
     }
 
+    // Log rule distances for each position (for debugging)
+    for (const p of positionData) {
+      const pnl = p.pnl?.pnl_pct ?? null;
+      const oor = p.minutes_out_of_range ?? 0;
+      const rules = [];
+
+      if (pnl !== null) {
+        const toSL = pnl - config.management.emergencyPriceDropPct;
+        const toTP = config.management.takeProfitFeePct - pnl;
+        rules.push(`SL: ${pnl.toFixed(1)}% (need ${config.management.emergencyPriceDropPct}%, gap ${toSL.toFixed(1)}%)`);
+        rules.push(`TP: ${pnl.toFixed(1)}% (need ${config.management.takeProfitFeePct}%, gap ${toTP.toFixed(1)}%)`);
+      }
+      if (oor > 0) {
+        const toOOR = config.management.outOfRangeWaitMinutes - oor;
+        rules.push(`OOR: ${oor}m (close at ${config.management.outOfRangeWaitMinutes}m, gap ${Math.max(0, toOOR)}m)`);
+      }
+      log("mgmt_rules", `${p.pair}: ${rules.join(" | ")}`);
+    }
+
     // Build pre-loaded position blocks for the LLM
     const positionBlocks = positionData.map((p) => {
       const pnl = p.pnl;
@@ -218,6 +249,7 @@ async function runManagementCycle() {
         `  pool: ${p.pool}`,
         `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
         pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
+        pnl ? `  to_sl: ${(pnl.pnl_pct - config.management.emergencyPriceDropPct).toFixed(1)}% | to_tp: ${(config.management.takeProfitFeePct - pnl.pnl_pct).toFixed(1)}% | to_oor: ${Math.max(0, config.management.outOfRangeWaitMinutes - (p.minutes_out_of_range||0))}m` : null,
         p.instruction ? `  instruction: "${p.instruction}"` : null,
         p.recall ? `  memory: ${p.recall}` : null,
       ].filter(Boolean);
@@ -341,11 +373,13 @@ export function startCronJobs() {
       [prePositions, preBalance] = await Promise.all([getMyPositions(), getWalletBalances()]);
       if (prePositions.total_positions >= config.risk.maxPositions) {
         log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
+        if (telegramEnabled()) notifyMaxPositions({ count: prePositions.total_positions, max: config.risk.maxPositions }).catch(() => {});
         return;
       }
       const minRequired = config.management.deployAmountSol + config.management.gasReserve;
       if (preBalance.sol < minRequired) {
         log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
+        if (telegramEnabled()) notifyGasLow({ solBalance: preBalance.sol, needed: minRequired }).catch(() => {});
         return;
       }
     } catch (e) {
@@ -762,6 +796,7 @@ Commands:
   /learn <addr>  Study top LPers from a specific pool address
   /thresholds    Show current screening thresholds + performance stats
   /evolve        Manually trigger threshold evolution from performance data
+  /reconcile     Re-sync local state.json against on-chain positions
   /stop          Shut down
 `);
 
@@ -964,6 +999,22 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
             console.log(`  ${key}: ${result.rationale[key]}`);
           }
           console.log("\nSaved to user-config.json. Applied immediately.\n");
+        }
+      });
+      return;
+    }
+
+    if (input === "/reconcile") {
+      await runBusy(async () => {
+        console.log("\nReconciling on-chain state with local state.json...\n");
+        try {
+          const livePositions = await getMyPositions();
+          const { syncOpenPositions } = await import("./state.js");
+          const addresses = (livePositions?.positions || []).map(p => p.position);
+          syncOpenPositions(addresses);
+          console.log(`Reconcile complete — ${addresses.length} open position(s) on-chain, state.json updated.\n`);
+        } catch (e) {
+          console.error(`Reconcile failed: ${e.message}\n`);
         }
       });
       return;
