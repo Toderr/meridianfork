@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Meridian Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0a0e17;
+    --panel:   #111827;
+    --border:  rgba(255,255,255,0.06);
+    --accent:  #00e5ff;
+    --green:   #22c55e;
+    --red:     #ef4444;
+    --yellow:  #f59e0b;
+    --blue:    #3b82f6;
+    --muted:   #6b7280;
+    --text:    #e2e8f0;
+    --sidebar: 220px;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; font-size: 14px; }
+
+  /* ── Layout ──────────────────────────── */
+  .layout { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ── Sidebar ─────────────────────────── */
+  .sidebar {
+    width: var(--sidebar);
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sidebar-brand {
+    padding: 20px 16px 16px;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-brand span { color: var(--muted); font-size: 11px; font-weight: 400; display: block; margin-top: 2px; letter-spacing: 0; }
+  .nav { flex: 1; padding: 12px 0; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px;
+    cursor: pointer;
+    color: var(--muted);
+    border-left: 3px solid transparent;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    font-size: 13px;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(0,229,255,0.06); }
+  .nav-icon { width: 16px; text-align: center; font-size: 14px; }
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green); margin-left: auto;
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
+  .sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+  }
+  #last-update { color: var(--muted); }
+
+  /* ── Main ────────────────────────────── */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  .topbar {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex; align-items: center; gap: 24px;
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .stat-pill {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; white-space: nowrap;
+  }
+  .stat-pill .label { color: var(--muted); }
+  .stat-pill .value { font-family: monospace; font-weight: 600; }
+  .stat-pill .value.pos { color: var(--green); }
+  .stat-pill .value.neg { color: var(--red); }
+  .stat-pill .value.accent { color: var(--accent); }
+  .divider { width: 1px; height: 20px; background: var(--border); }
+
+  .content { flex: 1; overflow-y: auto; padding: 20px; }
+
+  /* ── Cards ───────────────────────────── */
+  .section { display: none; }
+  .section.active { display: block; }
+
+  .section-title {
+    font-size: 16px; font-weight: 600; color: var(--accent);
+    margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 0 20px rgba(0,229,255,0.03);
+  }
+
+  .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+
+  .stat-card { padding: 14px 16px; }
+  .stat-card .sc-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .stat-card .sc-value { font-family: monospace; font-size: 20px; font-weight: 700; }
+  .stat-card .sc-sub   { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* ── Chart container ─────────────────── */
+  .chart-card { margin-bottom: 20px; }
+  .chart-card canvas { max-height: 240px; }
+  .chart-card-lg canvas { max-height: 320px; }
+
+  /* ── Position cards ──────────────────── */
+  .pos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .pos-card .pos-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+  .pos-card .pos-name { font-weight: 600; font-size: 14px; }
+  .pos-card .pos-strategy { font-size: 11px; color: var(--muted); background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 10px; }
+  .range-bar-wrap { margin: 10px 0; }
+  .range-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .range-bar { height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; position: relative; overflow: visible; }
+  .range-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--green)); }
+  .range-tick { position: absolute; top: -3px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); transform: translateX(-50%); }
+  .pos-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+  .pos-metric { font-size: 11px; color: var(--muted); }
+  .pos-metric span { color: var(--text); font-family: monospace; }
+  .pos-instruction { margin-top: 10px; padding: 6px 10px; background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.2); border-radius: 4px; font-size: 11px; color: var(--yellow); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+  .badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge-red   { background: rgba(239,68,68,0.15);  color: var(--red); }
+  .badge-blue  { background: rgba(59,130,246,0.15); color: var(--blue); }
+  .badge-yellow{ background: rgba(245,158,11,0.15); color: var(--yellow); }
+  .badge-muted { background: rgba(107,114,128,0.15);color: var(--muted); }
+
+  /* ── Tables ──────────────────────────── */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; padding: 8px 10px;
+    color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none;
+    white-space: nowrap;
+  }
+  th:hover { color: var(--text); }
+  th.sorted-asc::after  { content: " ↑"; color: var(--accent); }
+  th.sorted-desc::after { content: " ↓"; color: var(--accent); }
+  td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); font-family: monospace; white-space: nowrap; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  td.name { font-family: system-ui; font-weight: 500; }
+  td.pos  { color: var(--green); }
+  td.neg  { color: var(--red); }
+
+  /* ── PnL Calendar ────────────────────── */
+  .calendar-wrap { overflow-x: auto; margin-bottom: 20px; }
+  .calendar-grid { display: grid; grid-template-columns: repeat(7, 36px); gap: 4px; }
+  .calendar-header { display: grid; grid-template-columns: repeat(7, 36px); gap: 4px; margin-bottom: 4px; }
+  .cal-day-label { font-size: 10px; color: var(--muted); text-align: center; }
+  .cal-cell {
+    width: 36px; height: 36px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; cursor: default;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    transition: opacity 0.1s;
+    position: relative;
+  }
+  .cal-cell:hover::after {
+    content: attr(data-tip);
+    position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    background: #1f2937; border: 1px solid var(--border); padding: 4px 8px;
+    border-radius: 4px; font-size: 10px; white-space: nowrap; z-index: 10;
+    pointer-events: none;
+  }
+  .cal-cell.pos { background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.3); color: var(--green); }
+  .cal-cell.neg { background: rgba(239,68,68,0.18);  border-color: rgba(239,68,68,0.3);  color: var(--red); }
+  .cal-cell.today { border-color: var(--accent); }
+
+  /* ── Lessons ─────────────────────────── */
+  .lessons-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  .lesson-card { padding: 14px; }
+  .lesson-meta { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .lesson-rule { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+  .lesson-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tag { font-size: 10px; padding: 2px 7px; background: rgba(255,255,255,0.07); border-radius: 10px; color: var(--muted); }
+  .pin-icon { color: var(--yellow); font-size: 12px; margin-left: auto; }
+
+  /* ── Logs ────────────────────────────── */
+  .log-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .log-toolbar input { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: 12px; }
+  .log-toolbar button { background: rgba(0,229,255,0.1); border: 1px solid rgba(0,229,255,0.3); color: var(--accent); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .log-toolbar button:hover { background: rgba(0,229,255,0.2); }
+  .log-pre {
+    background: #070b12; border: 1px solid var(--border); border-radius: 6px;
+    padding: 14px; font-family: 'Courier New', monospace; font-size: 11px;
+    line-height: 1.55; color: #a8b8cc; overflow-y: auto; max-height: 600px;
+    white-space: pre-wrap; word-break: break-all;
+  }
+
+  /* ── Journal filter ──────────────────── */
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-btn { padding: 4px 12px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
+  .filter-btn:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+  .filter-btn.active { color: var(--accent); border-color: var(--accent); background: rgba(0,229,255,0.06); }
+
+  /* ── Empty state ─────────────────────── */
+  .empty { text-align: center; padding: 40px; color: var(--muted); }
+
+  /* ── Scrollbar ───────────────────────── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      ◈ MERIDIAN
+      <span>LP Agent Dashboard</span>
+    </div>
+    <nav class="nav" id="nav">
+      <div class="nav-item active" data-section="overview">
+        <span class="nav-icon">◎</span> Overview
+        <span class="status-dot"></span>
+      </div>
+      <div class="nav-item" data-section="positions">
+        <span class="nav-icon">⬡</span> Positions
+      </div>
+      <div class="nav-item" data-section="portfolio">
+        <span class="nav-icon">▦</span> Portfolio
+      </div>
+      <div class="nav-item" data-section="history">
+        <span class="nav-icon">≡</span> History
+      </div>
+      <div class="nav-item" data-section="journal">
+        <span class="nav-icon">✦</span> Journal
+      </div>
+      <div class="nav-item" data-section="lessons">
+        <span class="nav-icon">◈</span> Lessons
+      </div>
+      <div class="nav-item" data-section="logs">
+        <span class="nav-icon">⬛</span> Logs
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      Updated: <span id="last-update">—</span>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Top stats bar -->
+    <div class="topbar" id="topbar">
+      <div class="stat-pill"><span class="label">SOL</span><span class="value accent" id="tb-sol">—</span></div>
+      <div class="divider"></div>
+      <div class="stat-pill"><span class="label">USD</span><span class="value" id="tb-usd">—</span></div>
+      <div class="divider"></div>
+      <div class="stat-pill"><span class="label">Positions</span><span class="value accent" id="tb-pos">—</span></div>
+      <div class="divider"></div>
+      <div class="stat-pill"><span class="label">Net PnL</span><span class="value" id="tb-pnl">—</span></div>
+      <div class="divider"></div>
+      <div class="stat-pill"><span class="label">Win Rate</span><span class="value" id="tb-wr">—</span></div>
+      <div class="divider"></div>
+      <div class="stat-pill"><span class="label">Uptime</span><span class="value" id="tb-uptime">—</span></div>
+    </div>
+
+    <div class="content">
+
+      <!-- ═══ OVERVIEW ═══ -->
+      <section class="section active" id="section-overview">
+        <div class="section-title">◎ Overview</div>
+        <div class="cards-grid" id="overview-cards">
+          <div class="card stat-card"><div class="sc-label">SOL Balance</div><div class="sc-value accent" id="ov-sol">—</div><div class="sc-sub" id="ov-usd">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Open Positions</div><div class="sc-value accent" id="ov-pos">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Net PnL</div><div class="sc-value" id="ov-pnl">—</div><div class="sc-sub" id="ov-pnl-sol">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Win Rate</div><div class="sc-value" id="ov-wr">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Profit Factor</div><div class="sc-value" id="ov-pf">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Uptime</div><div class="sc-value" id="ov-uptime">—</div><div class="sc-sub" id="ov-cycles">—</div></div>
+        </div>
+        <div class="card chart-card">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Cumulative PnL (USD)</div>
+          <canvas id="chart-mini"></canvas>
+        </div>
+      </section>
+
+      <!-- ═══ POSITIONS ═══ -->
+      <section class="section" id="section-positions">
+        <div class="section-title">⬡ Open Positions</div>
+        <div class="pos-grid" id="positions-grid">
+          <div class="empty">Loading positions…</div>
+        </div>
+      </section>
+
+      <!-- ═══ PORTFOLIO ═══ -->
+      <section class="section" id="section-portfolio">
+        <div class="section-title">▦ Portfolio</div>
+        <div class="cards-grid" id="portfolio-cards">
+          <div class="card stat-card"><div class="sc-label">Net PnL (USD)</div><div class="sc-value" id="pf-pnl-usd">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Net PnL (SOL)</div><div class="sc-value" id="pf-pnl-sol">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Net PnL (%)</div><div class="sc-value" id="pf-pnl-pct">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Position Win Rate</div><div class="sc-value" id="pf-pos-wr">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Day Win Rate</div><div class="sc-value" id="pf-day-wr">—</div></div>
+          <div class="card stat-card"><div class="sc-label">Profit Factor</div><div class="sc-value" id="pf-pf">—</div></div>
+        </div>
+
+        <div class="card" style="margin-bottom:20px;">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">PnL Calendar</div>
+          <div class="calendar-wrap" id="calendar-wrap">
+            <div class="empty">Loading calendar…</div>
+          </div>
+        </div>
+
+        <div class="card chart-card chart-card-lg">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Cumulative PnL</div>
+          <canvas id="chart-portfolio"></canvas>
+        </div>
+      </section>
+
+      <!-- ═══ HISTORY ═══ -->
+      <section class="section" id="section-history">
+        <div class="section-title">≡ Position History</div>
+        <div class="card">
+          <div class="table-wrap">
+            <table id="history-table">
+              <thead>
+                <tr>
+                  <th data-col="pool_name">Pool</th>
+                  <th data-col="strategy">Strategy</th>
+                  <th data-col="amount_sol">SOL</th>
+                  <th data-col="pnl_usd">PnL $</th>
+                  <th data-col="pnl_pct">PnL %</th>
+                  <th data-col="fees_earned_usd">Fees</th>
+                  <th data-col="minutes_held">Hold</th>
+                  <th data-col="range_efficiency">Range Eff.</th>
+                  <th data-col="close_reason">Reason</th>
+                  <th data-col="timestamp">Date</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody">
+                <tr><td colspan="10" class="empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ JOURNAL ═══ -->
+      <section class="section" id="section-journal">
+        <div class="section-title">✦ Trading Journal</div>
+        <div class="filter-bar" id="journal-filters">
+          <button class="filter-btn active" data-type="">All</button>
+          <button class="filter-btn" data-type="open">Open</button>
+          <button class="filter-btn" data-type="close">Close</button>
+          <button class="filter-btn" data-type="claim">Claim</button>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Pool</th>
+                  <th>Strategy</th>
+                  <th>Amount SOL</th>
+                  <th>PnL $</th>
+                  <th>Fees $</th>
+                  <th>Reason</th>
+                  <th>Timestamp</th>
+                </tr>
+              </thead>
+              <tbody id="journal-tbody">
+                <tr><td colspan="8" class="empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ LESSONS ═══ -->
+      <section class="section" id="section-lessons">
+        <div class="section-title">◈ Lessons</div>
+        <div class="lessons-grid" id="lessons-grid">
+          <div class="empty">Loading lessons…</div>
+        </div>
+      </section>
+
+      <!-- ═══ LOGS ═══ -->
+      <section class="section" id="section-logs">
+        <div class="section-title">⬛ Live Logs</div>
+        <div class="log-toolbar">
+          <input type="date" id="log-date">
+          <input type="number" id="log-lines" value="200" min="50" max="1000" style="width:80px;">
+          <button onclick="fetchLogs(true)">Refresh</button>
+          <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" id="log-autoscroll" checked> Auto-scroll
+          </label>
+          <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" id="log-autopoll" checked> Live (10s)
+          </label>
+        </div>
+        <div class="log-pre" id="log-pre">Loading logs…</div>
+      </section>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /layout -->
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let _stats = null, _wallet = null, _positions = null, _portfolio = null;
+let _history = [], _journal = [], _lessons = [];
+let _historySort = { col: "timestamp", dir: "desc" };
+let _journalTypeFilter = "";
+let miniChart = null, portfolioChart = null;
+let _logPollTimer = null;
+
+// ── Navigation ─────────────────────────────────────────────────────────────
+document.getElementById("nav").addEventListener("click", e => {
+  const item = e.target.closest(".nav-item");
+  if (!item) return;
+  const sec = item.dataset.section;
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.toggle("active", n === item));
+  document.querySelectorAll(".section").forEach(s => s.classList.toggle("active", s.id === `section-${sec}`));
+  if (sec === "logs") startLogPoll();
+  else stopLogPoll();
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt  = (n, d=2) => n == null ? "—" : (+n).toFixed(d);
+const fmtK = n => n == null ? "—" : Math.abs(n) >= 1000 ? `${(n/1000).toFixed(1)}k` : (+n).toFixed(2);
+const colorClass = v => v > 0 ? "pos" : v < 0 ? "neg" : "";
+const fmtUptime  = m => m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m/60)}h ${m%60}m` : `${Math.floor(m/1440)}d ${Math.floor((m%1440)/60)}h`;
+
+function setVal(id, text, cls = "") {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = el.className.replace(/\bpos\b|\bneg\b|\baccent\b/g, "").trim();
+  if (cls) el.classList.add(cls);
+}
+
+function pnlClass(v) { return v > 0 ? "pos" : v < 0 ? "neg" : ""; }
+
+function fmtDate(ts) {
+  if (!ts) return "—";
+  try { return new Date(ts).toLocaleString(undefined, { month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit" }); }
+  catch { return ts.slice(0,16).replace("T"," "); }
+}
+
+function fmtHold(min) {
+  if (min == null) return "—";
+  if (min < 60) return `${min}m`;
+  return `${Math.floor(min/60)}h ${min%60}m`;
+}
+
+// ── Fetch wrapper ──────────────────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch(path);
+  return r.json();
+}
+
+// ── Topbar ─────────────────────────────────────────────────────────────────
+function updateTopbar() {
+  if (_wallet) {
+    setVal("tb-sol", `${fmt(_wallet.sol, 3)} SOL`, "accent");
+    setVal("tb-usd", `$${fmt(_wallet.sol_usd, 0)}`);
+  }
+  if (_positions) setVal("tb-pos", _positions.total, "accent");
+  if (_portfolio) {
+    const p = _portfolio.net_pnl_usd;
+    setVal("tb-pnl", `$${fmt(p, 2)}`, pnlClass(p));
+    setVal("tb-wr", _portfolio.win_rate_pct != null ? `${fmt(_portfolio.win_rate_pct, 1)}%` : "—");
+  }
+  if (_stats) setVal("tb-uptime", fmtUptime(_stats.uptime_min));
+}
+
+// ── Overview ───────────────────────────────────────────────────────────────
+function renderOverview() {
+  if (_wallet) {
+    setVal("ov-sol", `${fmt(_wallet.sol, 4)} SOL`, "accent");
+    setVal("ov-usd", `$${fmt(_wallet.sol_usd, 2)} · $${fmt(_wallet.sol_price, 0)}/SOL`);
+  }
+  if (_positions) setVal("ov-pos", _positions.total, "accent");
+  if (_portfolio) {
+    const p = _portfolio.net_pnl_usd;
+    setVal("ov-pnl", `$${fmt(p, 2)}`, pnlClass(p));
+    setVal("ov-pnl-sol", `${fmt(_portfolio.net_pnl_sol, 4)} SOL`);
+    setVal("ov-wr", `${fmt(_portfolio.win_rate_pct, 1)}%`, pnlClass(_portfolio.win_rate_pct - 50));
+    setVal("ov-pf", _portfolio.profit_factor != null ? fmt(_portfolio.profit_factor, 2) : "—");
+  }
+  if (_stats) {
+    setVal("ov-uptime", fmtUptime(_stats.uptime_min));
+    setVal("ov-cycles", `mgmt: ${_stats.management_cycles} · screen: ${_stats.screening_cycles}`);
+  }
+  renderMiniChart();
+}
+
+function renderMiniChart() {
+  if (!_portfolio?.cumulative?.length) return;
+  const data = _portfolio.cumulative;
+  const labels = data.map(d => d.date.slice(0,10));
+  const values = data.map(d => d.cum_usd);
+
+  if (miniChart) {
+    miniChart.data.labels = labels;
+    miniChart.data.datasets[0].data = values;
+    miniChart.update();
+    return;
+  }
+
+  const ctx = $("chart-mini");
+  miniChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: "#00e5ff",
+        backgroundColor: "rgba(0,229,255,0.06)",
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.4,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          grid: { color: "rgba(255,255,255,0.04)" },
+          ticks: { color: "#6b7280", font: { size: 10 }, callback: v => `$${v.toFixed(0)}` },
+        }
+      }
+    }
+  });
+}
+
+// ── Positions ──────────────────────────────────────────────────────────────
+function renderPositions() {
+  const grid = $("positions-grid");
+  if (!_positions?.positions?.length) {
+    grid.innerHTML = '<div class="empty">No open positions.</div>';
+    return;
+  }
+
+  grid.innerHTML = _positions.positions.map(p => {
+    const lower  = p.lower_bin  ?? p.bin_range?.[0] ?? 0;
+    const upper  = p.upper_bin  ?? p.bin_range?.[1] ?? 0;
+    const active = p.active_bin ?? 0;
+    const pct = (lower < upper)
+      ? Math.max(0, Math.min(100, ((active - lower) / (upper - lower)) * 100))
+      : 50;
+    const inRange  = p.in_range;
+    const pnlUsd   = p.pnl_usd ?? 0;
+    const ageMins  = p.age_minutes ?? 0;
+
+    return `
+    <div class="card pos-card">
+      <div class="pos-header">
+        <div class="pos-name">${p.pair || p.pool_name || "—"}</div>
+        <div class="pos-strategy">${p.strategy || "—"}</div>
+      </div>
+      <div><span class="badge ${inRange ? "badge-green" : "badge-red"}">${inRange ? "In Range" : "Out of Range"}</span></div>
+      <div class="range-bar-wrap">
+        <div class="range-bar-label"><span>${lower}</span><span>Active: ${active}</span><span>${upper}</span></div>
+        <div class="range-bar">
+          <div class="range-fill" style="width:${pct}%"></div>
+          <div class="range-tick" style="left:${pct}%"></div>
+        </div>
+      </div>
+      <div class="pos-metrics">
+        <div class="pos-metric">PnL <span class="${pnlClass(pnlUsd)}">$${fmt(pnlUsd, 2)}</span></div>
+        <div class="pos-metric">Fees <span>$${fmt(p.unclaimed_fees_usd ?? p.total_fees_claimed_usd, 2)}</span></div>
+        <div class="pos-metric">Age <span>${fmtHold(ageMins)}</span></div>
+        <div class="pos-metric">PnL% <span class="${pnlClass(p.pnl_pct)}">${fmt(p.pnl_pct, 2)}%</span></div>
+      </div>
+      ${p.instruction ? `<div class="pos-instruction">⚡ ${p.instruction}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+// ── Portfolio ──────────────────────────────────────────────────────────────
+function renderPortfolio() {
+  if (!_portfolio) return;
+  const p = _portfolio;
+
+  setVal("pf-pnl-usd", `$${fmt(p.net_pnl_usd, 2)}`, pnlClass(p.net_pnl_usd));
+  setVal("pf-pnl-sol", `${fmt(p.net_pnl_sol, 4)} SOL`, pnlClass(p.net_pnl_sol));
+  setVal("pf-pnl-pct", `${fmt(p.net_pnl_pct, 2)}%`, pnlClass(p.net_pnl_pct));
+  setVal("pf-pos-wr", `${fmt(p.win_rate_pct, 1)}%`, pnlClass(p.win_rate_pct - 50));
+  setVal("pf-day-wr", `${fmt(p.day_win_rate_pct, 1)}%`, pnlClass(p.day_win_rate_pct - 50));
+  setVal("pf-pf", p.profit_factor != null ? fmt(p.profit_factor, 2) : "—");
+
+  renderCalendar(p.calendar || {});
+  renderPortfolioChart(p.cumulative || []);
+}
+
+function renderCalendar(calendar) {
+  const wrap = $("calendar-wrap");
+  const keys = Object.keys(calendar).sort();
+  if (!keys.length) { wrap.innerHTML = '<div class="empty">No trade data yet.</div>'; return; }
+
+  const min = keys[0], max = keys[keys.length - 1];
+  const start = new Date(min); start.setDate(1);
+  const end   = new Date(max);
+
+  const todayStr = new Date().toISOString().slice(0,10);
+  const maxAbs = Math.max(...Object.values(calendar).map(Math.abs), 1);
+
+  // Build weeks
+  const cur = new Date(start);
+  // Align to Sunday
+  const dow = cur.getDay();
+  if (dow !== 0) cur.setDate(cur.getDate() - dow);
+
+  let html = '<div class="calendar-header">';
+  ["S","M","T","W","T","F","S"].forEach(d => { html += `<div class="cal-day-label">${d}</div>`; });
+  html += '</div><div class="calendar-grid">';
+
+  while (cur <= end || cur.getDay() !== 0) {
+    const ds = cur.toISOString().slice(0,10);
+    const v  = calendar[ds];
+    const isToday = ds === todayStr;
+    let cls = "";
+    if (v != null) cls = v > 0 ? "pos" : v < 0 ? "neg" : "";
+    if (isToday) cls += " today";
+    const opacity = v != null ? 0.3 + 0.7 * (Math.abs(v) / maxAbs) : 1;
+    const tip = v != null ? `${ds}: $${v.toFixed(2)}` : ds;
+    const dayNum = cur.getDate();
+    const inRange = ds >= min && ds <= max;
+    html += `<div class="cal-cell ${cls}" style="${v != null ? `opacity:${opacity.toFixed(2)}` : inRange ? "" : "opacity:0.2"}" data-tip="${tip}">${dayNum}</div>`;
+    cur.setDate(cur.getDate() + 1);
+    if (cur > end && cur.getDay() === 0) break;
+  }
+
+  html += "</div>";
+  wrap.innerHTML = html;
+}
+
+function renderPortfolioChart(cumulative) {
+  if (!cumulative.length) return;
+  const labels = cumulative.map(d => d.date.slice(0,10));
+  const usd    = cumulative.map(d => d.cum_usd);
+  const sol    = cumulative.map(d => d.cum_sol);
+
+  if (portfolioChart) {
+    portfolioChart.data.labels = labels;
+    portfolioChart.data.datasets[0].data = usd;
+    portfolioChart.data.datasets[1].data = sol;
+    portfolioChart.update();
+    return;
+  }
+
+  const ctx = $("chart-portfolio");
+  portfolioChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "USD PnL",
+          data: usd,
+          borderColor: "#00e5ff",
+          backgroundColor: "rgba(0,229,255,0.06)",
+          borderWidth: 2, pointRadius: 2, fill: true, tension: 0.3,
+          yAxisID: "y",
+        },
+        {
+          label: "SOL PnL",
+          data: sol,
+          borderColor: "#22c55e",
+          backgroundColor: "transparent",
+          borderWidth: 1.5, pointRadius: 0, tension: 0.3, borderDash: [4,3],
+          yAxisID: "y2",
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { color: "#6b7280", font: { size: 11 } } },
+      },
+      scales: {
+        x: { ticks: { color: "#6b7280", font: { size: 10 }, maxTicksLimit: 12 }, grid: { color: "rgba(255,255,255,0.04)" } },
+        y:  { position: "left",  ticks: { color: "#6b7280", font: { size: 10 }, callback: v => `$${v.toFixed(1)}` }, grid: { color: "rgba(255,255,255,0.04)" } },
+        y2: { position: "right", ticks: { color: "#22c55e", font: { size: 10 }, callback: v => `${v.toFixed(3)}◎` }, grid: { display: false } },
+      }
+    }
+  });
+}
+
+// ── History ────────────────────────────────────────────────────────────────
+function renderHistory() {
+  const tbody = $("history-tbody");
+  const data  = [..._history];
+  const { col, dir } = _historySort;
+
+  data.sort((a, b) => {
+    let av = a[col], bv = b[col];
+    if (typeof av === "string") av = av.toLowerCase();
+    if (typeof bv === "string") bv = bv.toLowerCase();
+    if (av == null) av = dir === "asc" ? Infinity : -Infinity;
+    if (bv == null) bv = dir === "asc" ? Infinity : -Infinity;
+    return dir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+  });
+
+  // Update sort indicators
+  document.querySelectorAll("#history-table th").forEach(th => {
+    th.classList.toggle("sorted-asc",  th.dataset.col === col && dir === "asc");
+    th.classList.toggle("sorted-desc", th.dataset.col === col && dir === "desc");
+  });
+
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No closed positions yet.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map(r => {
+    const p = r.pnl_usd ?? 0;
+    return `<tr>
+      <td class="name">${r.pool_name || "—"}</td>
+      <td>${r.strategy || "—"}</td>
+      <td>${fmt(r.amount_sol, 3)}</td>
+      <td class="${pnlClass(p)}">$${fmt(p, 2)}</td>
+      <td class="${pnlClass(r.pnl_pct)}">${fmt(r.pnl_pct, 2)}%</td>
+      <td>$${fmt(r.fees_earned_usd, 2)}</td>
+      <td>${fmtHold(r.minutes_held)}</td>
+      <td>${fmt(r.range_efficiency, 1)}%</td>
+      <td>${r.close_reason || "—"}</td>
+      <td>${fmtDate(r.timestamp)}</td>
+    </tr>`;
+  }).join("");
+}
+
+document.querySelector("#history-table thead").addEventListener("click", e => {
+  const th = e.target.closest("th");
+  if (!th?.dataset.col) return;
+  const col = th.dataset.col;
+  if (_historySort.col === col) {
+    _historySort.dir = _historySort.dir === "asc" ? "desc" : "asc";
+  } else {
+    _historySort = { col, dir: "desc" };
+  }
+  renderHistory();
+});
+
+// ── Journal ────────────────────────────────────────────────────────────────
+function renderJournal() {
+  const tbody = $("journal-tbody");
+  const data  = _journalTypeFilter
+    ? _journal.filter(e => e.type === _journalTypeFilter)
+    : _journal;
+
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No journal entries yet.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map(r => {
+    let typeBadge = "";
+    if (r.type === "open")  typeBadge = '<span class="badge badge-blue">OPEN</span>';
+    if (r.type === "close") {
+      const p = r.pnl_usd ?? 0;
+      typeBadge = `<span class="badge ${p >= 0 ? "badge-green" : "badge-red"}">CLOSE</span>`;
+    }
+    if (r.type === "claim") typeBadge = '<span class="badge badge-yellow">CLAIM</span>';
+
+    const pnlUsd = r.pnl_usd != null ? `<span class="${pnlClass(r.pnl_usd)}">$${fmt(r.pnl_usd, 2)}</span>` : "—";
+    const fees   = r.fees_earned_usd != null ? `$${fmt(r.fees_earned_usd, 2)}`
+                 : r.fees_usd         != null ? `$${fmt(r.fees_usd, 2)}` : "—";
+
+    return `<tr>
+      <td>${typeBadge}</td>
+      <td class="name">${r.pool_name || "—"}</td>
+      <td>${r.strategy || "—"}</td>
+      <td>${fmt(r.amount_sol, 3)}</td>
+      <td>${pnlUsd}</td>
+      <td>${fees}</td>
+      <td>${r.close_reason || "—"}</td>
+      <td>${fmtDate(r.timestamp)}</td>
+    </tr>`;
+  }).join("");
+}
+
+$("journal-filters").addEventListener("click", e => {
+  const btn = e.target.closest(".filter-btn");
+  if (!btn) return;
+  _journalTypeFilter = btn.dataset.type;
+  document.querySelectorAll(".filter-btn").forEach(b => b.classList.toggle("active", b === btn));
+  renderJournal();
+});
+
+// ── Lessons ────────────────────────────────────────────────────────────────
+function renderLessons() {
+  const grid = $("lessons-grid");
+  if (!_lessons.length) {
+    grid.innerHTML = '<div class="empty">No lessons yet.</div>';
+    return;
+  }
+
+  const outcomeClass = {
+    good: "badge-green", bad: "badge-red", poor: "badge-yellow", manual: "badge-blue",
+  };
+
+  grid.innerHTML = _lessons.map(l => {
+    const cls    = outcomeClass[l.outcome] || "badge-muted";
+    const tags   = (l.tags || []).map(t => `<span class="tag">${t}</span>`).join("");
+    const pinned = l.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : "";
+    const role   = l.role   ? `<span class="badge badge-muted">${l.role}</span>` : "";
+
+    return `
+    <div class="card lesson-card">
+      <div class="lesson-meta">
+        <span class="badge ${cls}">${l.outcome || "—"}</span>
+        ${role}
+        ${pinned}
+      </div>
+      <div class="lesson-rule">${l.rule || "—"}</div>
+      <div class="lesson-tags">${tags}</div>
+    </div>`;
+  }).join("");
+}
+
+// ── Logs ───────────────────────────────────────────────────────────────────
+function todayStr() { return new Date().toISOString().slice(0,10); }
+
+// Set date picker default
+$("log-date").value = todayStr();
+
+async function fetchLogs(force = false) {
+  const date  = $("log-date").value || todayStr();
+  const lines = $("log-lines").value || "200";
+  try {
+    const data = await api(`/api/logs?date=${date}&lines=${lines}`);
+    const pre  = $("log-pre");
+    pre.textContent = data.lines?.join("\n") || "(no log entries)";
+    if ($("log-autoscroll").checked) pre.scrollTop = pre.scrollHeight;
+  } catch {
+    $("log-pre").textContent = "Failed to fetch logs.";
+  }
+}
+
+function startLogPoll() {
+  fetchLogs();
+  stopLogPoll();
+  _logPollTimer = setInterval(() => {
+    if ($("log-autopoll").checked) fetchLogs();
+  }, 10_000);
+}
+
+function stopLogPoll() {
+  if (_logPollTimer) { clearInterval(_logPollTimer); _logPollTimer = null; }
+}
+
+$("log-date").addEventListener("change", () => fetchLogs(true));
+
+// ── Data fetching ──────────────────────────────────────────────────────────
+async function fetchStats()     { try { _stats     = await api("/api/stats");     updateTopbar(); renderOverview(); } catch {} }
+async function fetchWallet()    { try { _wallet    = await api("/api/wallet");    updateTopbar(); renderOverview(); } catch {} }
+async function fetchPositions() { try { _positions = await api("/api/positions"); updateTopbar(); renderPositions(); renderOverview(); } catch {} }
+async function fetchPortfolio() { try { _portfolio = await api("/api/portfolio"); updateTopbar(); renderOverview(); renderPortfolio(); } catch {} }
+async function fetchHistory()   { try { const d = await api("/api/history");  _history = d.entries || []; renderHistory(); } catch {} }
+async function fetchJournal()   { try { const d = await api("/api/journal");  _journal = d.entries || []; renderJournal(); } catch {} }
+async function fetchLessons()   { try { const d = await api("/api/lessons");  _lessons = d.lessons || []; renderLessons(); } catch {} }
+
+function updateTimestamp() { $("last-update").textContent = new Date().toLocaleTimeString(); }
+
+// ── Polling ────────────────────────────────────────────────────────────────
+async function pollFast() {
+  await Promise.allSettled([fetchStats(), fetchWallet(), fetchPositions()]);
+  updateTimestamp();
+}
+
+async function pollSlow() {
+  await Promise.allSettled([fetchPortfolio(), fetchHistory(), fetchJournal(), fetchLessons()]);
+}
+
+// Initial load
+pollFast();
+pollSlow();
+
+setInterval(pollFast, 30_000);
+setInterval(pollSlow, 60_000);
+</script>
+</body>
+</html>

@@ -19,6 +19,7 @@ import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { _stats } from "./stats.js";
+import { startDashboard } from "./dashboard/server.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
 import { fileURLToPath } from "url";
@@ -707,6 +708,7 @@ if (isTTY) {
   // Always start autonomous cycles on launch
   launchCron();
   maybeRunMissedBriefing().catch(() => {});
+  if (config.dashboard.enabled) startDashboard(config.dashboard.port);
 
   // Telegram bot
   // Startup notification — helps detect duplicate instances
@@ -1042,6 +1044,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => {});
+  if (config.dashboard.enabled) startDashboard(config.dashboard.port);
   // Startup notification — helps detect duplicate instances
   if (telegramEnabled()) {
     const mode = process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";

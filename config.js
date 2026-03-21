@@ -90,6 +90,12 @@ export const config = {
     USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
   },
+
+  // ─── Web Dashboard ─────────────────────
+  dashboard: {
+    port:    u.dashboardPort    ?? 3000,
+    enabled: u.dashboardEnabled !== false, // default: true
+  },
 };
 
 /**
