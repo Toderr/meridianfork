@@ -63,7 +63,7 @@ function computePortfolio(closes) {
 
   let totalPnlUsd = 0, totalPnlSol = 0, totalInitUsd = 0;
   let posGross = 0, negGross = 0, wins = 0;
-  const byDay = {};
+  const byDay = {}, byDayInitUsd = {};
   const sorted = [...closes].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
   for (const c of sorted) {
@@ -76,7 +76,17 @@ function computePortfolio(closes) {
     else negGross += Math.abs(pnlUsd);
 
     const day = (c.timestamp || "").slice(0, 10);
-    if (day) byDay[day] = (byDay[day] ?? 0) + pnlUsd;
+    if (day) {
+      byDay[day] = (byDay[day] ?? 0) + pnlUsd;
+      byDayInitUsd[day] = (byDayInitUsd[day] ?? 0) + (c.initial_value_usd ?? 0);
+    }
+  }
+
+  // Per-day PnL% for calendar cells
+  const calendarPct = {};
+  for (const [day, pnl] of Object.entries(byDay)) {
+    const init = byDayInitUsd[day];
+    calendarPct[day] = init > 0 ? +((pnl / init) * 100).toFixed(2) : 0;
   }
 
   // Day win rate
@@ -103,6 +113,7 @@ function computePortfolio(closes) {
     day_win_rate_pct:  +dayWinRate.toFixed(1),
     profit_factor:     profitFactor !== null ? +profitFactor.toFixed(2) : null,
     calendar:          byDay,
+    calendar_pct:      calendarPct,
     cumulative,
     total_closes:      closes.length,
   };
