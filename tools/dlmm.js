@@ -310,6 +310,7 @@ export async function getPositionPnl({ pool_address, position_address }) {
     const currentValueUsd = parseFloat(p.unrealizedPnl?.balances || 0);
     return {
       pnl_usd:           Math.round((p.pnlUsd ?? 0) * 100) / 100,
+      pnl_sol:           Math.round((parseFloat(p.pnlSol ?? 0)) * 10000) / 10000,
       pnl_pct:           Math.round((p.pnlPctChange ?? 0) * 100) / 100,
       current_value_usd: Math.round(currentValueUsd * 100) / 100,
       unclaimed_fee_usd: Math.round(unclaimedUsd * 100) / 100,
