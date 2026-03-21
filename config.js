@@ -107,28 +107,64 @@ export function computeDeployAmount(walletSol) {
   return parseFloat(result.toFixed(2));
 }
 
+export { USER_CONFIG_PATH };
+
 /**
- * Reload user-config.json and apply updated screening thresholds to the
- * in-memory config object. Called after threshold evolution so the next
- * agent cycle uses the evolved values without a restart.
+ * Reload user-config.json and apply all hot-reloadable settings to the
+ * in-memory config object without a restart.
+ *
+ * NOT reloaded (require restart): rpcUrl, walletKey, dryRun, schedule intervals.
  */
-export function reloadScreeningThresholds() {
+export function reloadConfig() {
   if (!fs.existsSync(USER_CONFIG_PATH)) return;
   try {
-    const fresh = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    const f = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+
     const s = config.screening;
-    if (fresh.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = fresh.minFeeActiveTvlRatio;
-    if (fresh.minOrganic     != null) s.minOrganic     = fresh.minOrganic;
-    if (fresh.minHolders     != null) s.minHolders     = fresh.minHolders;
-    if (fresh.minMcap        != null) s.minMcap        = fresh.minMcap;
-    if (fresh.maxMcap        != null) s.maxMcap        = fresh.maxMcap;
-    if (fresh.minTvl         != null) s.minTvl         = fresh.minTvl;
-    if (fresh.maxTvl         != null) s.maxTvl         = fresh.maxTvl;
-    if (fresh.minVolume      != null) s.minVolume      = fresh.minVolume;
-    if (fresh.minBinStep     != null) s.minBinStep     = fresh.minBinStep;
-    if (fresh.maxBinStep     != null) s.maxBinStep     = fresh.maxBinStep;
-    if (fresh.timeframe      != null) s.timeframe      = fresh.timeframe;
-    if (fresh.category       != null) s.category       = fresh.category;
+    if (f.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = f.minFeeActiveTvlRatio;
+    if (f.minOrganic     != null) s.minOrganic     = f.minOrganic;
+    if (f.minHolders     != null) s.minHolders     = f.minHolders;
+    if (f.minMcap        != null) s.minMcap        = f.minMcap;
+    if (f.maxMcap        != null) s.maxMcap        = f.maxMcap;
+    if (f.minTvl         != null) s.minTvl         = f.minTvl;
+    if (f.maxTvl         != null) s.maxTvl         = f.maxTvl;
+    if (f.minVolume      != null) s.minVolume      = f.minVolume;
+    if (f.minBinStep     != null) s.minBinStep     = f.minBinStep;
+    if (f.maxBinStep     != null) s.maxBinStep     = f.maxBinStep;
+    if (f.timeframe      != null) s.timeframe      = f.timeframe;
+    if (f.category       != null) s.category       = f.category;
+    if (f.minTokenFeesSol != null) s.minTokenFeesSol = f.minTokenFeesSol;
+
+    const m = config.management;
+    if (f.minClaimAmount        != null) m.minClaimAmount        = f.minClaimAmount;
+    if (f.outOfRangeBinsToClose != null) m.outOfRangeBinsToClose = f.outOfRangeBinsToClose;
+    if (f.outOfRangeWaitMinutes != null) m.outOfRangeWaitMinutes = f.outOfRangeWaitMinutes;
+    if (f.minVolumeToRebalance  != null) m.minVolumeToRebalance  = f.minVolumeToRebalance;
+    if (f.emergencyPriceDropPct != null) m.emergencyPriceDropPct = f.emergencyPriceDropPct;
+    if (f.takeProfitFeePct      != null) m.takeProfitFeePct      = f.takeProfitFeePct;
+    if (f.minSolToOpen          != null) m.minSolToOpen          = f.minSolToOpen;
+    if (f.deployAmountSol       != null) m.deployAmountSol       = f.deployAmountSol;
+    if (f.gasReserve            != null) m.gasReserve            = f.gasReserve;
+    if (f.positionSizePct       != null) m.positionSizePct       = f.positionSizePct;
+
+    const r = config.risk;
+    if (f.maxPositions    != null) r.maxPositions    = f.maxPositions;
+    if (f.maxDeployAmount != null) r.maxDeployAmount = f.maxDeployAmount;
+
+    const st = config.strategy;
+    if (f.strategy  != null) st.strategy  = f.strategy;
+    if (f.binsBelow != null) st.binsBelow = f.binsBelow;
+
+    const l = config.llm;
+    if (f.managementModel != null) l.managementModel = f.managementModel;
+    if (f.screeningModel  != null) l.screeningModel  = f.screeningModel;
+    if (f.generalModel    != null) l.generalModel    = f.generalModel;
+    if (f.temperature     != null) l.temperature     = f.temperature;
+    if (f.maxTokens       != null) l.maxTokens       = f.maxTokens;
+    if (f.maxSteps        != null) l.maxSteps        = f.maxSteps;
   } catch { /* ignore */ }
 }
+
+// Keep old name as alias for backward compatibility
+export const reloadScreeningThresholds = reloadConfig;
 
