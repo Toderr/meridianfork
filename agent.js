@@ -25,7 +25,7 @@ const client = new OpenAI({
   timeout: 5 * 60 * 1000, // 5 min — free models can be slow (20 tok/s)
 });
 
-const DEFAULT_MODEL = process.env.LLM_MODEL || "openrouter/healer-alpha";
+// Model resolved at call time from config, so hot-reload changes take effect immediately
 
 /**
  * Core ReAct agent loop.
@@ -53,7 +53,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
     try {
-      const activeModel = model || DEFAULT_MODEL;
+      const activeModel = model || config.llm.generalModel;
 
       // Retry up to 3 times on transient provider errors (502, 503, 529)
       const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";

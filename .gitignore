@@ -16,6 +16,9 @@ pool-memory.json
 token-blacklist.json
 strategy-library.json
 
+# Runtime
+.agent.pid
+
 # Logs
 logs/
 

@@ -19,6 +19,30 @@ import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
 
+// ─── PID lock — prevent multiple instances ───────────────────────
+import { fileURLToPath } from "url";
+import path from "path";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PID_FILE = path.join(__dirname, ".agent.pid");
+
+(function acquireLock() {
+  if (fs.existsSync(PID_FILE)) {
+    const existingPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim());
+    try {
+      process.kill(existingPid, 0); // signal 0 = check if process exists
+      console.error(`[STARTUP] Another instance is already running (PID ${existingPid}). Exiting.`);
+      process.exit(1);
+    } catch {
+      // Process not found — stale lock, overwrite it
+    }
+  }
+  fs.writeFileSync(PID_FILE, String(process.pid));
+  const cleanup = () => { try { fs.unlinkSync(PID_FILE); } catch {} };
+  process.on("exit", cleanup);
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+})();
+
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
@@ -103,6 +127,7 @@ async function maybeRunMissedBriefing() {
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
   _cronTasks = [];
+  _cronRunning = false;
 }
 
 export function startCronJobs() {
@@ -171,7 +196,7 @@ Only call tools if a position needs to be CLOSED or fees need to be CLAIMED.
 If all positions STAY and no fees to claim, just write the report with no tool calls.
 
 REPORT FORMAT (one per position):
-**[PAIR]** | Age: [X]m | Fees: $[X] | PnL: [X]%
+**[PAIR]** | Age: [X]m | Fees: $[X]
 **Rule:** [number or "none"] | **Decision:** STAY/CLOSE | **Reason:** [1 sentence]
       `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
       mgmtReport = content;
@@ -198,9 +223,11 @@ REPORT FORMAT (one per position):
         if (pnlPositions.length > 0) {
           const totalPnlUsd = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_usd || 0), 0);
           const totalPnlSol = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_sol || 0), 0);
+          const avgPnlPct = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_pct || 0), 0) / pnlPositions.length;
           const signUsd = totalPnlUsd >= 0 ? "+" : "";
           const signSol = totalPnlSol >= 0 ? "+" : "";
-          pnlBlock = `\n\n💰 PnL: ${signUsd}$${totalPnlUsd.toFixed(2)} | ${signSol}${totalPnlSol.toFixed(4)} SOL`;
+          const signPct = avgPnlPct >= 0 ? "+" : "";
+          pnlBlock = `\n\n💰 PnL: ${signUsd}$${totalPnlUsd.toFixed(2)} | ${signSol}${totalPnlSol.toFixed(4)} SOL | ${signPct}${avgPnlPct.toFixed(2)}%`;
         }
 
         if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${mgmtReport}${rangeBlock}${pnlBlock}`).catch(() => {});
@@ -442,6 +469,7 @@ function formatCandidates(candidates) {
 // ═══════════════════════════════════════════
 const isTTY = process.stdin.isTTY;
 let cronStarted = false;
+let _cronRunning = false;
 let busy = false;
 const sessionHistory = []; // persists conversation across REPL turns
 const MAX_HISTORY = 20;    // keep last 20 messages (10 exchanges)
@@ -480,6 +508,7 @@ if (isTTY) {
       timers.managementLastRun = Date.now();
       timers.screeningLastRun  = Date.now();
       startCronJobs();
+      _cronRunning = true;
       console.log("Autonomous cycles are now running.\n");
       rl.setPrompt(buildPrompt());
       rl.prompt(true);
@@ -544,6 +573,27 @@ if (isTTY) {
   startPolling(async (text) => {
     if (_managementBusy || _screeningBusy || busy) {
       sendMessage("Agent is busy right now — try again in a moment.").catch(() => {});
+      return;
+    }
+
+    if (text === "/start") {
+      if (_cronRunning) {
+        sendMessage("Agent is already running.").catch(() => {});
+      } else {
+        startCronJobs();
+        _cronRunning = true;
+        sendMessage("▶️ Agent started — cron cycles running.").catch(() => {});
+      }
+      return;
+    }
+
+    if (text === "/stop") {
+      if (!_cronRunning) {
+        sendMessage("Agent is already stopped.").catch(() => {});
+      } else {
+        stopCronJobs();
+        sendMessage("⏹️ Agent stopped — cron cycles paused. Send /start to resume.").catch(() => {});
+      }
       return;
     }
 

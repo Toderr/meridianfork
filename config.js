@@ -71,9 +71,9 @@ export const config = {
     temperature: u.temperature ?? 0.373,
     maxTokens:   u.maxTokens   ?? 4096,
     maxSteps:    u.maxSteps    ?? 20,
-    managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
-    screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "openrouter/hunter-alpha",
-    generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
+    managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.7",
+    screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "nvidia/nemotron-3-super-120b-a12b:free",
+    generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "nvidia/nemotron-3-super-120b-a12b:free",
   },
 
   // ─── Common Token Mints ────────────────
