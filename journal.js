@@ -65,6 +65,7 @@ export function recordOpen(d) {
       fee_tvl_ratio: d.fee_tvl_ratio,
       organic_score: d.organic_score,
       bin_range: d.bin_range,
+      variant: d.variant || null,
     });
     log("journal", `Recorded open: ${d.pool_name} pos=${d.position?.slice(0, 8)}`);
   } catch (e) {
@@ -111,6 +112,7 @@ export function recordJournalClose(d) {
       minutes_held: d.minutes_held,
       range_efficiency: d.range_efficiency,
       close_reason: d.close_reason,
+      variant: d.variant || null,
     });
     log("journal", `Recorded close: ${d.pool_name} pnl=$${d.pnl_usd?.toFixed(2)} (${pnl_sol != null ? pnl_sol.toFixed(4) : "?"} SOL)`);
   } catch (e) {

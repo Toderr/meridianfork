@@ -4,20 +4,21 @@ import readline from "readline";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, getPositionPnl } from "./tools/dlmm.js";
-import { getWalletBalances } from "./tools/wallet.js";
+import { getWalletBalances, sweepDustTokens } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
-import { registerCronRestarter } from "./tools/executor.js";
+import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { generateReport } from "./reports.js";
-import { getLastBriefingDate, setLastBriefingDate } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
+import { _stats } from "./stats.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
 import { fileURLToPath } from "url";
@@ -91,6 +92,7 @@ function buildPrompt() {
 let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
+let _earlyManagementTimer = null; // setTimeout handle for high-vol early re-run
 
 async function runBriefing() {
   log("cron", "Starting morning briefing");
@@ -130,51 +132,100 @@ function stopCronJobs() {
   _cronRunning = false;
 }
 
-export function startCronJobs() {
-  stopCronJobs(); // stop any running tasks before (re)starting
+/**
+ * Run one management cycle. Shared by the cron schedule and the high-vol
+ * early-trigger setTimeout so both paths use identical logic.
+ */
+async function runManagementCycle() {
+  if (_managementBusy) return;
+  _managementBusy = true;
+  _stats.managementCycles++;
+  timers.managementLastRun = Date.now();
+  log("cron", `Starting management cycle [model: ${config.llm.managementModel}]`);
+  let mgmtReport = null;
+  let positions = [];
+  let positionData = [];
+  try {
+    // Pre-load all positions + PnL in parallel — LLM gets everything, no fetch steps needed
+    const livePositions = await getMyPositions().catch(() => null);
+    positions = livePositions?.positions || [];
 
-  const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
-    if (_managementBusy) return;
-    _managementBusy = true;
-    timers.managementLastRun = Date.now();
-    log("cron", `Starting management cycle [model: ${config.llm.managementModel}]`);
-    let mgmtReport = null;
-    let positions = [];
-    let positionData = [];
-    try {
-      // Pre-load all positions + PnL in parallel — LLM gets everything, no fetch steps needed
-      const livePositions = await getMyPositions().catch(() => null);
-      positions = livePositions?.positions || [];
+    if (positions.length === 0) {
+      log("cron", "Management skipped — no open positions");
+      return;
+    }
 
-      if (positions.length === 0) {
-        log("cron", "Management skipped — no open positions");
-        return;
+    // Snapshot + PnL fetch in parallel for all positions
+    positionData = await Promise.all(positions.map(async (p) => {
+      recordPositionSnapshot(p.pool, p);
+      const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
+      const recall = recallForPool(p.pool);
+      const tracked = getTrackedPosition(p.position);
+      const instruction = tracked?.instruction || null;
+      return { ...p, pnl, recall, instruction };
+    }));
+
+    // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
+    // Only handles "close at X%" patterns deterministically — no LLM involvement.
+    const instructionClosePrefix = [];
+    const skippedByInstruction = new Set();
+    for (const p of positionData) {
+      if (!p.instruction) continue;
+      const instr = p.instruction.toLowerCase();
+      const pnlPct = p.pnl?.pnl_pct ?? null;
+
+      // Parse "close at X% profit", "close at X% pnl", "close at X%"
+      const profitMatch = instr.match(/close at ([+-]?\d+(?:\.\d+)?)\s*%/);
+      if (!profitMatch) continue; // pattern not recognised — leave to agent
+
+      if (pnlPct === null) {
+        log("cron", `Instruction pre-check: ${p.pair} — pnl_pct unavailable, skipping auto-close`);
+        continue;
       }
 
-      // Snapshot + PnL fetch in parallel for all positions
-      positionData = await Promise.all(positions.map(async (p) => {
-        recordPositionSnapshot(p.pool, p);
-        const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
-        const recall = recallForPool(p.pool);
-        return { ...p, pnl, recall };
-      }));
+      const target = parseFloat(profitMatch[1]);
+      if (pnlPct >= target) {
+        const reason = `Instruction: "${p.instruction}" (pnl_pct=${pnlPct}%)`;
+        log("cron", `Instruction pre-check: closing ${p.pair} (${p.position}) — ${reason}`);
+        try {
+          await executeTool("close_position", { position_address: p.position });
+          skippedByInstruction.add(p.position);
+          instructionClosePrefix.push(`Auto-closed by instruction: ${p.pair} — ${reason}`);
+        } catch (err) {
+          log("cron_error", `Instruction pre-check: failed to close ${p.pair} (${p.position}): ${err.message}`);
+          // Do not skip — let the agent handle it as a fallback
+        }
+      }
+    }
 
-      // Build pre-loaded position blocks for the LLM
-      const positionBlocks = positionData.map((p) => {
-        const pnl = p.pnl;
-        const lines = [
-          `POSITION: ${p.pair} (${p.position})`,
-          `  pool: ${p.pool}`,
-          `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
-          pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
-          p.instruction ? `  instruction: "${p.instruction}"` : null,
-          p.recall ? `  memory: ${p.recall}` : null,
-        ].filter(Boolean);
-        return lines.join("\n");
-      }).join("\n\n");
+    // Remove auto-closed positions so the agent doesn't re-process them
+    if (skippedByInstruction.size > 0) {
+      positionData = positionData.filter(p => !skippedByInstruction.has(p.position));
+    }
 
-      const { content } = await agentLoop(`
-MANAGEMENT CYCLE — ${positions.length} position(s)
+    // If all positions were auto-closed, skip the agent loop
+    if (positionData.length === 0) {
+      mgmtReport = instructionClosePrefix.join("\n");
+      log("cron", "All positions closed by instruction pre-check — skipping agent loop");
+      return;
+    }
+
+    // Build pre-loaded position blocks for the LLM
+    const positionBlocks = positionData.map((p) => {
+      const pnl = p.pnl;
+      const lines = [
+        `POSITION: ${p.pair} (${p.position})`,
+        `  pool: ${p.pool}`,
+        `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
+        pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
+        p.instruction ? `  instruction: "${p.instruction}"` : null,
+        p.recall ? `  memory: ${p.recall}` : null,
+      ].filter(Boolean);
+      return lines.join("\n");
+    }).join("\n\n");
+
+    const { content } = await agentLoop(`
+MANAGEMENT CYCLE — ${positionData.length} position(s)
 
 PRE-LOADED POSITION DATA (no fetching needed):
 ${positionBlocks}
@@ -198,57 +249,87 @@ If all positions STAY and no fees to claim, just write the report with no tool c
 REPORT FORMAT (one per position):
 **[PAIR]** | Age: [X]m | Fees: $[X]
 **Rule:** [number or "none"] | **Decision:** STAY/CLOSE | **Reason:** [1 sentence]
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
-      mgmtReport = content;
-    } catch (error) {
-      log("cron_error", `Management cycle failed: ${error.message}`);
-      mgmtReport = `Management cycle failed: ${error.message}`;
-    } finally {
-      _managementBusy = false;
-      if (telegramEnabled()) {
-        // Re-fetch positions after agent may have closed some — only show currently open ones
-        let liveData = [];
-        try {
-          const livePositions = await getMyPositions().catch(() => null);
-          const openPositions = livePositions?.positions || [];
-          liveData = await Promise.all(openPositions.map(async (p) => {
-            const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
-            return { ...p, pnl };
-          }));
-        } catch { /* non-fatal */ }
+    `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
+    mgmtReport = instructionClosePrefix.length > 0
+      ? instructionClosePrefix.join("\n") + "\n\n" + content
+      : content;
+  } catch (error) {
+    _stats.errors++;
+    log("cron_error", `Management cycle failed: ${error.message}`);
+    mgmtReport = `Management cycle failed: ${error.message}`;
+  } finally {
+    _managementBusy = false;
 
-        const rangeLines = liveData
-          .filter(p => p.pnl?.lower_bin != null)
-          .map(p => {
-            const name = (p.pair || "?").padEnd(14).slice(0, 14);
-            const bar = formatRangeBar(p.pnl.lower_bin, p.pnl.upper_bin, p.pnl.active_bin);
-            return `${name} ${bar}`;
-          });
-        const rangeBlock = rangeLines.length > 0
-          ? `\n\n📊 Ranges:\n${rangeLines.join("\n")}`
-          : "";
+    // ── Adaptive management interval: if any open position has high volatility,
+    //    schedule an early re-run in 3 minutes instead of waiting for the normal interval.
+    const highVolPositions = positionData.filter(p => p.volatility != null && p.volatility >= 5);
+    if (highVolPositions.length > 0 && !_earlyManagementTimer) {
+      const pairs = highVolPositions.map(p => p.pair || p.pool?.slice(0, 8)).join(", ");
+      const earlyMs = 3 * 60 * 1000;
+      log("cron", `High-volatility position(s) detected (${pairs}) — scheduling early management check in 3m`);
+      _earlyManagementTimer = setTimeout(async () => {
+        _earlyManagementTimer = null;
+        await runManagementCycle();
+      }, earlyMs);
+    }
 
-        // Deterministic PnL summary (live positions only)
-        let pnlBlock = "";
-        const pnlPositions = liveData.filter(p => p.pnl?.pnl_usd != null);
-        if (pnlPositions.length > 0) {
-          const totalPnlUsd = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_usd || 0), 0);
-          const totalPnlSol = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_sol || 0), 0);
-          const avgPnlPct = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_pct || 0), 0) / pnlPositions.length;
-          const signUsd = totalPnlUsd >= 0 ? "+" : "";
-          const signSol = totalPnlSol >= 0 ? "+" : "";
-          const signPct = avgPnlPct >= 0 ? "+" : "";
-          pnlBlock = `\n\n💰 PnL: ${signUsd}$${totalPnlUsd.toFixed(2)} | ${signSol}${totalPnlSol.toFixed(4)} SOL | ${signPct}${avgPnlPct.toFixed(2)}%`;
-        }
+    if (telegramEnabled()) {
+      // Re-fetch positions after agent may have closed some — only show currently open ones
+      let liveData = [];
+      try {
+        const livePositions = await getMyPositions().catch(() => null);
+        const openPositions = livePositions?.positions || [];
+        liveData = await Promise.all(openPositions.map(async (p) => {
+          const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
+          return { ...p, pnl };
+        }));
+      } catch { /* non-fatal */ }
 
-        if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${mgmtReport}${rangeBlock}${pnlBlock}`).catch(() => {});
-        for (const p of positions) {
-          if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
-            notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
-          }
+      const rangeLines = liveData
+        .filter(p => p.pnl?.lower_bin != null)
+        .map(p => {
+          const name = (p.pair || "?").padEnd(14).slice(0, 14);
+          const bar = formatRangeBar(p.pnl.lower_bin, p.pnl.upper_bin, p.pnl.active_bin);
+          return `${name} ${bar}`;
+        });
+      const rangeBlock = rangeLines.length > 0
+        ? `\n\n📊 Ranges:\n${rangeLines.join("\n")}`
+        : "";
+
+      // Deterministic PnL summary (live positions only)
+      let pnlBlock = "";
+      const pnlPositions = liveData.filter(p => p.pnl?.pnl_usd != null);
+      if (pnlPositions.length > 0) {
+        const totalPnlUsd = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_usd || 0), 0);
+        const totalPnlSol = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_sol || 0), 0);
+        const avgPnlPct = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_pct || 0), 0) / pnlPositions.length;
+        const signUsd = totalPnlUsd >= 0 ? "+" : "";
+        const signSol = totalPnlSol >= 0 ? "+" : "";
+        const signPct = avgPnlPct >= 0 ? "+" : "";
+        pnlBlock = `\n\n💰 PnL: ${signUsd}$${totalPnlUsd.toFixed(2)} | ${signSol}${totalPnlSol.toFixed(4)} SOL | ${signPct}${avgPnlPct.toFixed(2)}%`;
+      }
+
+      if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${mgmtReport}${rangeBlock}${pnlBlock}`).catch(() => {});
+      for (const p of positions) {
+        if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
+          notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
         }
       }
     }
+  }
+}
+
+export function startCronJobs() {
+  stopCronJobs(); // stop any running tasks before (re)starting
+
+  // Cancel any pending early-trigger timer so it doesn't fire after a cron restart
+  if (_earlyManagementTimer) {
+    clearTimeout(_earlyManagementTimer);
+    _earlyManagementTimer = null;
+  }
+
+  const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
+    await runManagementCycle();
   });
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, async () => {
@@ -273,6 +354,7 @@ REPORT FORMAT (one per position):
     }
 
     _screeningBusy = true;
+    _stats.screeningCycles++;
     timers.screeningLastRun = Date.now();
     log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
     let screenReport = null;
@@ -352,6 +434,7 @@ STEPS:
       `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 4096);
       screenReport = content;
     } catch (error) {
+      _stats.errors++;
       log("cron_error", `Screening cycle failed: ${error.message}`);
       screenReport = `Screening cycle failed: ${error.message}`;
     } finally {
@@ -411,7 +494,18 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, { timezone: 'UTC' });
 
-  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask];
+  const dustTask = cron.schedule(`0 */6 * * *`, async () => {
+    try {
+      const swept = await sweepDustTokens();
+      if (swept.length > 0) {
+        log("cron", `Dust sweep: ${swept.length} token(s) swapped to SOL`);
+      }
+    } catch (e) {
+      log("cron_error", `Dust sweep failed: ${e.message}`);
+    }
+  });
+
+  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask];
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
 
@@ -608,6 +702,13 @@ if (isTTY) {
       return;
     }
 
+    if (text === "/stats") {
+      const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
+      const msg = `📊 Agent Stats\n\nUptime: ${uptime}m\nMgmt cycles: ${_stats.managementCycles}\nScreening cycles: ${_stats.screeningCycles}\nDeployed: ${_stats.positionsDeployed}\nClosed: ${_stats.positionsClosed}\nFees claimed: ${_stats.feesClaimed}\nErrors: ${_stats.errors}\nStarted: ${_stats.startedAt}`;
+      sendMessage(msg).catch(() => {});
+      return;
+    }
+
     if (text === "/briefing") {
       try {
         const briefing = await generateBriefing();
@@ -656,6 +757,7 @@ Commands:
   /candidates    Refresh top pool list
   /briefing      Show morning briefing (last 24h)
   /report [daily|weekly|monthly]  Show trading report (default: daily)
+  /stats         Show in-memory agent stats (cycles, deploys, errors)
   /learn         Study top LPers from the best current pool and save lessons
   /learn <addr>  Study top LPers from a specific pool address
   /thresholds    Show current screening thresholds + performance stats
@@ -724,6 +826,21 @@ Commands:
         }
         console.log();
       });
+      return;
+    }
+
+    if (input === "/stats") {
+      const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
+      console.log(`\nAgent Stats`);
+      console.log(`  Uptime:           ${uptime}m`);
+      console.log(`  Mgmt cycles:      ${_stats.managementCycles}`);
+      console.log(`  Screening cycles: ${_stats.screeningCycles}`);
+      console.log(`  Deployed:         ${_stats.positionsDeployed}`);
+      console.log(`  Closed:           ${_stats.positionsClosed}`);
+      console.log(`  Fees claimed:     ${_stats.feesClaimed}`);
+      console.log(`  Errors:           ${_stats.errors}`);
+      console.log(`  Started:          ${_stats.startedAt}\n`);
+      rl.prompt();
       return;
     }
 

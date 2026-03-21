@@ -54,8 +54,11 @@ export function recordPoolDeploy(poolAddress, deployData) {
       base_mint: deployData.base_mint || null,
       deploys: [],
       total_deploys: 0,
+      wins: 0,
+      losses: 0,
+      total_pnl_pct: 0,
       avg_pnl_pct: 0,
-      win_rate: 0,
+      success_rate_pct: 0,
       last_deployed_at: null,
       last_outcome: null,
       notes: [],
@@ -84,12 +87,14 @@ export function recordPoolDeploy(poolAddress, deployData) {
   // Recompute aggregates
   const withPnl = entry.deploys.filter((d) => d.pnl_pct != null);
   if (withPnl.length > 0) {
-    entry.avg_pnl_pct = Math.round(
-      (withPnl.reduce((s, d) => s + d.pnl_pct, 0) / withPnl.length) * 100
-    ) / 100;
-    entry.win_rate = Math.round(
-      (withPnl.filter((d) => d.pnl_pct >= 0).length / withPnl.length) * 100
-    ) / 100;
+    const wins = withPnl.filter((d) => d.pnl_pct >= 0).length;
+    const losses = withPnl.length - wins;
+    const totalPnl = withPnl.reduce((s, d) => s + d.pnl_pct, 0);
+    entry.wins = wins;
+    entry.losses = losses;
+    entry.total_pnl_pct = Math.round(totalPnl * 100) / 100;
+    entry.avg_pnl_pct = Math.round((totalPnl / withPnl.length) * 100) / 100;
+    entry.success_rate_pct = Math.round((wins / withPnl.length) * 100);
   }
 
   if (deployData.base_mint && !entry.base_mint) {
@@ -126,8 +131,10 @@ export function getPoolMemory({ pool_address }) {
     name: entry.name,
     base_mint: entry.base_mint,
     total_deploys: entry.total_deploys,
+    wins: entry.wins ?? 0,
+    losses: entry.losses ?? 0,
+    success_rate_pct: entry.success_rate_pct ?? 0,
     avg_pnl_pct: entry.avg_pnl_pct,
-    win_rate: entry.win_rate,
     last_deployed_at: entry.last_deployed_at,
     last_outcome: entry.last_outcome,
     notes: entry.notes,
@@ -194,7 +201,10 @@ export function recallForPool(poolAddress) {
 
   // Deploy history summary
   if (entry.total_deploys > 0) {
-    lines.push(`POOL MEMORY [${entry.name}]: ${entry.total_deploys} past deploy(s), avg PnL ${entry.avg_pnl_pct}%, win rate ${entry.win_rate}%, last outcome: ${entry.last_outcome}`);
+    const avgPnlSign = entry.avg_pnl_pct >= 0 ? "+" : "";
+    lines.push(
+      `POOL MEMORY [${entry.name}]: ${entry.total_deploys} deploy(s), ${entry.success_rate_pct}% win rate, avg PnL ${avgPnlSign}${entry.avg_pnl_pct}%, last outcome: ${entry.last_outcome}`
+    );
   }
 
   // Recent snapshot trend (last 6 = ~30min)

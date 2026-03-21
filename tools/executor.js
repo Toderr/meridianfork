@@ -18,7 +18,7 @@ import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStra
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds } from "../config.js";
+import { config, reloadScreeningThresholds, resolveStrategy } from "../config.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -28,6 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose } from "../telegram.js";
+import { _stats } from "../stats.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -258,6 +259,13 @@ export async function executeTool(name, args) {
 
   // ─── Execute ──────────────────────────────
   try {
+    // Auto-resolve strategy from volatility when deploying a position
+    if (name === "deploy_position") {
+      if (!args.strategy || args.strategy === config.strategy.strategy) {
+        args = { ...args, strategy: resolveStrategy(args.volatility) };
+      }
+    }
+
     const result = await fn(args);
     const duration = Date.now() - startTime;
     const success = result?.success !== false && !result?.error;
@@ -272,6 +280,7 @@ export async function executeTool(name, args) {
 
     if (success) {
       if (name === "deploy_position") {
+        _stats.positionsDeployed++;
         notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.tx }).catch(() => {});
         // Record open to trading journal
         getWalletBalances({}).then(w => {
@@ -289,10 +298,14 @@ export async function executeTool(name, args) {
               fee_tvl_ratio: args.fee_tvl_ratio,
               organic_score: args.organic_score,
               bin_range: args.bin_range,
+              variant: args.variant,
             });
           });
         }).catch(() => {});
+      } else if (name === "claim_fees") {
+        _stats.feesClaimed++;
       } else if (name === "close_position") {
+        _stats.positionsClosed++;
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});

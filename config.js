@@ -57,6 +57,11 @@ export const config = {
   strategy: {
     strategy:  u.strategy  ?? "bid_ask",
     binsBelow: u.binsBelow ?? 69,
+    strategyRules: u.strategyRules ?? {
+      highVol: "bid_ask",   // volatility >= 5
+      medVol:  "bid_ask",   // volatility 2-5
+      lowVol:  "spot",      // volatility < 2
+    },
   },
 
   // ─── Scheduling ─────────────────────────
@@ -87,8 +92,14 @@ export const config = {
 /**
  * Compute the optimal deploy amount for a given wallet balance.
  * Scales position size with wallet growth (compounding).
+ * Optionally scales down for high-volatility pools.
  *
- * Formula: clamp(deployable × positionSizePct, floor=deployAmountSol, ceil=maxDeployAmount)
+ * Formula: clamp(deployable × positionSizePct × volatilityMultiplier, floor=deployAmountSol, ceil=maxDeployAmount)
+ *
+ * Volatility multipliers:
+ *   volatility >= 5: × 0.6 (smaller position for very volatile pools)
+ *   volatility >= 2: × 0.8
+ *   volatility < 2 or null: × 1.0 (no change)
  *
  * Examples (defaults: gasReserve=0.2, positionSizePct=0.35, floor=0.5):
  *   0.8 SOL wallet → 0.6 SOL deploy  (floor)
@@ -96,15 +107,39 @@ export const config = {
  *   3.0 SOL wallet → 0.98 SOL deploy
  *   4.0 SOL wallet → 1.33 SOL deploy
  */
-export function computeDeployAmount(walletSol) {
+export function computeDeployAmount(walletSol, volatility = null) {
   const reserve  = config.management.gasReserve      ?? 0.2;
   const pct      = config.management.positionSizePct ?? 0.35;
   const floor    = config.management.deployAmountSol;
   const ceil     = config.risk.maxDeployAmount;
   const deployable = Math.max(0, walletSol - reserve);
   const dynamic    = deployable * pct;
-  const result     = Math.min(ceil, Math.max(floor, dynamic));
+
+  // Apply volatility multiplier before clamping
+  let volMultiplier = 1.0;
+  if (volatility != null) {
+    if (volatility >= 5) {
+      volMultiplier = 0.6;
+    } else if (volatility >= 2) {
+      volMultiplier = 0.8;
+    }
+  }
+
+  const result = Math.min(ceil, Math.max(floor, dynamic * volMultiplier));
   return parseFloat(result.toFixed(2));
+}
+
+/**
+ * Resolve the LP strategy type based on pool volatility.
+ * Uses strategyRules from config to pick bid_ask vs spot.
+ * Falls back to the configured default strategy if volatility is unknown.
+ */
+export function resolveStrategy(volatility) {
+  const rules = config.strategy.strategyRules || {};
+  if (volatility == null) return config.strategy.strategy; // fallback to default
+  if (volatility >= 5)  return rules.highVol || "bid_ask";
+  if (volatility >= 2)  return rules.medVol  || "bid_ask";
+  return rules.lowVol || "spot";
 }
 
 export { USER_CONFIG_PATH };

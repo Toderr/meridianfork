@@ -216,6 +216,25 @@ export async function swapToken({
   }
 }
 
+/**
+ * Sweep all dust tokens (USD value > 0 and < $0.10, excluding SOL) back to SOL via swap.
+ */
+export async function sweepDustTokens() {
+  const balances = await getWalletBalances({});
+  const dust = (balances.tokens || []).filter(t => t.usd > 0 && t.usd < 0.10 && t.mint !== "So11111111111111111111111111111111111111112");
+  const results = [];
+  for (const token of dust) {
+    try {
+      const result = await swapToken({ input_mint: token.mint, output_mint: "SOL", amount: token.balance });
+      results.push({ mint: token.mint, symbol: token.symbol, usd_value: token.usd, success: result?.success });
+      log("dust_sweep", `Swapped dust ${token.symbol || token.mint.slice(0,8)} ($${token.usd.toFixed(3)}) → SOL`);
+    } catch (e) {
+      log("dust_sweep_error", `Failed to sweep ${token.symbol || token.mint.slice(0,8)}: ${e.message}`);
+    }
+  }
+  return results;
+}
+
 async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr }) {
   // ─── Get quote ─────────────────────────────────────────────
   const quoteRes = await fetch(

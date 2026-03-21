@@ -162,7 +162,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           strategy: {
             type: "string",
             enum: ["bid_ask", "spot"],
-            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise use the active strategy's lp_strategy field."
+            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise leave unset — the executor will auto-select based on pool volatility (spot for low volatility < 2, bid_ask for medium/high volatility >= 2)."
           },
           bins_below: {
             type: "number",
@@ -178,7 +178,8 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           volatility: { type: "number", description: "Pool volatility at deploy time" },
           fee_tvl_ratio: { type: "number", description: "fee/TVL ratio at deploy time" },
           organic_score: { type: "number", description: "Base token organic score at deploy time" },
-          initial_value_usd: { type: "number", description: "Estimated USD value being deployed" }
+          initial_value_usd: { type: "number", description: "Estimated USD value being deployed" },
+          variant: { type: "string", description: "Optional A/B test label (e.g. 'A', 'B', 'conservative', 'aggressive'). Used to compare strategy performance." }
         },
         required: ["pool_address"]
       }
@@ -973,9 +974,10 @@ Use when you observe something worth remembering about a specific pool:
     type: "function",
     function: {
       name: "add_to_blacklist",
-      description: `Permanently blacklist a base token mint so it's never deployed into again.
+      description: `Blacklist a base token mint so it's never deployed into again.
 Use when a token rugs, shows wash trading, or is otherwise unsafe.
-Blacklisted tokens are filtered BEFORE the LLM even sees pool candidates.`,
+Blacklisted tokens are filtered BEFORE the LLM even sees pool candidates.
+Optionally specify a number of days after which the entry auto-expires.`,
       parameters: {
         type: "object",
         properties: {
@@ -990,6 +992,10 @@ Blacklisted tokens are filtered BEFORE the LLM even sees pool candidates.`,
           reason: {
             type: "string",
             description: "Why this token is being blacklisted"
+          },
+          days: {
+            type: "number",
+            description: "Auto-remove after N days. Omit for permanent."
           }
         },
         required: ["mint", "reason"]

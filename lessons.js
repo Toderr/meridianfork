@@ -94,6 +94,7 @@ export async function recordPerformance(perf) {
       minutes_held: entry.minutes_held,
       range_efficiency: entry.range_efficiency,
       close_reason: entry.close_reason,
+      variant: entry.variant || null,
     });
   } catch (e) {
     log("journal_error", `Failed to journal close: ${e.message}`);
@@ -104,8 +105,25 @@ export async function recordPerformance(perf) {
   // Derive and store a lesson
   const lesson = derivLesson(entry);
   if (lesson) {
-    data.lessons.push(lesson);
-    log("lessons", `New lesson: ${lesson.rule}`);
+    // Improvement 6: Deduplication — skip if a similar lesson exists within 7 days
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const duplicate = lesson.pool
+      ? data.lessons.find(
+          (l) =>
+            l.outcome === lesson.outcome &&
+            l.pool === lesson.pool &&
+            l.created_at >= sevenDaysAgo
+        )
+      : null;
+
+    if (duplicate) {
+      // Update existing lesson's rule with the newer, more specific one
+      duplicate.rule = lesson.rule;
+      log("lessons", `Updated existing lesson (dedup): ${lesson.rule}`);
+    } else {
+      data.lessons.push(lesson);
+      log("lessons", `New lesson: ${lesson.rule}`);
+    }
   }
 
   save(data);
@@ -187,6 +205,21 @@ function derivLesson(perf) {
   }
 
   if (!rule) return null;
+
+  // Improvement 7: Cross-role learning — tag screener-catchable failures
+  if (
+    (outcome === "bad" || outcome === "poor") &&
+    !tags.includes("screener") &&
+    (
+      rule.includes("OOR") ||
+      rule.includes("went out of range") ||
+      rule.includes("volume collapsed") ||
+      rule.includes("yield dead") ||
+      rule.includes("low fee")
+    )
+  ) {
+    tags.push("screener");
+  }
 
   return {
     id: Date.now(),

@@ -109,6 +109,70 @@ git pull origin main
 pm2 restart meridian
 ```
 
+## Key Data Flows
+
+### Position Deployment
+```
+screening cron → getMyPositions (count check) → getWalletBalances (SOL check)
+→ computeDeployAmount (scale from wallet) → getTopCandidates (filtered pools)
+→ parallel: smart_wallets + token_holders + narrative + token_info
+→ agent loop (pick best, apply rules) → deploy_position (on-chain)
+→ trackPosition (state.json) → recordOpen (journal.json) → notifyDeploy (Telegram)
+```
+
+### Position Close & Learning
+```
+close_position (on-chain claim + remove liquidity)
+→ snapshot PnL from cache BEFORE invalidating
+→ recordClose (state.json) → recordPerformance (lessons.json + derivLesson)
+→ every 5 positions: evolveThresholds (auto-tune config)
+→ recordJournalClose (journal.json with native pnl_sol)
+→ auto-swap base token to SOL (if >= $0.10) → notifyClose (Telegram)
+```
+
+### Management Decision Rules (in priority order)
+1. instruction set AND condition met → CLOSE
+2. instruction set AND condition NOT met → HOLD (skip remaining)
+3. pnl_pct <= emergencyPriceDropPct → CLOSE (stop loss)
+4. pnl_pct >= takeProfitFeePct → CLOSE (take profit)
+5. oor_minutes >= outOfRangeWaitMinutes → CLOSE
+6. fee_active_tvl_ratio < min AND volume < min → CLOSE (yield dead)
+7. unclaimed_fee_usd >= minClaimAmount → claim_fees
+
+## Risk Management
+
+- **Position sizing**: `(wallet - gasReserve) × positionSizePct`, clamped between `deployAmountSol` and `maxDeployAmount`
+- **Max positions**: Hard cap via `config.risk.maxPositions` (default 3)
+- **Gas reserve**: Always keep `gasReserve` SOL (default 0.2) untouched
+- **Anti-scam**: Skip if `global_fees_sol < minTokenFeesSol`, top_10_pct > 60%, bundlers > 30%
+
+## Learning System
+
+- **Lesson derivation**: Auto after each close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0%), bad (<-5%)
+- **Threshold evolution**: Every 5 closes, auto-adjusts volatility ceiling, min fee/TVL floor, min organic score
+- **Lesson injection**: Pinned (5) → Role-matched (6) → Recent fill — priority: good > bad > manual > neutral
+- **Max change per step**: 20% to prevent whiplash
+
+## Roadmap / Improvement Ideas
+
+### High Impact
+- Dynamic position sizing by volatility (high vol → smaller size)
+- Pool memory success rates (track win/loss per pool for screener signal)
+- Hard-enforce position instructions in code before agent loop (don't rely on LLM)
+- Auto-rebalance: detect better yield opportunity → close stale + redeploy
+
+### Medium Impact
+- Re-evaluate management interval during holding (volatility changes)
+- Deduplicate similar lessons (10 OOR failures → 1 merged lesson)
+- Cross-role learning (manager mistakes → screener avoidance)
+- Blacklist with reason + auto-expiry
+
+### Low Impact
+- Dust token consolidation (batch sweep tokens < $0.10)
+- Per-pool strategy overrides (some pools better with "spot" vs "bid_ask")
+- Prometheus metrics / observability endpoint
+- A/B testing framework for strategy variants
+
 ## Git Workflow
 
 - Push to `fork` remote: `git push fork main`

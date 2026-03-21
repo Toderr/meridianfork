@@ -136,6 +136,25 @@ export async function generateReport(period = "daily") {
         lines.push("");
       }
 
+      // A/B variant breakdown (weekly/monthly only)
+      const closesWithVariant = closes.filter(e => e.variant);
+      if (closesWithVariant.length > 0) {
+        const variants = {};
+        for (const e of closesWithVariant) {
+          const v = e.variant;
+          if (!variants[v]) variants[v] = { wins: 0, total: 0, pnl: 0 };
+          variants[v].total++;
+          if ((e.pnl_usd || 0) > 0) variants[v].wins++;
+          variants[v].pnl += (e.pnl_usd || 0);
+        }
+        lines.push(`<b>A/B Variant Results:</b>`);
+        for (const [v, stats] of Object.entries(variants)) {
+          const wr = Math.round((stats.wins / stats.total) * 100);
+          lines.push(`  • ${v}: ${stats.total} trades, ${wr}% win, $${stats.pnl.toFixed(2)} PnL`);
+        }
+        lines.push("");
+      }
+
       // Average hold time
       const avgHold = closes.reduce((s, e) => s + (e.minutes_held || 0), 0) / closes.length;
       lines.push(`⏱ Avg Hold Time: ${Math.round(avgHold)}m`);
