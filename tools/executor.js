@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { setPositionInstruction, getTrackedPosition } from "../state.js";
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
@@ -293,7 +293,9 @@ export async function executeTool(name, args) {
           });
         }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        const _tracked = getTrackedPosition(args.position_address);
+        const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
+        notifyClose({ pair: _pair, pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
           try {
