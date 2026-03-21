@@ -291,8 +291,6 @@ REPORT FORMAT (one per position):
     log("cron_error", `Management cycle failed: ${error.message}`);
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
-    _managementBusy = false;
-
     // ── Adaptive management interval: if any open position has high volatility,
     //    schedule an early re-run in 3 minutes instead of waiting for the normal interval.
     const highVolPositions = positionData.filter(p => p.volatility != null && p.volatility >= 5);
@@ -349,6 +347,11 @@ REPORT FORMAT (one per position):
         }
       }
     }
+
+    // Release the busy lock only after all async work (including Telegram sends) is complete.
+    // Releasing it early (before the re-fetch and sendMessage) allowed the next cron tick to
+    // start a second management cycle during the async gap, producing duplicate notifications.
+    _managementBusy = false;
   }
 }
 
