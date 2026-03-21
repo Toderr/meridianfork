@@ -6,7 +6,8 @@ import { log } from "./logger.js";
 import { getMyPositions, getPositionPnl } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
+import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
+import fs from "fs";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
@@ -21,6 +22,14 @@ import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+
+// ─── Hot-reload user-config.json on file change ─────────────────
+fs.watchFile(USER_CONFIG_PATH, { interval: 2000 }, (curr, prev) => {
+  if (curr.mtime > prev.mtime) {
+    reloadConfig();
+    log("config", "user-config.json changed — settings reloaded (restart required for: rpcUrl, walletKey, dryRun, schedule intervals)");
+  }
+});
 
 const TP_PCT  = config.management.takeProfitFeePct;
 const DEPLOY  = config.management.deployAmountSol;
@@ -106,6 +115,7 @@ export function startCronJobs() {
     log("cron", `Starting management cycle [model: ${config.llm.managementModel}]`);
     let mgmtReport = null;
     let positions = [];
+    let positionData = [];
     try {
       // Pre-load all positions + PnL in parallel — LLM gets everything, no fetch steps needed
       const livePositions = await getMyPositions().catch(() => null);
@@ -117,7 +127,7 @@ export function startCronJobs() {
       }
 
       // Snapshot + PnL fetch in parallel for all positions
-      const positionData = await Promise.all(positions.map(async (p) => {
+      positionData = await Promise.all(positions.map(async (p) => {
         recordPositionSnapshot(p.pool, p);
         const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
         const recall = recallForPool(p.pool);
@@ -171,7 +181,29 @@ REPORT FORMAT (one per position):
     } finally {
       _managementBusy = false;
       if (telegramEnabled()) {
-        if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${mgmtReport}`).catch(() => {});
+        const rangeLines = positionData
+          .filter(p => p.pnl?.lower_bin != null)
+          .map(p => {
+            const name = (p.pair || "?").padEnd(14).slice(0, 14);
+            const bar = formatRangeBar(p.pnl.lower_bin, p.pnl.upper_bin, p.pnl.active_bin);
+            return `${name} ${bar}`;
+          });
+        const rangeBlock = rangeLines.length > 0
+          ? `\n\n📊 Ranges:\n${rangeLines.join("\n")}`
+          : "";
+
+        // Deterministic PnL summary
+        let pnlBlock = "";
+        const pnlPositions = positionData.filter(p => p.pnl?.pnl_usd != null);
+        if (pnlPositions.length > 0) {
+          const totalPnlUsd = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_usd || 0), 0);
+          const totalPnlSol = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_sol || 0), 0);
+          const signUsd = totalPnlUsd >= 0 ? "+" : "";
+          const signSol = totalPnlSol >= 0 ? "+" : "";
+          pnlBlock = `\n\n💰 PnL: ${signUsd}$${totalPnlUsd.toFixed(2)} | ${signSol}${totalPnlSol.toFixed(4)} SOL`;
+        }
+
+        if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${mgmtReport}${rangeBlock}${pnlBlock}`).catch(() => {});
         for (const p of positions) {
           if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
             notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
@@ -358,6 +390,30 @@ async function shutdown(signal) {
 
 process.on("SIGINT",  () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// ═══════════════════════════════════════════
+//  RANGE BAR VISUALIZATION
+// ═══════════════════════════════════════════
+function formatRangeBar(lower, upper, active) {
+  if (lower == null || upper == null || active == null) return "[no range data]";
+  const width = 16;
+  const range = upper - lower;
+  if (range <= 0) return "[invalid range]";
+
+  if (active < lower) {
+    const dist = Math.min(3, Math.ceil(((lower - active) / range) * 3));
+    return `${"·".repeat(dist)}● [━${"━".repeat(width - 1)}] ⚠️`;
+  }
+  if (active > upper) {
+    const dist = Math.min(3, Math.ceil(((active - upper) / range) * 3));
+    return `[━${"━".repeat(width - 1)}] ●${"·".repeat(dist)} ⚠️`;
+  }
+
+  // In range — place ● proportionally
+  const pos = Math.round(((active - lower) / range) * (width - 1));
+  const bar = "━".repeat(pos) + "●" + "━".repeat(width - 1 - pos);
+  return `[${bar}] ✅`;
+}
 
 // ═══════════════════════════════════════════
 //  FORMAT CANDIDATES TABLE
