@@ -92,7 +92,7 @@ export function recordOpen(d) {
  */
 export function recordJournalClose(d) {
   try {
-    const pnl_sol = d.sol_price > 0 ? d.pnl_usd / d.sol_price : 0;
+    const pnl_sol = d.pnl_sol != null ? Math.round(d.pnl_sol * 10000) / 10000 : null;
     append({
       id: Date.now(),
       type: "close",
@@ -106,14 +106,13 @@ export function recordJournalClose(d) {
       final_value_usd: d.final_value_usd,
       fees_earned_usd: d.fees_earned_usd,
       pnl_usd: Math.round(d.pnl_usd * 100) / 100,
-      pnl_sol: Math.round(pnl_sol * 10000) / 10000,
+      pnl_sol,
       pnl_pct: d.pnl_pct,
-      sol_price: d.sol_price,
       minutes_held: d.minutes_held,
       range_efficiency: d.range_efficiency,
       close_reason: d.close_reason,
     });
-    log("journal", `Recorded close: ${d.pool_name} pnl=$${d.pnl_usd?.toFixed(2)} (${pnl_sol.toFixed(4)} SOL)`);
+    log("journal", `Recorded close: ${d.pool_name} pnl=$${d.pnl_usd?.toFixed(2)} (${pnl_sol != null ? pnl_sol.toFixed(4) : "?"} SOL)`);
   } catch (e) {
     log("journal_error", `recordJournalClose failed: ${e.message}`);
   }

@@ -612,6 +612,7 @@ export async function closePosition({ position_address }) {
       let pnlUsd = 0;
       let pnlPct = 0;
       let finalValueUsd = 0;
+      let pnlSolNative = null;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
       const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
       if (cachedPos) {
@@ -619,6 +620,7 @@ export async function closePosition({ position_address }) {
         pnlPct        = cachedPos.pnl_pct   ?? 0;
         finalValueUsd = cachedPos.total_value_usd ?? 0;
         feesUsd       = (cachedPos.collected_fees_usd || 0) + (cachedPos.unclaimed_fees_usd || 0);
+        pnlSolNative  = cachedPos.pnl_sol   ?? null;
       }
 
       _positionsCacheAt = 0; // invalidate cache after snapshotting PnL
@@ -638,6 +640,7 @@ export async function closePosition({ position_address }) {
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
         initial_value_usd: initialUsd,
+        pnl_sol: pnlSolNative,
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
         close_reason: "agent decision",

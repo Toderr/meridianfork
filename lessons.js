@@ -77,11 +77,8 @@ export async function recordPerformance(perf) {
     recorded_at: new Date().toISOString(),
   };
 
-  // Record to trading journal (fetch SOL price for pnl_sol)
+  // Record to trading journal with native pnl_sol from Meteora API
   try {
-    const { getWalletBalances } = await import("./tools/wallet.js");
-    const walletData = await getWalletBalances({});
-    const sol_price = walletData?.sol_price || 0;
     recordJournalClose({
       position: entry.position,
       pool: entry.pool,
@@ -92,8 +89,8 @@ export async function recordPerformance(perf) {
       final_value_usd: entry.final_value_usd,
       fees_earned_usd: entry.fees_earned_usd,
       pnl_usd: entry.pnl_usd,
+      pnl_sol: perf.pnl_sol ?? null,
       pnl_pct: entry.pnl_pct,
-      sol_price,
       minutes_held: entry.minutes_held,
       range_efficiency: entry.range_efficiency,
       close_reason: entry.close_reason,
