@@ -46,7 +46,7 @@ const PID_FILE = path.join(__dirname, ".agent.pid");
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
-log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+log("startup", `Models: management=${config.llm.managementModel} | screening=${config.llm.screeningModel} | general=${config.llm.generalModel}`);
 
 // ─── Hot-reload user-config.json on file change ─────────────────
 fs.watchFile(USER_CONFIG_PATH, { interval: 2000 }, (curr, prev) => {
