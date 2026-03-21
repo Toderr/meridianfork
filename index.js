@@ -709,6 +709,12 @@ if (isTTY) {
   maybeRunMissedBriefing().catch(() => {});
 
   // Telegram bot
+  // Startup notification — helps detect duplicate instances
+  if (telegramEnabled()) {
+    const mode = process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";
+    sendMessage(`🚀 Bot started (PID: ${process.pid}, mode: ${mode}). If you see this twice, kill duplicate instances.`).catch(() => {});
+  }
+
   startPolling(async (text) => {
     if (_managementBusy || _screeningBusy || busy) {
       sendMessage("Agent is busy right now — try again in a moment.").catch(() => {});
@@ -1036,6 +1042,11 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => {});
+  // Startup notification — helps detect duplicate instances
+  if (telegramEnabled()) {
+    const mode = process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";
+    sendMessage(`🚀 Bot started (PID: ${process.pid}, mode: ${mode}). If you see this twice, kill duplicate instances.`).catch(() => {});
+  }
   (async () => {
     try {
       await agentLoop(`
