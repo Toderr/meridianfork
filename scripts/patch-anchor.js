@@ -65,7 +65,8 @@ if (fs.existsSync(dlmmMjs)) {
   // We rewrite the imports to remove BN and then add a top-level BN import.
   
   // First, ensure BN is imported from bn.js at the top if any BN imports exist
-  if (src.includes('from "@coral-xyz/anchor"') && src.includes('BN')) {
+  const alreadyImportsBN = /^import\s+BN\s+from\s+["']bn\.js["']/m.test(src);
+  if (!alreadyImportsBN && src.includes('from "@coral-xyz/anchor"') && src.includes('BN')) {
     src = 'import BN from "bn.js";\n' + src;
   }
 
