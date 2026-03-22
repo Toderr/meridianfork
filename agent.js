@@ -111,10 +111,18 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       // If the model didn't call any tools, it's done
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        // Hermes sometimes returns null content — pop the empty message and retry once
-        if (!msg.content) {
-          messages.pop(); // remove the empty assistant message
+        // Hermes/XML-format models sometimes return raw <tool_call> XML in content instead of
+        // using the proper function calling format. Treat as empty so we retry.
+        const isXmlToolCall = msg.content && (
+          msg.content.trim().startsWith("<tool_call>") ||
+          msg.content.trim() === ">" ||
+          /^[\s>]*<\/tool_call>/.test(msg.content.trim())
+        );
+
+        if (!msg.content || isXmlToolCall) {
+          messages.pop(); // remove the empty/malformed assistant message
           emptyStreak++;
+          if (isXmlToolCall) log("agent", `Model output raw XML tool call — model may not support function calling properly`);
           log("agent", `Empty response, retrying... (${emptyStreak}/${MAX_EMPTY_STREAK})`);
           if (emptyStreak >= MAX_EMPTY_STREAK) {
             log("agent", `Empty response streak limit reached — aborting loop`);

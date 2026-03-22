@@ -313,10 +313,11 @@ export async function executeTool(name, args) {
             try {
               const w = await getWalletBalances({});
               const { recordOpen } = await import("../journal.js");
+              const tracked = getTrackedPosition(result.position);
               recordOpen({
                 position: result.position,
                 pool: args.pool_address,
-                pool_name: args.pool_name,
+                pool_name: args.pool_name || tracked?.pool_name || result.pool_name,
                 strategy: args.strategy,
                 amount_sol: args.amount_y ?? args.amount_sol ?? 0,
                 initial_value_usd: args.initial_value_usd
