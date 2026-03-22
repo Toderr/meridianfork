@@ -98,6 +98,17 @@ if (fs.existsSync(dlmmMjs)) {
     }
   );
 
+  // Deduplicate: if the file was patched multiple times before the guard existed,
+  // there may be 2+ `import BN from "bn.js"` lines. Keep only the first one.
+  let seenBNImport = false;
+  src = src.split("\n").filter(line => {
+    if (/^import\s+BN\s+from\s+["']bn\.js["'];?\s*$/.test(line)) {
+      if (seenBNImport) return false; // drop duplicate
+      seenBNImport = true;
+    }
+    return true;
+  }).join("\n");
+
   if (src !== original) {
     fs.writeFileSync(dlmmMjs, src);
     console.log("Patched: @meteora-ag/dlmm/dist/index.mjs directory imports");
