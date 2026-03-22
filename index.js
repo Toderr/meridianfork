@@ -20,7 +20,7 @@ import { formatPoolConsensusForPrompt, syncToHive, isEnabled as hiveEnabled } fr
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { studyTopLPers } from "./tools/study.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
-import { _stats } from "./stats.js";
+import { _stats, _flags } from "./stats.js";
 import { startDashboard } from "./dashboard/server.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
@@ -443,9 +443,13 @@ async function runScreeningCycle() {
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
     if (preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      if (telegramEnabled()) notifyGasLow({ solBalance: preBalance.sol, needed: minRequired }).catch(() => {});
+      if (telegramEnabled() && !_flags.gasLowNotified) {
+        notifyGasLow({ solBalance: preBalance.sol, needed: minRequired }).catch(() => {});
+        _flags.gasLowNotified = true;
+      }
       return;
     }
+    _flags.gasLowNotified = false; // SOL is sufficient — reset so next low triggers a fresh warning
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
     return;

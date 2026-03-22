@@ -29,7 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
-import { _stats } from "../stats.js";
+import { _stats, _flags } from "../stats.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -349,6 +349,7 @@ export async function executeTool(name, args) {
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        _flags.gasLowNotified = false; // position closed — SOL may have returned, allow fresh gas warning
         if (hiveEnabled()) syncToHive().catch(() => {});
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {

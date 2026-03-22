@@ -11,3 +11,8 @@ export const _stats = {
   errors: 0,
   startedAt: new Date().toISOString(),
 };
+
+// Suppress repeated gas-low notifications until a position closes (which frees SOL)
+export const _flags = {
+  gasLowNotified: false,
+};
