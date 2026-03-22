@@ -19,12 +19,20 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `config.js` | Config loader with hot-reload for `user-config.json` |
 | `tools/dlmm.js` | Meteora DLMM SDK — deploy/close/PnL/positions |
 | `tools/wallet.js` | Wallet balance + SOL price |
+| `tools/screening.js` | Pool discovery and candidate scoring |
+| `tools/executor.js` | Tool dispatch, post-tool hooks (notify, journal, sync) |
+| `tools/definitions.js` | LLM tool schemas for all agent roles |
 | `lessons.js` | Performance recording and learning system |
 | `journal.js` | Append-only trade journal (open/close/claim events) |
 | `reports.js` | Daily/weekly/monthly HTML reports |
 | `briefing.js` | Morning briefing (wraps `generateReport("daily")`) |
 | `prompt.js` | System prompt builder |
 | `telegram.js` | Telegram bot (long-polling) |
+| `hive-mind.js` | Opt-in collective intelligence network |
+| `stats.js` | Shared in-memory counters + flags (`_stats`, `_flags`) |
+| `strategy-library.js` | LP strategy template storage and retrieval |
+| `pool-memory.js` | Per-pool deploy history and notes |
+| `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
@@ -32,6 +40,8 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 - `state.json` — active position tracking
 - `journal.json` — trade history
 - `lessons.json` — performance records and derived lessons
+- `strategy-library.json` — saved LP strategy templates
+- `pool-memory.json` — per-pool deploy history and notes
 - `.env` — environment variables
 - `.agent.pid` — PID lock file (prevents duplicate instances)
 
@@ -43,14 +53,17 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 
 ### Agent Types
 - `MANAGER` — manages existing positions
-- `SCREENER` — finds and deploys new positions
+- `SCREENER` — finds and deploys new positions (more important — determines entry quality)
 - `GENERAL` — TTY/Telegram ad-hoc queries
 
 ### LLM Models (configured in `user-config.json`)
-- `managementModel` — used for management cycle
-- `screeningModel` — used for screening cycle
+- `managementModel` — used for management cycle (simpler task, can use lighter model)
+- `screeningModel` — used for screening cycle (**more important** — use the best model here)
 - `generalModel` — used for TTY and Telegram queries
 - All fall back to `process.env.LLM_MODEL` then hardcoded defaults
+
+### LLM Fallback
+If the primary model fails 3 times (empty response, provider error, or timeout), the agent automatically falls back to `z-ai/glm-5` for that turn only. Next step reverts to the original model. Model is resolved per-step so hot-reload changes take effect immediately.
 
 ### Hot-reload
 `user-config.json` is watched via `fs.watchFile` (2s interval). Changes to screening thresholds, management settings, risk limits, strategy, and LLM models apply without restart. `rpcUrl`, `walletKey`, `dryRun`, and schedule intervals require restart.
@@ -61,6 +74,8 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 
 Chain: `cachedPos.pnl_sol` (from `tools/dlmm.js` → Meteora API `pnlSol`) → `recordPerformance` → `recordJournalClose` → `journal.json` → reports.
 
+**PnL passthrough**: `closePosition` passes `pnl_usd` from Meteora's API to `recordPerformance`. `lessons.js` uses `perf.pnl_usd` directly when provided, avoiding formula recalculation errors caused by missing `initial_value_usd`.
+
 ## Management Cycle — Range & PnL Block
 
 The `finally` block in the management cron (`index.js`) sends the Telegram report. Range bars and PnL summary are built from a **fresh `getMyPositions()` call after the agent loop** — not from the pre-cycle snapshot. This ensures closed positions don't appear in the range/PnL block.
@@ -70,8 +85,9 @@ The `finally` block in the management cron (`index.js`) sends the Telegram repor
 - **Deploy**: pair name, amount, position address (truncated), tx
 - **Close**: pool name (from state tracker via `getTrackedPosition`), PnL $ and %
   - Source: `tools/executor.js` → `notifyClose()` in `telegram.js`
-  - Always show `pool_name`, fallback to `position_address.slice(0,8)`
+  - Always show `pool_name`, fallback to tracked position name, then `position_address.slice(0,8)`
 - **Out of range**: pair name, minutes OOR
+- **Gas low**: sent once when SOL balance is insufficient; suppressed until a position closes (which may return SOL). Uses `_flags.gasLowNotified` in `stats.js`.
 
 ## Telegram Commands
 
@@ -101,13 +117,18 @@ npm install --omit=dev  # only if package.json changed
 pm2 restart meridian
 ```
 
-Or use `update.sh`:
+### If `@meteora-ag/dlmm` is broken (missing index.mjs)
+Do NOT `rm` the file manually. Reinstall the package:
 ```bash
-#!/bin/bash
-cd ~/meridianfork
-git pull origin main
+npm install @meteora-ag/dlmm
 pm2 restart meridian
 ```
+
+### Hive Mind Registration (one-time)
+```bash
+node -e "import('./hive-mind.js').then(m => m.register('https://meridian-hive-api-production.up.railway.app', '<token>'))"
+```
+Saves `hiveMindUrl`, `hiveMindApiKey`, and `hiveMindAgentId` to `user-config.json`.
 
 ## Key Data Flows
 
@@ -115,7 +136,7 @@ pm2 restart meridian
 ```
 screening cron → getMyPositions (count check) → getWalletBalances (SOL check)
 → computeDeployAmount (scale from wallet) → getTopCandidates (filtered pools)
-→ parallel: smart_wallets + token_holders + narrative + token_info
+→ parallel: smart_wallets + token_holders + narrative + token_info + hive consensus
 → agent loop (pick best, apply rules) → deploy_position (on-chain)
 → trackPosition (state.json) → recordOpen (journal.json) → notifyDeploy (Telegram)
 ```
@@ -128,6 +149,8 @@ close_position (on-chain claim + remove liquidity)
 → every 5 positions: evolveThresholds (auto-tune config)
 → recordJournalClose (journal.json with native pnl_sol)
 → auto-swap base token to SOL (if >= $0.10) → notifyClose (Telegram)
+→ syncToHive() (upload deploy history + lessons to hive network)
+→ _flags.gasLowNotified = false (reset gas warning)
 ```
 
 ### Management Decision Rules (in priority order)
@@ -135,9 +158,25 @@ close_position (on-chain claim + remove liquidity)
 2. instruction set AND condition NOT met → HOLD (skip remaining)
 3. pnl_pct <= emergencyPriceDropPct → CLOSE (stop loss)
 4. pnl_pct >= takeProfitFeePct → CLOSE (take profit)
-5. oor_minutes >= outOfRangeWaitMinutes → CLOSE
-6. fee_active_tvl_ratio < min AND volume < min → CLOSE (yield dead)
+5. age >= minAgeForYieldExit AND fee_tvl_24h < minFeeTvl24h → CLOSE (yield too low)
+6. bins_above_range >= outOfRangeBinsToClose → CLOSE (price pumped above range)
 7. unclaimed_fee_usd >= minClaimAmount → claim_fees
+
+## Hive Mind
+
+Opt-in collective intelligence network (`hive-mind.js`). When enabled:
+- **Screening**: pool consensus injected into agent prompt if 3+ agents have data
+- **After close**: local data (lessons, deploys, thresholds) synced to hive
+- **Agent tools**: `get_hive_pulse`, `get_hive_pool_consensus`, `get_hive_lessons`
+- Enabled by setting `hiveMindUrl` + `hiveMindApiKey` in `user-config.json`
+- All calls are fire-and-forget, never block the agent loop
+
+## ESM Compatibility Patch
+
+`scripts/patch-anchor.js` runs as `postinstall`. It:
+1. Adds `exports` map to `@coral-xyz/anchor/package.json` (fixes bare directory imports)
+2. Rewrites `@meteora-ag/dlmm/dist/index.mjs` — fixes bare imports and removes duplicate `BN` declarations
+   - Deduplication handles the case where the file was patched multiple times before the guard existed
 
 ## Risk Management
 
@@ -156,16 +195,16 @@ close_position (on-chain claim + remove liquidity)
 ## Roadmap / Improvement Ideas
 
 ### High Impact
+- Multi-strategy templates: each strategy screens with its own criteria, LP settings, and exit rules
 - Dynamic position sizing by volatility (high vol → smaller size)
 - Pool memory success rates (track win/loss per pool for screener signal)
-- Hard-enforce position instructions in code before agent loop (don't rely on LLM)
 - Auto-rebalance: detect better yield opportunity → close stale + redeploy
 
 ### Medium Impact
 - Re-evaluate management interval during holding (volatility changes)
 - Deduplicate similar lessons (10 OOR failures → 1 merged lesson)
 - Cross-role learning (manager mistakes → screener avoidance)
-- Blacklist with reason + auto-expiry
+- ATH proximity check (skip tokens near their all-time high)
 
 ### Low Impact
 - Dust token consolidation (batch sweep tokens < $0.10)
