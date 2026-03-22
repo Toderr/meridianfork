@@ -1135,6 +1135,71 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
     const mode = process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";
     sendMessage(`🚀 Bot started (PID: ${process.pid}, mode: ${mode}). If you see this twice, kill duplicate instances.`).catch(() => {});
   }
+
+  // Telegram chat handler (non-TTY / VPS mode)
+  startPolling(async (text) => {
+    if (busy) {
+      sendMessage("Agent is busy with another chat — try again in a moment.").catch(() => {});
+      return;
+    }
+
+    if (text === "/start") {
+      sendMessage("▶️ Cron cycles are already running.").catch(() => {});
+      return;
+    }
+
+    if (text === "/stop") {
+      stopCronJobs();
+      sendMessage("⏹️ Agent stopped — cron cycles paused. Restart with PM2 to resume.").catch(() => {});
+      return;
+    }
+
+    if (text === "/stats") {
+      const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
+      const msg = `📊 Agent Stats\n\nUptime: ${uptime}m\nMgmt cycles: ${_stats.managementCycles}\nScreening cycles: ${_stats.screeningCycles}\nDeployed: ${_stats.positionsDeployed}\nClosed: ${_stats.positionsClosed}\nFees claimed: ${_stats.feesClaimed}\nErrors: ${_stats.errors}\nStarted: ${_stats.startedAt}`;
+      sendMessage(msg).catch(() => {});
+      return;
+    }
+
+    if (text === "/briefing") {
+      try {
+        const briefing = await generateBriefing();
+        await sendHTML(briefing);
+      } catch (e) {
+        await sendMessage(`Error: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
+    if (text.startsWith("/report")) {
+      const parts = text.split(" ");
+      const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
+      try {
+        const report = await generateReport(period);
+        await sendHTML(report);
+      } catch (e) {
+        await sendMessage(`Error: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
+    busy = true;
+    try {
+      log("telegram", `Incoming: ${text}`);
+      const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
+      const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
+      const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
+      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, config.llm.generalModel);
+      const reply = content || "(Agent returned no response)";
+      appendHistory(text, reply);
+      await sendMessage(reply);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    } finally {
+      busy = false;
+    }
+  });
+
   (async () => {
     try {
       await agentLoop(`
