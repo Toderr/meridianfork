@@ -13,7 +13,7 @@ import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { generateReport } from "./reports.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { formatPoolConsensusForPrompt, syncToHive, isEnabled as hiveEnabled } from "./hive-mind.js";
@@ -96,6 +96,10 @@ let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _earlyManagementTimer = null; // setTimeout handle for high-vol early re-run
+let _pnlCheckerBusy = false;
+let _pnlCheckerInterval = null;
+// Map: position_address → { peak: number } — tracks peak PnL for trailing stop
+const _trailingStops = new Map();
 
 async function runBriefing() {
   log("cron", "Starting morning briefing");
@@ -132,6 +136,10 @@ async function maybeRunMissedBriefing() {
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
   _cronTasks = [];
+  if (_pnlCheckerInterval) {
+    clearInterval(_pnlCheckerInterval);
+    _pnlCheckerInterval = null;
+  }
   _cronRunning = false;
 }
 
@@ -552,6 +560,64 @@ STEPS:
     }
 }
 
+const FAST_TP_PCT       = 15;  // immediate take-profit threshold
+const TRAILING_ACTIVATE = 6;   // trailing stop activates when PnL exceeds this
+const TRAILING_FLOOR    = 5;   // close if PnL drops below this after activation
+
+async function runPnlChecker() {
+  if (_pnlCheckerBusy || _managementBusy) return;
+
+  const openPositions = getTrackedPositions(true);
+  if (openPositions.length === 0) {
+    _trailingStops.clear();
+    return;
+  }
+
+  // Clean stale trailing-stop entries (position was closed externally)
+  const openAddresses = new Set(openPositions.map(p => p.position));
+  for (const addr of _trailingStops.keys()) {
+    if (!openAddresses.has(addr)) _trailingStops.delete(addr);
+  }
+
+  _pnlCheckerBusy = true;
+  try {
+    for (const tracked of openPositions) {
+      const pnl = await getPositionPnl({ pool_address: tracked.pool, position_address: tracked.position }).catch(() => null);
+      if (!pnl || pnl.error || pnl.pnl_pct == null) continue;
+
+      const pct = pnl.pnl_pct;
+
+      // Rule 1: Hard take-profit
+      if (pct >= FAST_TP_PCT) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${FAST_TP_PCT}% — TAKE PROFIT`);
+        _trailingStops.delete(tracked.position);
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%` });
+        continue;
+      }
+
+      // Rule 2: Trailing stop — activate above TRAILING_ACTIVATE, close below TRAILING_FLOOR
+      if (pct > TRAILING_ACTIVATE) {
+        const entry = _trailingStops.get(tracked.position);
+        if (!entry) {
+          _trailingStops.set(tracked.position, { peak: pct });
+          log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop activated at ${pct}%`);
+        } else if (pct > entry.peak) {
+          entry.peak = pct;
+        }
+      }
+
+      const stop = _trailingStops.get(tracked.position);
+      if (stop && pct < TRAILING_FLOOR) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${TRAILING_FLOOR}% — CLOSE`);
+        _trailingStops.delete(tracked.position);
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%` });
+      }
+    }
+  } finally {
+    _pnlCheckerBusy = false;
+  }
+}
+
 export function startCronJobs() {
   stopCronJobs(); // stop any running tasks before (re)starting
 
@@ -633,8 +699,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
   const learnTask = cron.schedule("0 * * * *", () => runLearningCycle().catch(() => {}));
   runLearningCycle().catch(() => {}); // run once on start
 
+  _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
+
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask, learnTask];
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
+  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, pnl-check every 30s`);
 }
 
 // ═══════════════════════════════════════════
