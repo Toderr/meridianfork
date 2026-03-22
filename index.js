@@ -802,8 +802,8 @@ if (isTTY) {
   }
 
   startPolling(async (text) => {
-    if (_managementBusy || _screeningBusy || busy) {
-      sendMessage("Agent is busy right now — try again in a moment.").catch(() => {});
+    if (busy) {
+      sendMessage("Agent is busy with another chat — try again in a moment.").catch(() => {});
       return;
     }
 
@@ -864,8 +864,9 @@ if (isTTY) {
       const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
       const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
       const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, config.llm.generalModel);
-      appendHistory(text, content);
-      await sendMessage(content);
+      const reply = content || "(Agent returned no response)";
+      appendHistory(text, reply);
+      await sendMessage(reply);
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     } finally {
