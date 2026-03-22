@@ -16,6 +16,7 @@ import { generateReport } from "./reports.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
+import { formatPoolConsensusForPrompt, syncToHive, isEnabled as hiveEnabled } from "./hive-mind.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { studyTopLPers } from "./tools/study.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
@@ -512,11 +513,16 @@ async function runScreeningCycle() {
         ? `\nPRE-LOADED CANDIDATE ANALYSIS (smart wallets, holders, narrative already fetched):\n${candidateBlocks.join("\n\n")}\n`
         : "";
 
+      // Hive Mind consensus — only shown if enabled and 3+ agents have data on a pool
+      const poolAddresses = candidates.map(p => p.pool).filter(Boolean);
+      const hiveConsensus = hiveEnabled() ? await formatPoolConsensusForPrompt(poolAddresses) : "";
+      const hiveBlock = hiveConsensus ? `\n${hiveConsensus}\n` : "";
+
       const { content } = await agentLoop(`
 SCREENING CYCLE — DEPLOY ONLY
 ${strategyBlock}
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
-${candidateContext}
+${candidateContext}${hiveBlock}
 DECISION RULES (apply to the pre-loaded candidates above, no re-fetching needed):
 - HARD SKIP if global_fees_sol < ${config.screening.minTokenFeesSol} SOL (bundled/scam)
 - HARD SKIP if top_10_pct > 60% OR bundlers_pct > 30%

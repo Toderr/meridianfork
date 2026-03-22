@@ -16,6 +16,7 @@ import { setPositionInstruction, getTrackedPosition } from "../state.js";
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
+import { syncToHive, isEnabled as hiveEnabled, getHivePulse, queryPoolConsensus, queryLessonConsensus } from "../hive-mind.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, resolveStrategy } from "../config.js";
@@ -95,6 +96,9 @@ const toolMap = {
   add_to_blacklist: addToBlacklist,
   remove_from_blacklist: removeFromBlacklist,
   list_blacklist: listBlacklist,
+  get_hive_pulse: () => getHivePulse(),
+  get_hive_pool_consensus: ({ pool_address }) => queryPoolConsensus(pool_address),
+  get_hive_lessons: ({ tags } = {}) => queryLessonConsensus(tags),
   add_lesson: ({ rule, tags, pinned, role }) => {
     addLesson(rule, tags || [], { pinned: !!pinned, role: role || null });
     return { saved: true, rule, pinned: !!pinned, role: role || "all" };
@@ -344,6 +348,7 @@ export async function executeTool(name, args) {
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        if (hiveEnabled()) syncToHive().catch(() => {});
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
           try {

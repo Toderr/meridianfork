@@ -972,6 +972,59 @@ Use when you observe something worth remembering about a specific pool:
     }
   },
 
+  // ─── Hive Mind ──────────────────────────────────────────────────
+
+  {
+    type: "function",
+    function: {
+      name: "get_hive_pulse",
+      description: `Get global Hive Mind network stats — how many agents are active, total deploys, overall win rate, and top lessons from the collective.
+Use when the user asks "what does the hive say?", "how is the network doing?", or wants a network-wide overview.
+Only works if Hive Mind is registered and enabled.`,
+      parameters: { type: "object", properties: {} }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_hive_pool_consensus",
+      description: `Query Hive Mind consensus for a specific pool — how many agents deployed there, collective win rate, and average PnL.
+Only shown if 3+ agents have data on the pool (filters noise).
+Use during screening to get a second opinion on a pool candidate, or when the user asks about a specific pool's track record across the network.`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: {
+            type: "string",
+            description: "The pool address to query"
+          }
+        },
+        required: ["pool_address"]
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_hive_lessons",
+      description: `Query collective lessons from the Hive Mind — wisdom aggregated from all agents.
+Optionally filter by tags (e.g. ["oor", "narrative", "screening"]).
+Use when you want to learn from the network before making a decision, or when the user asks what the hive has learned.`,
+      parameters: {
+        type: "object",
+        properties: {
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional tag filters e.g. ['oor', 'narrative', 'screening', 'management']"
+          }
+        }
+      }
+    }
+  },
+
   // ─── Token Blacklist ────────────────────────────────────────────
 
   {
