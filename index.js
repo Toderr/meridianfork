@@ -286,7 +286,6 @@ HARD CLOSE RULES — apply in order, first match wins:
 4. pnl_pct >= ${config.management.takeProfitFeePct}% → CLOSE (take profit)
 5. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% → CLOSE (yield too low)
 6. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range)
-7. fee_active_tvl_ratio < ${config.screening.minFeeActiveTvlRatio} AND volume < $${config.screening.minVolume} → CLOSE (yield dead)
 
 CLAIM RULE: If unclaimed_fee_usd >= ${config.management.minClaimAmount}, call claim_fees. Do not use any other threshold.
 
