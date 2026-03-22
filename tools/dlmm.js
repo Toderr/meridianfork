@@ -668,6 +668,7 @@ export async function closePosition({ position_address, close_reason }) {
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
         initial_value_usd: initialUsd,
+        pnl_usd: pnlUsd,       // Meteora's authoritative value — avoids formula error when initial_value_usd is missing
         pnl_pct: pnlPct,       // pass API value so journal matches what agent saw
         pnl_sol: pnlSolNative,
         minutes_in_range: minutesHeld - minutesOOR,

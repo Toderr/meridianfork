@@ -315,7 +315,9 @@ export async function executeTool(name, args) {
                 pool_name: args.pool_name,
                 strategy: args.strategy,
                 amount_sol: args.amount_y ?? args.amount_sol ?? 0,
-                initial_value_usd: result.initial_value_usd,
+                initial_value_usd: args.initial_value_usd
+                  || ((args.amount_y ?? args.amount_sol ?? 0) * (w?.sol_price || 0))
+                  || undefined,
                 sol_price: w?.sol_price || 0,
                 bin_step: args.bin_step,
                 volatility: args.volatility,

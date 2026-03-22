@@ -62,7 +62,9 @@ function save(data) {
 export async function recordPerformance(perf) {
   const data = load();
 
-  const pnl_usd = (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
+  const pnl_usd = perf.pnl_usd != null
+    ? perf.pnl_usd
+    : (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
   // Use the API pnl_pct if passed in (matches what the agent saw and acted on),
   // otherwise fall back to reconstructing from state values.
   const pnl_pct = perf.pnl_pct != null
