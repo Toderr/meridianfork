@@ -27,7 +27,7 @@ import { execSync, spawn } from "child_process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose } from "../telegram.js";
+import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
 import { _stats } from "../stats.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
@@ -145,6 +145,8 @@ const toolMap = {
       minVolumeToRebalance: ["management", "minVolumeToRebalance"],
       emergencyPriceDropPct: ["management", "emergencyPriceDropPct"],
       takeProfitFeePct: ["management", "takeProfitFeePct"],
+      minFeeTvl24h: ["management", "minFeeTvl24h"],
+      minAgeForYieldExit: ["management", "minAgeForYieldExit"],
       minSolToOpen: ["management", "minSolToOpen"],
       deployAmountSol: ["management", "deployAmountSol"],
       gasReserve: ["management", "gasReserve"],
@@ -345,9 +347,12 @@ export async function executeTool(name, args) {
           try {
             const balances = await getWalletBalances({});
             const token = balances.tokens?.find(t => t.mint === result.base_mint);
-            if (token && token.usd_value >= 0.10) {
-              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd_value.toFixed(2)}) back to SOL`);
-              await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+            if (token && token.usd >= 0.10) {
+              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
+              const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+              if (swapResult?.success !== false) {
+                notifySwap({ pair: _pair, tokenSymbol: token.symbol || result.base_mint.slice(0, 8), usdValue: token.usd }).catch(() => {});
+              }
             }
           } catch (e) {
             log("executor_warn", `Auto-swap after close failed: ${e.message}`);

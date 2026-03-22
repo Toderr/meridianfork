@@ -166,6 +166,14 @@ export async function notifyCycleSummary({ cycleType, positions, walletSol }) {
   );
 }
 
+export async function notifySwap({ pair, tokenSymbol, usdValue }) {
+  await sendHTML(
+    `💱 <b>Swapped</b> ${tokenSymbol} → SOL\n` +
+    `Value: $${(usdValue || 0).toFixed(2)}\n` +
+    `Pair: ${pair}`
+  );
+}
+
 export async function notifySwapFailed({ pair, tokenSymbol, usdValue, error }) {
   await sendHTML(`⚠️ <b>Swap Failed</b> — ${pair}\nToken: ${tokenSymbol} ($${(usdValue||0).toFixed(2)})\nReason: ${error?.slice(0,80) || "unknown"}`);
 }

@@ -47,6 +47,8 @@ export const config = {
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     emergencyPriceDropPct: u.emergencyPriceDropPct ?? -50,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
+    minFeeTvl24h:          u.minFeeTvl24h          ?? 7,
+    minAgeForYieldExit:    u.minAgeForYieldExit    ?? 60,
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
@@ -190,6 +192,8 @@ export function reloadConfig() {
     if (f.deployAmountSol       != null) m.deployAmountSol       = f.deployAmountSol;
     if (f.gasReserve            != null) m.gasReserve            = f.gasReserve;
     if (f.positionSizePct       != null) m.positionSizePct       = f.positionSizePct;
+    if (f.minFeeTvl24h          != null) m.minFeeTvl24h          = f.minFeeTvl24h;
+    if (f.minAgeForYieldExit    != null) m.minAgeForYieldExit    = f.minAgeForYieldExit;
 
     const r = config.risk;
     if (f.maxPositions    != null) r.maxPositions    = f.maxPositions;

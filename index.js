@@ -175,7 +175,13 @@ async function runManagementCycle() {
       const recall = recallForPool(p.pool);
       const tracked = getTrackedPosition(p.position);
       const instruction = tracked?.instruction || null;
-      return { ...p, pnl, recall, instruction };
+      const feeTvl24h = (pnl && pnl.current_value_usd > 0 && (p.age_minutes || 0) > 0)
+        ? ((pnl.all_time_fees_usd / pnl.current_value_usd) / ((p.age_minutes || 1) / 1440) * 100)
+        : null;
+      const binsAbove = (pnl && pnl.active_bin != null && pnl.upper_bin != null)
+        ? Math.max(0, pnl.active_bin - pnl.upper_bin)
+        : null;
+      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove };
     }));
 
     // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
@@ -236,9 +242,13 @@ async function runManagementCycle() {
         rules.push(`SL: ${pnl.toFixed(1)}% (need ${config.management.emergencyPriceDropPct}%, gap ${toSL.toFixed(1)}%)`);
         rules.push(`TP: ${pnl.toFixed(1)}% (need ${config.management.takeProfitFeePct}%, gap ${toTP.toFixed(1)}%)`);
       }
-      if (oor > 0) {
-        const toOOR = config.management.outOfRangeWaitMinutes - oor;
-        rules.push(`OOR: ${oor}m (close at ${config.management.outOfRangeWaitMinutes}m, gap ${Math.max(0, toOOR)}m)`);
+      if (p.feeTvl24h !== null && (p.age_minutes || 0) >= config.management.minAgeForYieldExit) {
+        const toYield = p.feeTvl24h - config.management.minFeeTvl24h;
+        rules.push(`YIELD24H: ${p.feeTvl24h.toFixed(1)}% (min ${config.management.minFeeTvl24h}%, gap ${toYield.toFixed(1)}%)`);
+      }
+      if (p.binsAbove != null && p.binsAbove > 0) {
+        const toBinExit = config.management.outOfRangeBinsToClose - p.binsAbove;
+        rules.push(`BINS_ABOVE: ${p.binsAbove} (close at ${config.management.outOfRangeBinsToClose}, gap ${Math.max(0, toBinExit)})`);
       }
       log("mgmt_rules", `${p.pair}: ${rules.join(" | ")}`);
     }
@@ -249,9 +259,13 @@ async function runManagementCycle() {
       const lines = [
         `POSITION: ${p.pair} (${p.position})`,
         `  pool: ${p.pool}`,
-        `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
+        `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}` +
+          (p.binsAbove != null ? ` | bins_above_range: ${p.binsAbove}` : ""),
         pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
-        pnl ? `  to_sl: ${(pnl.pnl_pct - config.management.emergencyPriceDropPct).toFixed(1)}% | to_tp: ${(config.management.takeProfitFeePct - pnl.pnl_pct).toFixed(1)}% | to_oor: ${Math.max(0, config.management.outOfRangeWaitMinutes - (p.minutes_out_of_range||0))}m` : null,
+        pnl && p.feeTvl24h != null ? `  fee_tvl_24h: ${p.feeTvl24h.toFixed(1)}%${(p.age_minutes||0) < config.management.minAgeForYieldExit ? " (rule inactive — position too young)" : ""}` : null,
+        pnl ? `  to_sl: ${(pnl.pnl_pct - config.management.emergencyPriceDropPct).toFixed(1)}% | to_tp: ${(config.management.takeProfitFeePct - pnl.pnl_pct).toFixed(1)}%` +
+          (p.feeTvl24h != null && (p.age_minutes||0) >= config.management.minAgeForYieldExit ? ` | to_yield: ${(p.feeTvl24h - config.management.minFeeTvl24h).toFixed(1)}%` : "") +
+          (p.binsAbove != null ? ` | to_bin_exit: ${Math.max(0, config.management.outOfRangeBinsToClose - p.binsAbove)}` : "") : null,
         p.instruction ? `  instruction: "${p.instruction}"` : null,
         p.recall ? `  memory: ${p.recall}` : null,
       ].filter(Boolean);
@@ -269,8 +283,9 @@ HARD CLOSE RULES — apply in order, first match wins:
 2. instruction set AND condition NOT met → HOLD, skip remaining rules
 3. pnl_pct <= ${config.management.emergencyPriceDropPct}% → CLOSE (stop loss)
 4. pnl_pct >= ${config.management.takeProfitFeePct}% → CLOSE (take profit)
-5. oor_minutes >= ${config.management.outOfRangeWaitMinutes} → CLOSE (OOR timeout)
-6. fee_active_tvl_ratio < ${config.screening.minFeeActiveTvlRatio} AND volume < $${config.screening.minVolume} → CLOSE (yield dead)
+5. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% → CLOSE (yield too low)
+6. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range)
+7. fee_active_tvl_ratio < ${config.screening.minFeeActiveTvlRatio} AND volume < $${config.screening.minVolume} → CLOSE (yield dead)
 
 CLAIM RULE: If unclaimed_fee_usd >= ${config.management.minClaimAmount}, call claim_fees. Do not use any other threshold.
 
@@ -307,18 +322,19 @@ When calling close_position, always set close_reason to the same 1-sentence reas
       }, earlyMs);
     }
 
-    if (telegramEnabled()) {
-      // Re-fetch positions after agent may have closed some — only show currently open ones
-      let liveData = [];
-      try {
-        const livePositions = await getMyPositions().catch(() => null);
-        const openPositions = livePositions?.positions || [];
-        liveData = await Promise.all(openPositions.map(async (p) => {
-          const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
-          return { ...p, pnl };
-        }));
-      } catch { /* non-fatal */ }
+    // Re-fetch positions after agent may have closed some — only show currently open ones
+    let openPositions = [];
+    let liveData = [];
+    try {
+      const livePositions = await getMyPositions().catch(() => null);
+      openPositions = livePositions?.positions || [];
+      liveData = await Promise.all(openPositions.map(async (p) => {
+        const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
+        return { ...p, pnl };
+      }));
+    } catch { /* non-fatal */ }
 
+    if (telegramEnabled()) {
       const rangeLines = liveData
         .filter(p => p.pnl?.lower_bin != null)
         .map(p => {
@@ -349,6 +365,13 @@ When calling close_position, always set close_reason to the same 1-sentence reas
           notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
         }
       }
+    }
+
+    // If slots are available, trigger screening shortly after management finishes
+    // (30s delay lets auto-swaps settle before screening evaluates wallet balance)
+    if (openPositions.length < config.risk.maxPositions && !_screeningBusy) {
+      log("cron", `Management done with ${openPositions.length}/${config.risk.maxPositions} positions — triggering screening in 30s`);
+      setTimeout(() => { runScreeningCycle(); }, 30_000);
     }
 
     // Release the busy lock only after all async work (including Telegram sends) is complete.
@@ -405,48 +428,35 @@ async function runLearningCycle() {
   }
 }
 
-export function startCronJobs() {
-  stopCronJobs(); // stop any running tasks before (re)starting
+async function runScreeningCycle() {
+  if (_screeningBusy) return;
 
-  // Cancel any pending early-trigger timer so it doesn't fire after a cron restart
-  if (_earlyManagementTimer) {
-    clearTimeout(_earlyManagementTimer);
-    _earlyManagementTimer = null;
-  }
-
-  const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
-    await runManagementCycle();
-  });
-
-  const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, async () => {
-    if (_screeningBusy) return;
-
-    // Hard guards — don't even run the agent if preconditions aren't met
-    let prePositions, preBalance;
-    try {
-      [prePositions, preBalance] = await Promise.all([getMyPositions(), getWalletBalances()]);
-      if (prePositions.total_positions >= config.risk.maxPositions) {
-        log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-        if (telegramEnabled()) notifyMaxPositions({ count: prePositions.total_positions, max: config.risk.maxPositions }).catch(() => {});
-        return;
-      }
-      const minRequired = config.management.deployAmountSol + config.management.gasReserve;
-      if (preBalance.sol < minRequired) {
-        log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-        if (telegramEnabled()) notifyGasLow({ solBalance: preBalance.sol, needed: minRequired }).catch(() => {});
-        return;
-      }
-    } catch (e) {
-      log("cron_error", `Screening pre-check failed: ${e.message}`);
+  // Hard guards — don't even run the agent if preconditions aren't met
+  let prePositions, preBalance;
+  try {
+    [prePositions, preBalance] = await Promise.all([getMyPositions(), getWalletBalances()]);
+    if (prePositions.total_positions >= config.risk.maxPositions) {
+      log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
+      if (telegramEnabled()) notifyMaxPositions({ count: prePositions.total_positions, max: config.risk.maxPositions }).catch(() => {});
       return;
     }
+    const minRequired = config.management.deployAmountSol + config.management.gasReserve;
+    if (preBalance.sol < minRequired) {
+      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
+      if (telegramEnabled()) notifyGasLow({ solBalance: preBalance.sol, needed: minRequired }).catch(() => {});
+      return;
+    }
+  } catch (e) {
+    log("cron_error", `Screening pre-check failed: ${e.message}`);
+    return;
+  }
 
-    _screeningBusy = true;
-    _stats.screeningCycles++;
-    timers.screeningLastRun = Date.now();
-    log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
-    let screenReport = null;
-    try {
+  _screeningBusy = true;
+  _stats.screeningCycles++;
+  timers.screeningLastRun = Date.now();
+  log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
+  let screenReport = null;
+  try {
       // Reuse pre-fetched balance — no extra RPC call needed
       const currentBalance = preBalance;
       const deployAmount = computeDeployAmount(currentBalance.sol);
@@ -531,6 +541,23 @@ STEPS:
         if (screenReport) sendMessage(`🔍 Screening Cycle\n\n${screenReport}`).catch(() => {});
       }
     }
+}
+
+export function startCronJobs() {
+  stopCronJobs(); // stop any running tasks before (re)starting
+
+  // Cancel any pending early-trigger timer so it doesn't fire after a cron restart
+  if (_earlyManagementTimer) {
+    clearTimeout(_earlyManagementTimer);
+    _earlyManagementTimer = null;
+  }
+
+  const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
+    await runManagementCycle();
+  });
+
+  const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, async () => {
+    await runScreeningCycle();
   });
 
   const healthTask = cron.schedule(`0 * * * *`, async () => {
