@@ -56,37 +56,54 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     try {
       const activeModel = model || config.llm.generalModel;
 
-      // Retry up to 3 times on transient provider errors (502, 503, 529)
-      const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
+      // Retry up to 3 times on transient provider errors or empty responses.
+      // After 3 failures, fall back to FALLBACK_MODEL for this turn only.
+      const FALLBACK_MODEL = "z-ai/glm-5";
       let response;
       let usedModel = activeModel;
       for (let attempt = 0; attempt < 3; attempt++) {
-        response = await client.chat.completions.create({
-          model: usedModel,
-          messages,
-          tools: getToolsForRole(agentType),
-          tool_choice: "auto",
-          temperature: config.llm.temperature,
-          max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-        });
+        try {
+          response = await client.chat.completions.create({
+            model: usedModel,
+            messages,
+            tools: getToolsForRole(agentType),
+            tool_choice: "auto",
+            temperature: config.llm.temperature,
+            max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+          });
+        } catch (apiErr) {
+          // Network / timeout errors count as a failed attempt
+          log("agent", `API error on attempt ${attempt + 1}/3: ${apiErr.message}`);
+          response = { choices: null, error: { message: apiErr.message, code: apiErr.status } };
+        }
         if (response.choices?.length) break;
         const errCode = response.error?.code;
-        if (errCode === 502 || errCode === 503 || errCode === 529) {
-          const wait = (attempt + 1) * 5000;
-          if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
-            usedModel = FALLBACK_MODEL;
-            log("agent", `Switching to fallback model ${FALLBACK_MODEL}`);
-          } else {
-            log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
-            await new Promise((r) => setTimeout(r, wait));
-          }
-        } else {
-          break;
+        const wait = (attempt + 1) * 5000;
+        log("agent", `No response (${errCode || "empty"}), retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
+        await new Promise((r) => setTimeout(r, wait));
+      }
+
+      // If primary model failed 3 times, try fallback model once for this turn
+      if (!response.choices?.length && usedModel !== FALLBACK_MODEL) {
+        log("agent", `Primary model failed 3 times — falling back to ${FALLBACK_MODEL} for this turn`);
+        usedModel = FALLBACK_MODEL;
+        try {
+          response = await client.chat.completions.create({
+            model: usedModel,
+            messages,
+            tools: getToolsForRole(agentType),
+            tool_choice: "auto",
+            temperature: config.llm.temperature,
+            max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+          });
+        } catch (apiErr) {
+          log("error", `Fallback model also failed: ${apiErr.message}`);
+          response = { choices: null, error: { message: apiErr.message } };
         }
       }
 
       if (!response.choices?.length) {
-        log("error", `Bad API response: ${JSON.stringify(response).slice(0, 200)}`);
+        log("error", `All models failed. Last response: ${JSON.stringify(response).slice(0, 200)}`);
         throw new Error(`API returned no choices: ${response.error?.message || JSON.stringify(response)}`);
       }
       const msg = response.choices[0].message;
