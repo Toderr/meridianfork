@@ -582,6 +582,13 @@ async function runPnlChecker() {
   _pnlCheckerBusy = true;
   try {
     for (const tracked of openPositions) {
+      // Respect position instructions — if one is set, let the management cycle handle it
+      if (tracked.instruction) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: has instruction "${tracked.instruction}" — skipping pnl checker`);
+        _trailingStops.delete(tracked.position); // clear any trailing stop too
+        continue;
+      }
+
       const pnl = await getPositionPnl({ pool_address: tracked.pool, position_address: tracked.position }).catch(() => null);
       if (!pnl || pnl.error || pnl.pnl_pct == null) continue;
 
