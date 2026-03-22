@@ -343,31 +343,45 @@ When calling close_position, always set close_reason to the same 1-sentence reas
     } catch { /* non-fatal */ }
 
     if (telegramEnabled()) {
-      const rangeLines = liveData
-        .filter(p => p.pnl?.lower_bin != null)
-        .map(p => {
-          const name = (p.pair || "?").padEnd(14).slice(0, 14);
-          const bar = formatRangeBar(p.pnl.lower_bin, p.pnl.upper_bin, p.pnl.active_bin);
-          return `${name} ${bar}`;
-        });
-      const rangeBlock = rangeLines.length > 0
-        ? `\n\n📊 Ranges:\n${rangeLines.join("\n")}`
-        : "";
+      // Per-position blocks
+      const posBlocks = liveData.map(p => {
+        const name  = p.pair || p.pool?.slice(0, 8) || "?";
+        const pnl   = p.pnl;
+        const lines = [`📍 ${name}`];
 
-      // Deterministic PnL summary (live positions only)
-      let pnlBlock = "";
-      const pnlPositions = liveData.filter(p => p.pnl?.pnl_usd != null);
-      if (pnlPositions.length > 0) {
-        const totalPnlUsd = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_usd || 0), 0);
-        const totalPnlSol = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_sol || 0), 0);
-        const avgPnlPct = pnlPositions.reduce((sum, p) => sum + (p.pnl.pnl_pct || 0), 0) / pnlPositions.length;
-        const signUsd = totalPnlUsd >= 0 ? "+" : "";
-        const signSol = totalPnlSol >= 0 ? "+" : "";
-        const signPct = avgPnlPct >= 0 ? "+" : "";
-        pnlBlock = `\n\n💰 PnL: ${signUsd}$${totalPnlUsd.toFixed(2)} | ${signSol}${totalPnlSol.toFixed(4)} SOL | ${signPct}${avgPnlPct.toFixed(2)}%`;
-      }
+        if (pnl?.pnl_usd != null) {
+          const su = pnl.pnl_usd >= 0 ? "+" : "";
+          const ss = (pnl.pnl_sol ?? 0) >= 0 ? "+" : "";
+          const sp = pnl.pnl_pct >= 0 ? "+" : "";
+          lines.push(`💰 PnL: ${su}$${pnl.pnl_usd.toFixed(2)} | ${ss}${(pnl.pnl_sol ?? 0).toFixed(4)} SOL | ${sp}${pnl.pnl_pct.toFixed(2)}%`);
+        }
+        if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m`);
 
-      if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${mgmtReport}${rangeBlock}${pnlBlock}`).catch(() => {});
+        if (pnl?.lower_bin != null) {
+          const bar = formatRangeBar(pnl.lower_bin, pnl.upper_bin, pnl.active_bin);
+          lines.push(`\n📊 Ranges:\n${name} ${bar}`);
+        }
+
+        return lines.join("\n");
+      });
+
+      // Agent report as the Action/reasoning line
+      const actionBlock = mgmtReport ? `\n💡 ${mgmtReport.trim()}` : "";
+
+      // Balance + next management run
+      const nextMgmt = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
+      let walletSol = "";
+      try {
+        const wb = await import("./tools/wallet.js").then(m => m.getWalletBalances({})).catch(() => null);
+        if (wb?.sol != null) walletSol = `💰 Balance: ${wb.sol.toFixed(2)} SOL | `;
+      } catch { /* non-fatal */ }
+      const footer = `\n${walletSol}⏰ Next: ${nextMgmt}`;
+
+      const body = posBlocks.length > 0
+        ? posBlocks.join("\n\n") + actionBlock + footer
+        : (mgmtReport || "No open positions.") + footer;
+
+      if (mgmtReport || liveData.length > 0) sendMessage(`🔄 MANAGE\n\n${body}`).catch(() => {});
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
           notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
@@ -555,7 +569,7 @@ STEPS:
     } finally {
       _screeningBusy = false;
       if (telegramEnabled()) {
-        if (screenReport) sendMessage(`🔍 Screening Cycle\n\n${screenReport}`).catch(() => {});
+        if (screenReport) sendMessage(`🔍 SCREEN\n\n${screenReport}`).catch(() => {});
       }
     }
 }

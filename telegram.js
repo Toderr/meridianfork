@@ -136,26 +136,30 @@ export function stopPolling() {
 
 // ─── Notification helpers ────────────────────────────────────────
 export async function notifyDeploy({ pair, amountSol, position, tx }) {
-  await sendHTML(
-    `✅ <b>Deployed</b> ${pair}\n` +
-    `Amount: ${amountSol} SOL\n` +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+  await sendMessage(
+    `✅ DEPLOY\n\n` +
+    `📍 ${pair}\n` +
+    `💰 Amount: ${amountSol} SOL\n` +
+    `📄 Position: ${position?.slice(0, 8)}...\n` +
+    `🔗 Tx: ${tx?.slice(0, 16)}...`
   );
 }
 
 export async function notifyClose({ pair, pnlUsd, pnlPct }) {
-  const sign = pnlUsd >= 0 ? "+" : "";
-  await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
+  const su = (pnlUsd ?? 0) >= 0 ? "+" : "";
+  const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
+  await sendMessage(
+    `🔒 CLOSE\n\n` +
+    `📍 ${pair}\n` +
+    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${sp}${(pnlPct ?? 0).toFixed(2)}%`
   );
 }
 
 export async function notifyOutOfRange({ pair, minutesOOR }) {
-  await sendHTML(
-    `⚠️ <b>Out of Range</b> ${pair}\n` +
-    `Been OOR for ${minutesOOR} minutes`
+  await sendMessage(
+    `⚠️ OUT OF RANGE\n\n` +
+    `📍 ${pair}\n` +
+    `⏱️ OOR for ${minutesOOR}m`
   );
 }
 
@@ -191,8 +195,13 @@ export async function notifyThresholdEvolved({ field, oldVal, newVal, reason }) 
 }
 
 export async function notifyInstructionClose({ pair, instruction, pnlPct }) {
-  const sign = pnlPct >= 0 ? "+" : "";
-  await sendHTML(`📋 <b>Instruction Close</b> — ${pair}\nInstruction: ${instruction}\nPnL: ${sign}${(pnlPct||0).toFixed(2)}%`);
+  const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
+  await sendMessage(
+    `📋 INSTRUCTION CLOSE\n\n` +
+    `📍 ${pair}\n` +
+    `💡 "${instruction}"\n` +
+    `💰 PnL: ${sp}${(pnlPct || 0).toFixed(2)}%`
+  );
 }
 
 function sleep(ms) {
