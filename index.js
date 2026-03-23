@@ -191,7 +191,8 @@ async function runManagementCycle() {
       const binsAbove = (pnl && pnl.active_bin != null && pnl.upper_bin != null)
         ? Math.max(0, pnl.active_bin - pnl.upper_bin)
         : null;
-      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove };
+      const strategy = p.strategy || tracked?.strategy || null;
+      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy };
     }));
 
     // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
@@ -360,7 +361,7 @@ When calling close_position, set close_reason to the same short reason above.
           const sp = pnl.pnl_pct >= 0 ? "+" : "";
           lines.push(`💰 PnL: ${su}$${pnl.pnl_usd.toFixed(2)} | ${ss}${(pnl.pnl_sol ?? 0).toFixed(4)} SOL | ${sp}${pnl.pnl_pct.toFixed(2)}%`);
         }
-        if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 📊 ${p.strategy}` : ""}`);
+        if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 🎯 ${p.strategy}` : ""}`);
 
         if (pnl?.lower_bin != null) {
           const bar = formatRangeBar(pnl.lower_bin, pnl.upper_bin, pnl.active_bin);
