@@ -106,7 +106,7 @@ async function runBriefing() {
   try {
     const briefing = await generateBriefing();
     if (telegramEnabled()) {
-      await sendHTML(briefing);
+      await sendMessage(briefing);
     }
     setLastBriefingDate();
   } catch (error) {
@@ -712,7 +712,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
     log("cron", "Sending weekly report");
     try {
       const report = await generateReport("weekly");
-      if (telegramEnabled()) await sendHTML(report);
+      if (telegramEnabled()) await sendMessage(report);
     } catch (e) {
       log("cron_error", `Weekly report failed: ${e.message}`);
     }
@@ -723,7 +723,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
     log("cron", "Sending monthly report");
     try {
       const report = await generateReport("monthly");
-      if (telegramEnabled()) await sendHTML(report);
+      if (telegramEnabled()) await sendMessage(report);
     } catch (e) {
       log("cron_error", `Monthly report failed: ${e.message}`);
     }
@@ -960,7 +960,7 @@ if (isTTY) {
     if (text === "/briefing") {
       try {
         const briefing = await generateBriefing();
-        await sendHTML(briefing);
+        await sendMessage(briefing);
       } catch (e) {
         await sendMessage(`Error: ${e.message}`).catch(() => {});
       }
@@ -972,7 +972,7 @@ if (isTTY) {
       const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
       try {
         const report = await generateReport(period);
-        await sendHTML(report);
+        await sendMessage(report);
       } catch (e) {
         await sendMessage(`Error: ${e.message}`).catch(() => {});
       }
@@ -1108,7 +1108,7 @@ Commands:
       await runBusy(async () => {
         const report = await generateReport(period);
         console.log(`\n${report.replace(/<[^>]*>/g, "")}\n`);
-        if (telegramEnabled()) sendHTML(report).catch(() => {});
+        if (telegramEnabled()) sendMessage(report).catch(() => {});
       });
       return;
     }
@@ -1286,7 +1286,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
     if (text === "/briefing") {
       try {
         const briefing = await generateBriefing();
-        await sendHTML(briefing);
+        await sendMessage(briefing);
       } catch (e) {
         await sendMessage(`Error: ${e.message}`).catch(() => {});
       }
@@ -1298,7 +1298,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
       try {
         const report = await generateReport(period);
-        await sendHTML(report);
+        await sendMessage(report);
       } catch (e) {
         await sendMessage(`Error: ${e.message}`).catch(() => {});
       }

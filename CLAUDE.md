@@ -24,7 +24,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `tools/definitions.js` | LLM tool schemas for all agent roles |
 | `lessons.js` | Performance recording and learning system |
 | `journal.js` | Append-only trade journal (open/close/claim events) |
-| `reports.js` | Daily/weekly/monthly HTML reports |
+| `reports.js` | Daily/weekly/monthly plain-text reports |
 | `briefing.js` | Morning briefing (wraps `generateReport("daily")`) |
 | `prompt.js` | System prompt builder |
 | `telegram.js` | Telegram bot (long-polling) |

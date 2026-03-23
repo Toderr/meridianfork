@@ -1,7 +1,7 @@
 /**
  * Report generation module.
  *
- * Generates daily/weekly/monthly HTML reports from journal + lessons data.
+ * Generates daily/weekly/monthly plain-text reports from journal + lessons data.
  * Telegram 4096 char limit is respected via truncation.
  */
 
@@ -22,7 +22,7 @@ function loadJson(file) {
 /**
  * Generate a trading report for the given period.
  * @param {"daily"|"weekly"|"monthly"} period
- * @returns {string} HTML-formatted report string
+ * @returns {string} plain-text report string
  */
 export async function generateReport(period = "daily") {
   const now = new Date();
@@ -69,8 +69,17 @@ export async function generateReport(period = "daily") {
     ? (total_pnl_usd / totalInitial) * 100
     : 0;
 
-  const wins = closes.filter(e => (e.pnl_usd || 0) > 0).length;
-  const win_rate = closes.length > 0 ? Math.round((wins / closes.length) * 100) : null;
+  const wins   = closes.filter(e => (e.pnl_usd || 0) > 0);
+  const losses = closes.filter(e => (e.pnl_usd || 0) <= 0);
+  const win_rate = closes.length > 0 ? Math.round((wins.length / closes.length) * 100) : null;
+
+  // Avg profit % and avg loss %
+  const avg_profit_pct = wins.length > 0
+    ? wins.reduce((s, e) => s + (e.pnl_pct || 0), 0) / wins.length
+    : null;
+  const avg_loss_pct = losses.length > 0
+    ? losses.reduce((s, e) => s + (e.pnl_pct || 0), 0) / losses.length
+    : null;
 
   // Lessons from lessons.json filtered by created_at
   const lessonsData = loadJson(LESSONS_FILE) || { lessons: [] };
@@ -91,22 +100,27 @@ export async function generateReport(period = "daily") {
 
   const lines = [];
 
-  lines.push(`${periodEmoji} <b>Trading Report</b> — ${periodLabel}`);
+  lines.push(`${periodEmoji} Trading Report — ${periodLabel}`);
   lines.push("────────────────");
 
-  lines.push(`<b>Activity:</b>`);
+  lines.push(`*Activity:*`);
   lines.push(`📥 Positions Opened: ${positions_opened}`);
   lines.push(`📤 Positions Closed: ${positions_closed}`);
   lines.push("");
 
-  lines.push(`<b>Performance:</b>`);
+  lines.push(`*Performance:*`);
   const pnlSign = total_pnl_usd >= 0 ? "+" : "";
-  lines.push(`💰 Net PnL: ${pnlSign}$${total_pnl_usd.toFixed(2)} (${pnlSign}${total_pnl_sol.toFixed(4)} SOL)`);
+  const solPart = total_pnl_sol !== 0
+    ? ` | ${total_pnl_sol >= 0 ? "+" : ""}${total_pnl_sol.toFixed(4)} SOL`
+    : "";
+  lines.push(`💰 Net PnL: ${pnlSign}$${total_pnl_usd.toFixed(2)}${solPart}`);
   lines.push(`📈 PnL %: ${pnlSign}${total_pnl_pct.toFixed(2)}%`);
   lines.push(`💎 Fees Earned: $${total_fees_usd.toFixed(2)}`);
   lines.push(win_rate !== null
-    ? `🎯 Win Rate: ${win_rate}% (${wins}/${closes.length})`
+    ? `🎯 Win Rate: ${win_rate}% (${wins.length}/${closes.length})`
     : `🎯 Win Rate: N/A`);
+  if (avg_profit_pct !== null) lines.push(`📈 Avg Profit: +${avg_profit_pct.toFixed(2)}%`);
+  if (avg_loss_pct !== null)   lines.push(`📉 Avg Loss: ${avg_loss_pct.toFixed(2)}%`);
   lines.push("");
 
   // Weekly/monthly extras
@@ -115,8 +129,8 @@ export async function generateReport(period = "daily") {
       const bestTrade  = closes.reduce((best, e) => (e.pnl_usd || 0) > (best.pnl_usd || 0) ? e : best, closes[0]);
       const worstTrade = closes.reduce((worst, e) => (e.pnl_usd || 0) < (worst.pnl_usd || 0) ? e : worst, closes[0]);
 
-      lines.push(`<b>Best Trade:</b> ${bestTrade.pool_name || "?"} +$${(bestTrade.pnl_usd || 0).toFixed(2)} (${(bestTrade.pnl_pct || 0).toFixed(1)}%)`);
-      lines.push(`<b>Worst Trade:</b> ${worstTrade.pool_name || "?"} $${(worstTrade.pnl_usd || 0).toFixed(2)} (${(worstTrade.pnl_pct || 0).toFixed(1)}%)`);
+      lines.push(`*Best Trade:* ${bestTrade.pool_name || "?"} +$${(bestTrade.pnl_usd || 0).toFixed(2)} (${(bestTrade.pnl_pct || 0).toFixed(1)}%)`);
+      lines.push(`*Worst Trade:* ${worstTrade.pool_name || "?"} $${(worstTrade.pnl_usd || 0).toFixed(2)} (${(worstTrade.pnl_pct || 0).toFixed(1)}%)`);
       lines.push("");
 
       // Strategy breakdown
@@ -128,7 +142,7 @@ export async function generateReport(period = "daily") {
         if ((e.pnl_usd || 0) > 0) strategies[s].wins++;
       }
       if (Object.keys(strategies).length > 0) {
-        lines.push(`<b>Strategy Breakdown:</b>`);
+        lines.push(`*Strategy Breakdown:*`);
         for (const [strat, stats] of Object.entries(strategies)) {
           const wr = Math.round((stats.wins / stats.total) * 100);
           lines.push(`  • ${strat}: ${stats.total} trades, ${wr}% win rate`);
@@ -147,7 +161,7 @@ export async function generateReport(period = "daily") {
           if ((e.pnl_usd || 0) > 0) variants[v].wins++;
           variants[v].pnl += (e.pnl_usd || 0);
         }
-        lines.push(`<b>A/B Variant Results:</b>`);
+        lines.push(`*A/B Variant Results:*`);
         for (const [v, stats] of Object.entries(variants)) {
           const wr = Math.round((stats.wins / stats.total) * 100);
           lines.push(`  • ${v}: ${stats.total} trades, ${wr}% win, $${stats.pnl.toFixed(2)} PnL`);
@@ -163,7 +177,7 @@ export async function generateReport(period = "daily") {
   }
 
   // Lessons section
-  lines.push(`<b>Lessons Learned:</b>`);
+  lines.push(`*Lessons Learned:*`);
   if (lessonsInPeriod.length > 0) {
     for (const l of lessonsInPeriod) {
       const rule = l.rule.length > 100 ? l.rule.slice(0, 97) + "..." : l.rule;
@@ -175,7 +189,7 @@ export async function generateReport(period = "daily") {
   lines.push("");
 
   // Current portfolio
-  lines.push(`<b>Current Portfolio:</b>`);
+  lines.push(`*Current Portfolio:*`);
   lines.push(`📂 Open Positions: ${openPositions.length}`);
   lines.push(allCloses.length > 0
     ? `📊 All-time PnL: $${allTimePnlUsd.toFixed(2)}`
@@ -186,7 +200,7 @@ export async function generateReport(period = "daily") {
 
   // Truncate to Telegram's 4096 limit
   if (report.length > 4000) {
-    return report.slice(0, 3950) + "\n...<i>(truncated)</i>";
+    return report.slice(0, 3950) + "\n...(truncated)";
   }
 
   return report;
