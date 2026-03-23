@@ -76,18 +76,38 @@ Chain: `cachedPos.pnl_sol` (from `tools/dlmm.js` → Meteora API `pnlSol`) → `
 
 **PnL passthrough**: `closePosition` passes `pnl_usd` from Meteora's API to `recordPerformance`. `lessons.js` uses `perf.pnl_usd` directly when provided, avoiding formula recalculation errors caused by missing `initial_value_usd`.
 
-## Management Cycle — Range & PnL Block
+## Management Cycle — Report
 
-The `finally` block in the management cron (`index.js`) sends the Telegram report. Range bars and PnL summary are built from a **fresh `getMyPositions()` call after the agent loop** — not from the pre-cycle snapshot. This ensures closed positions don't appear in the range/PnL block.
+The `finally` block in the management cron (`index.js`) sends the Telegram report. It re-fetches positions **after** the agent loop so closed positions don't appear. Each open position gets its own block:
+
+```
+🔄 MANAGE
+
+📍 TOKEN-SOL
+💰 PnL: +$0.02 | +0.0000 SOL | +0.04%
+⏱️ Age: 74m
+
+📊 Ranges:
+TOKEN-SOL [━━━━━━━━●━━━━━━━] ✅
+
+💡 <agent reasoning / action>
+💰 Balance: 0.32 SOL | ⏰ Next: 5m
+```
 
 ## Telegram Notifications
 
-- **Deploy**: pair name, amount, position address (truncated), tx
-- **Close**: pool name (from state tracker via `getTrackedPosition`), PnL $ and %
-  - Source: `tools/executor.js` → `notifyClose()` in `telegram.js`
-  - Always show `pool_name`, fallback to tracked position name, then `position_address.slice(0,8)`
-- **Out of range**: pair name, minutes OOR
-- **Gas low**: sent once when SOL balance is insufficient; suppressed until a position closes (which may return SOL). Uses `_flags.gasLowNotified` in `stats.js`.
+All notifications use plain-text format (no HTML bold). Format:
+
+| Event | Header |
+|-------|--------|
+| Deploy | `✅ DEPLOY` |
+| Close | `🔒 CLOSE` |
+| Instruction close | `📋 INSTRUCTION CLOSE` |
+| Out of range | `⚠️ OUT OF RANGE` |
+| Screening report | `🔍 SCREEN` |
+| Management report | `🔄 MANAGE` |
+
+- **Gas low**: sent once when SOL is insufficient; suppressed until a position closes. Uses `_flags.gasLowNotified` in `stats.js`.
 
 ## Telegram Commands
 
@@ -153,6 +173,19 @@ close_position (on-chain claim + remove liquidity)
 → _flags.gasLowNotified = false (reset gas warning)
 ```
 
+### PnL Checker (every 30s, no LLM)
+
+Runs alongside the management cycle via `setInterval`. Skips when `_managementBusy`. If a position has an `instruction` set, it is skipped entirely (deferred to management cycle).
+
+```
+if pnl_pct >= 15%         → CLOSE (hard take-profit)
+if pnl_pct > 6%           → activate trailing stop, track peak
+if trailing active AND
+   pnl_pct < 5%           → CLOSE (trailing stop triggered)
+```
+
+Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
+
 ### Management Decision Rules (in priority order)
 1. instruction set AND condition met → CLOSE
 2. instruction set AND condition NOT met → HOLD (skip remaining)
@@ -189,8 +222,9 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 
 - **Lesson derivation**: Auto after each close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0%), bad (<-5%)
 - **Threshold evolution**: Every 5 closes, auto-adjusts volatility ceiling, min fee/TVL floor, min organic score
-- **Lesson injection**: Pinned (5) → Role-matched (6) → Recent fill — priority: good > bad > manual > neutral
+- **Lesson injection**: ALL lessons injected — no caps. Pinned → Role-matched → Recent. Priority: good > bad > manual > neutral
 - **Max change per step**: 20% to prevent whiplash
+- **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
 
 ## Roadmap / Improvement Ideas
 
