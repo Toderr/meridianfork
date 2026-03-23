@@ -18,7 +18,7 @@ if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 export const config = {
   // ─── Risk Limits ─────────────────────────
   risk: {
-    maxPositions:    u.maxPositions    ?? 3,
+    maxPositions:    u.maxPositions    ?? 10,
     maxDeployAmount: u.maxDeployAmount ?? 50,
   },
 

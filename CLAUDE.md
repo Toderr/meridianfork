@@ -268,7 +268,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 ## Risk Management
 
 - **Position sizing**: `(wallet - gasReserve) × positionSizePct`, clamped between `deployAmountSol` and `maxDeployAmount`
-- **Max positions**: Hard cap via `config.risk.maxPositions` (default 3)
+- **Max positions**: Hard cap via `config.risk.maxPositions` (default 10)
 - **Gas reserve**: Always keep `gasReserve` SOL (default 0.2) untouched
 - **Anti-scam**: Skip if `global_fees_sol < minTokenFeesSol`, top_10_pct > 60%, bundlers > 30%
 
