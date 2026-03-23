@@ -117,10 +117,51 @@ All notifications use plain-text format (no HTML bold). Format:
 | Close | `🔒 CLOSE` |
 | Instruction close | `📋 INSTRUCTION CLOSE` |
 | Out of range | `⚠️ OUT OF RANGE` |
+| Auto-swap | `💱 SWAP` |
+| Swap failed | `⚠️ SWAP FAILED` |
+| Gas low | `⛽ LOW GAS` |
+| Max positions | `📵 MAX POSITIONS` |
+| Threshold evolved | `🧠 THRESHOLD EVOLVED` |
 | Screening report | `🔍 SCREEN` |
 | Management report | `🔄 MANAGE` |
 
+- **Close format**: `💰 PnL: +$0.02 | +0.0000 SOL | +0.04%` — all three values (USD, SOL, %)
 - **Gas low**: sent once when SOL is insufficient; suppressed until a position closes. Uses `_flags.gasLowNotified` in `stats.js`.
+
+## Screening Cycle — Report
+
+The `finally` block sends the screening report to Telegram. LLM output is formatted as a strict one-liner, then wrapped with a footer:
+
+```
+🔍 SCREEN
+
+💡 WIZARD-SOL: DEPLOY — high fees, smart wallets present
+
+———————————
+💰 Balance: 0.47 SOL | ⏰ Next: 29m
+```
+
+No deploy:
+```
+🔍 SCREEN
+
+💡 NO DEPLOY — all narratives still generating
+Best candidate: CHIBI-SOL — narrative pending
+
+———————————
+💰 Balance: 0.97 SOL | ⏰ Next: 29m
+```
+
+The LLM prompt enforces: no markdown, no tables, no headers, no next-steps — just the result line(s).
+
+## Transaction Retry
+
+All on-chain `sendAndConfirmTransaction` calls in `tools/dlmm.js` go through `sendWithRetry()` — 5 attempts with exponential backoff (1s, 2s, 4s, 8s). Covers:
+- `closePosition`: step 1 claim fees, step 2 remove liquidity
+- `deployPosition`: create position tx(s), add liquidity tx(s)
+- `claimFees`
+
+On failure, each attempt logs `[retry] <label> attempt N/5 failed (...), retrying in Xs...`.
 
 ## Telegram Commands
 
