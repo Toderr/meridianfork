@@ -192,7 +192,9 @@ async function runManagementCycle() {
         ? Math.max(0, pnl.active_bin - pnl.upper_bin)
         : null;
       const strategy = p.strategy || tracked?.strategy || null;
-      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy };
+      const invested_sol = tracked?.amount_sol ?? null;
+      const initial_value_usd = tracked?.initial_value_usd ?? null;
+      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd };
     }));
 
     // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
@@ -272,6 +274,7 @@ async function runManagementCycle() {
         `  pool: ${p.pool}`,
         `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}` +
           (p.binsAbove != null ? ` | bins_above_range: ${p.binsAbove}` : ""),
+        p.invested_sol != null ? `  invested: ${p.invested_sol} SOL${p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : ""}` : null,
         pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
         pnl && p.feeTvl24h != null ? `  fee_tvl_24h: ${p.feeTvl24h.toFixed(1)}%${(p.age_minutes||0) < config.management.minAgeForYieldExit ? " (rule inactive — position too young)" : ""}` : null,
         pnl ? `  to_sl: ${(pnl.pnl_pct - config.management.emergencyPriceDropPct).toFixed(1)}% | to_tp: ${(config.management.takeProfitFeePct - pnl.pnl_pct).toFixed(1)}%` +
@@ -294,7 +297,7 @@ HARD CLOSE RULES — apply in order, first match wins:
 2. instruction set AND condition NOT met → HOLD, skip remaining rules
 3. pnl_pct <= ${config.management.emergencyPriceDropPct}% → CLOSE (stop loss)
 4. pnl_pct >= ${config.management.takeProfitFeePct}% → CLOSE (take profit)
-5. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% → CLOSE (yield too low)
+5. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% AND pnl_pct >= -2 → CLOSE (yield too low; skip this rule if currently at loss > 2%)
 6. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range)
 
 CLAIM RULE: If unclaimed_fee_usd >= ${config.management.minClaimAmount}, call claim_fees. Do not use any other threshold.
@@ -355,6 +358,10 @@ When calling close_position, set close_reason to the same short reason above.
         const pnl   = p.pnl;
         const lines = [`📍 ${name}`];
 
+        if (p.invested_sol != null) {
+          const ivUsd = p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : "";
+          lines.push(`💵 Invested: ${p.invested_sol} SOL${ivUsd}`);
+        }
         if (pnl?.pnl_usd != null) {
           const su = pnl.pnl_usd >= 0 ? "+" : "";
           const ss = (pnl.pnl_sol ?? 0) >= 0 ? "+" : "";
@@ -470,7 +477,10 @@ async function runScreeningCycle() {
     [prePositions, preBalance] = await Promise.all([getMyPositions(), getWalletBalances()]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      if (telegramEnabled()) notifyMaxPositions({ count: prePositions.total_positions, max: config.risk.maxPositions }).catch(() => {});
+      if (telegramEnabled() && !_flags.maxPositionsNotified) {
+        notifyMaxPositions({ count: prePositions.total_positions, max: config.risk.maxPositions }).catch(() => {});
+        _flags.maxPositionsNotified = true;
+      }
       return;
     }
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
@@ -566,19 +576,26 @@ DECISION RULES (apply to the pre-loaded candidates above, no re-fetching needed)
 - Bundlers 5–15% are normal, not a skip reason on their own
 - Smart wallets present → strong confidence boost
 
+CONFIDENCE-BASED SIZING:
+- Rate your confidence 0-10 for the best candidate based on all signals (smart wallets, narrative, holders, momentum, fees)
+- Only deploy if confidence > 7. If confidence <= 7, write NO DEPLOY with your confidence score.
+- Scale the amount: amount_y = ${deployAmount} × (confidence / 10), rounded to 2 decimals, minimum 0.1 SOL
+  confidence 8 → ${(deployAmount * 0.8).toFixed(2)} SOL | confidence 9 → ${(deployAmount * 0.9).toFixed(2)} SOL | confidence 10 → ${deployAmount} SOL
+- Always pass confidence_level as a parameter to deploy_position.
+
 ACTION REQUIRED:
-1. Pick the best candidate from the pre-loaded analysis above. If none pass, write NO DEPLOY and stop.
+1. Pick the best candidate from the pre-loaded analysis above. Rate your confidence (0-10). If none pass or confidence <= 7, write NO DEPLOY and stop.
 2. YOU MUST CALL deploy_position NOW. Do not write any text before calling the tool.
-   Use ${deployAmount} SOL. Do NOT use a smaller amount — this is compounded from your ${currentBalance.sol.toFixed(3)} SOL wallet.
+   Use the confidence-scaled amount above. Pass confidence_level in the call.
    deploy_position fetches the active bin internally — no separate get_active_bin call needed.
 3. After the tool returns, write your one-line report.
 
 CRITICAL: Writing "DEPLOY" without calling deploy_position is WRONG. The tool call IS the deploy.
 
 REPORT FORMAT (strict, one line only, no markdown):
-If deploy_position succeeded: [PAIR]: DEPLOY — [1 sentence why this was best pick]
+If deploy_position succeeded: [PAIR]: DEPLOY (X/10) — [1 sentence why this was best pick]
 If deploy_position was blocked/failed: [PAIR]: BLOCKED — [reason from tool response]
-If no candidate passed rules: NO DEPLOY — [1 sentence reason]
+If no candidate passed rules or confidence <= 7: NO DEPLOY — [1 sentence reason, include confidence score]
 Do NOT write next steps, lessons, observations, or anything else.
       `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 4096);
       screenReport = content;

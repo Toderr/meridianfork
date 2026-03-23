@@ -15,4 +15,6 @@ export const _stats = {
 // Suppress repeated gas-low notifications until a position closes (which frees SOL)
 export const _flags = {
   gasLowNotified: false,
+  // Suppress repeated max-positions notifications until a position closes (which frees a slot)
+  maxPositionsNotified: false,
 };

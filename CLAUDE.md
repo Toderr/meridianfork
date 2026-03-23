@@ -84,6 +84,7 @@ The `finally` block in the management cron (`index.js`) sends the Telegram repor
 🔄 MANAGE
 
 📍 TOKEN-SOL
+💵 Invested: 0.50 SOL | $85.00
 💰 PnL: +$0.02 | +0.0000 SOL | +0.04%
 ⏱️ Age: 74m | 🎯 bid_ask
 
@@ -94,6 +95,7 @@ TOKEN-SOL [━━━━━━━━●━━━━━━━] ✅
 ———————————
 
 📍 OTHER-SOL
+💵 Invested: 0.30 SOL | $51.00
 💰 PnL: -$0.10 | -0.0002 SOL | -0.22%
 ⏱️ Age: 25m | 🎯 spot
 
@@ -127,6 +129,7 @@ All notifications use plain-text format (no HTML bold). Format:
 
 - **Close format**: `💰 PnL: +$0.02 | +0.0000 SOL | +0.04%` — all three values (USD, SOL, %)
 - **Gas low**: sent once when SOL is insufficient; suppressed until a position closes. Uses `_flags.gasLowNotified` in `stats.js`.
+- **Max positions**: sent once when slot limit is hit; suppressed until a position closes. Uses `_flags.maxPositionsNotified` in `stats.js`.
 
 ## Screening Cycle — Report
 
@@ -135,7 +138,7 @@ The `finally` block sends the screening report to Telegram. LLM output is format
 ```
 🔍 SCREEN
 
-💡 WIZARD-SOL: DEPLOY — high fees, smart wallets present
+💡 WIZARD-SOL: DEPLOY (9/10) — high fees, smart wallets present
 
 ———————————
 💰 Balance: 0.47 SOL | ⏰ Next: 29m
@@ -154,7 +157,21 @@ Best candidate: CHIBI-SOL — narrative pending
 
 The LLM prompt enforces: no markdown, no tables, no headers, no next-steps — just the result line(s).
 
-The screening prompt uses "ACTION REQUIRED" framing (not "STEPS") and explicitly instructs the LLM to call `deploy_position` BEFORE writing any text. A CRITICAL warning is included: writing "DEPLOY" without calling the tool is wrong. This prevents the LLM from hallucinating a deploy report without actually executing the tool call. The report format distinguishes three outcomes: `DEPLOY` (tool succeeded), `BLOCKED` (tool returned blocked/error), `NO DEPLOY` (no candidate passed rules).
+The screening prompt uses "ACTION REQUIRED" framing (not "STEPS") and explicitly instructs the LLM to call `deploy_position` BEFORE writing any text. A CRITICAL warning is included: writing "DEPLOY" without calling the tool is wrong. This prevents the LLM from hallucinating a deploy report without actually executing the tool call. The report format distinguishes three outcomes: `DEPLOY (X/10)` (tool succeeded, confidence shown), `BLOCKED` (tool returned blocked/error), `NO DEPLOY` (no candidate passed rules or confidence <= 7).
+
+## Confidence-Based Position Sizing
+
+The screener rates each candidate 0-10 before deploying. Deploys are only allowed if confidence > 7. The amount scales linearly: `amount_y = deployAmount × (confidence/10)`, minimum 0.1 SOL.
+
+- confidence 8 → 80% of computed deploy amount
+- confidence 9 → 90%
+- confidence 10 → 100% (full amount)
+
+`confidence_level` is a parameter on the `deploy_position` tool. The executor blocks deploys with confidence <= 7 and uses the absolute 0.1 SOL floor (instead of the configured `deployAmountSol` floor) for confidence-scaled amounts.
+
+## Management Cycle — Exit Rules
+
+Rule 5 (yield-exit: `fee_tvl_24h < minFeeTvl24h`) is suppressed when `pnl_pct < -2`. This prevents closing a losing position just because yield is low — the position needs room to recover first.
 
 ## Transaction Retry
 

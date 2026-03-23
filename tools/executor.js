@@ -349,7 +349,8 @@ export async function executeTool(name, args) {
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
-        _flags.gasLowNotified = false; // position closed — SOL may have returned, allow fresh gas warning
+        _flags.gasLowNotified = false;       // position closed — SOL may have returned, allow fresh gas warning
+        _flags.maxPositionsNotified = false; // slot freed — allow next max-positions warning
         if (hiveEnabled()) syncToHive().catch(() => {});
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
@@ -396,6 +397,14 @@ export async function executeTool(name, args) {
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
+      // Block low-confidence deploys
+      if (args.confidence_level != null && args.confidence_level <= 7) {
+        return {
+          pass: false,
+          reason: `Confidence ${args.confidence_level}/10 is too low (must be > 7). Do not deploy.`,
+        };
+      }
+
       // Reject pools with bin_step out of configured range
       const minStep = config.screening.minBinStep;
       const maxStep = config.screening.maxBinStep;
@@ -446,8 +455,11 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // Enforce minimum deploy amount — must be at least deployAmountSol (configured) or 0.1 SOL absolute floor.
-      const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+      // Enforce minimum deploy amount.
+      // When confidence_level is provided, the amount is already scaled (confidence/10 × deployAmount),
+      // so we only enforce the absolute 0.1 SOL floor.
+      // Without confidence, enforce deployAmountSol or 0.1 SOL (whichever is higher).
+      const minDeploy = args.confidence_level != null ? 0.1 : Math.max(0.1, config.management.deployAmountSol);
       if (amountY < minDeploy) {
         return {
           pass: false,
