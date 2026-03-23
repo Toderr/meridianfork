@@ -305,3 +305,4 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - Push to `fork` remote: `git push fork main`
 - Commit frequently with clear messages explaining *why*, not just *what*
 - `user-config.json`, state files, and logs are gitignored — safe to `git pull` on VPS without overwriting live data
+- **Always update `CLAUDE.md` before pushing** — keep it in sync with any behavioural changes, new data flows, report formats, or architectural decisions made in the same commit
