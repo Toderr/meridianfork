@@ -98,6 +98,8 @@ let _screeningBusy = false;  // prevents overlapping screening cycles
 let _earlyManagementTimer = null; // setTimeout handle for high-vol early re-run
 let _pnlCheckerBusy = false;
 let _pnlCheckerInterval = null;
+// Map: position_address → { peak: number } — tracks peak PnL for trailing stop
+const _trailingStops = new Map();
 
 async function runBriefing() {
   log("cron", "Starting morning briefing");
@@ -572,13 +574,24 @@ STEPS:
     }
 }
 
-const FAST_TP_PCT       = 5;   // immediate take-profit threshold
+const FAST_TP_PCT       = 15;  // immediate take-profit threshold
+const TRAILING_ACTIVATE = 6;   // trailing stop activates when PnL exceeds this
+const TRAILING_FLOOR    = 5;   // close if PnL drops below this after activation
 
 async function runPnlChecker() {
   if (_pnlCheckerBusy || _managementBusy) return;
 
   const openPositions = getTrackedPositions(true);
-  if (openPositions.length === 0) return;
+  if (openPositions.length === 0) {
+    _trailingStops.clear();
+    return;
+  }
+
+  // Clean stale trailing-stop entries (position was closed externally)
+  const openAddresses = new Set(openPositions.map(p => p.position));
+  for (const addr of _trailingStops.keys()) {
+    if (!openAddresses.has(addr)) _trailingStops.delete(addr);
+  }
 
   _pnlCheckerBusy = true;
   try {
@@ -586,6 +599,7 @@ async function runPnlChecker() {
       // Respect position instructions — if one is set, let the management cycle handle it
       if (tracked.instruction) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: has instruction "${tracked.instruction}" — skipping pnl checker`);
+        _trailingStops.delete(tracked.position); // clear any trailing stop too
         continue;
       }
 
@@ -594,11 +608,30 @@ async function runPnlChecker() {
 
       const pct = pnl.pnl_pct;
 
-      // Hard take-profit
+      // Rule 1: Hard take-profit
       if (pct >= FAST_TP_PCT) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${FAST_TP_PCT}% — TAKE PROFIT`);
+        _trailingStops.delete(tracked.position);
         await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%` });
         continue;
+      }
+
+      // Rule 2: Trailing stop — activate above TRAILING_ACTIVATE, close below TRAILING_FLOOR
+      if (pct > TRAILING_ACTIVATE) {
+        const entry = _trailingStops.get(tracked.position);
+        if (!entry) {
+          _trailingStops.set(tracked.position, { peak: pct });
+          log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop activated at ${pct}%`);
+        } else if (pct > entry.peak) {
+          entry.peak = pct;
+        }
+      }
+
+      const stop = _trailingStops.get(tracked.position);
+      if (stop && pct < TRAILING_FLOOR) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${TRAILING_FLOOR}% — CLOSE`);
+        _trailingStops.delete(tracked.position);
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%` });
       }
     }
   } finally {

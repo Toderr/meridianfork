@@ -178,7 +178,10 @@ close_position (on-chain claim + remove liquidity)
 Runs alongside the management cycle via `setInterval`. Skips when `_managementBusy`. If a position has an `instruction` set, it is skipped entirely (deferred to management cycle).
 
 ```
-if pnl_pct >= 5%          → CLOSE (hard take-profit)
+if pnl_pct >= 15%         → CLOSE (hard take-profit)
+if pnl_pct > 6%           → activate trailing stop, track peak
+if trailing active AND
+   pnl_pct < 5%           → CLOSE (trailing stop triggered)
 ```
 
 Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
