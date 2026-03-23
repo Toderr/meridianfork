@@ -154,6 +154,8 @@ Best candidate: CHIBI-SOL — narrative pending
 
 The LLM prompt enforces: no markdown, no tables, no headers, no next-steps — just the result line(s).
 
+The screening prompt uses "ACTION REQUIRED" framing (not "STEPS") and explicitly instructs the LLM to call `deploy_position` BEFORE writing any text. A CRITICAL warning is included: writing "DEPLOY" without calling the tool is wrong. This prevents the LLM from hallucinating a deploy report without actually executing the tool call. The report format distinguishes three outcomes: `DEPLOY` (tool succeeded), `BLOCKED` (tool returned blocked/error), `NO DEPLOY` (no candidate passed rules).
+
 ## Transaction Retry
 
 All on-chain `sendAndConfirmTransaction` calls in `tools/dlmm.js` go through `sendWithRetry()` — 5 attempts with exponential backoff (1s, 2s, 4s, 8s). Covers:
