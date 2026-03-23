@@ -156,6 +156,7 @@ async function runManagementCycle() {
   let mgmtReport = null;
   let positions = [];
   let positionData = [];
+  let instructionClosePrefix = [];
   try {
     // Pre-load all positions + PnL in parallel — LLM gets everything, no fetch steps needed
     const livePositions = await getMyPositions().catch(() => null);
@@ -195,7 +196,7 @@ async function runManagementCycle() {
 
     // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
     // Only handles "close at X%" patterns deterministically — no LLM involvement.
-    const instructionClosePrefix = [];
+    instructionClosePrefix = [];
     const skippedByInstruction = new Set();
     for (const p of positionData) {
       if (!p.instruction) continue;
@@ -303,15 +304,13 @@ Apply the rules to each position and write your report immediately.
 Only call tools if a position needs to be CLOSED or fees need to be CLAIMED.
 If all positions STAY and no fees to claim, just write the report with no tool calls.
 
-REPORT FORMAT (one per position):
-**[PAIR]** | Age: [X]m | Fees: $[X] | PnL: [X]%
-**Rule:** [number or "none"] | **Decision:** STAY/CLOSE | **Reason:** [1 sentence]
+REPORT FORMAT (one line per position, no markdown):
+[PAIR]: STAY — [reason, max 10 words]
+[PAIR]: CLOSE — [reason, max 10 words]
 
-When calling close_position, always set close_reason to the same 1-sentence reason above.
+When calling close_position, set close_reason to the same short reason above.
     `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
-    mgmtReport = instructionClosePrefix.length > 0
-      ? instructionClosePrefix.join("\n") + "\n\n" + content
-      : content;
+    mgmtReport = content;
   } catch (error) {
     _stats.errors++;
     log("cron_error", `Management cycle failed: ${error.message}`);
@@ -330,20 +329,26 @@ When calling close_position, always set close_reason to the same 1-sentence reas
       }, earlyMs);
     }
 
-    // Re-fetch positions after agent may have closed some — only show currently open ones
+    // Re-fetch position list after agent may have closed some — only show currently open ones.
+    // Reuse pre-loaded PnL (positionData) to avoid re-fetching, ensuring consistency with agent report.
     let openPositions = [];
     let liveData = [];
     try {
       const livePositions = await getMyPositions().catch(() => null);
       openPositions = livePositions?.positions || [];
-      liveData = await Promise.all(openPositions.map(async (p) => {
-        const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
-        return { ...p, pnl };
-      }));
+      const openSet = new Set(openPositions.map(p => p.position));
+      liveData = positionData.filter(p => openSet.has(p.position));
     } catch { /* non-fatal */ }
 
     if (telegramEnabled()) {
-      // Per-position blocks
+      // Parse agent reasoning lines: "[PAIR]: STAY — reason" or "[PAIR]: CLOSE — reason"
+      const reasonMap = new Map();
+      for (const line of (mgmtReport || "").split("\n")) {
+        const m = line.match(/^(.+?):\s*(STAY|CLOSE)\s*[—–-]\s*(.+)/i);
+        if (m) reasonMap.set(m[1].trim().toUpperCase(), `${m[2].toUpperCase()} — ${m[3].trim()}`);
+      }
+
+      // Per-position blocks with inline reasoning
       const posBlocks = liveData.map(p => {
         const name  = p.pair || p.pool?.slice(0, 8) || "?";
         const pnl   = p.pnl;
@@ -362,11 +367,16 @@ When calling close_position, always set close_reason to the same 1-sentence reas
           lines.push(`\n📊 Ranges:\n${name} ${bar}`);
         }
 
+        const reasoning = reasonMap.get(name.toUpperCase());
+        if (reasoning) lines.push(`💡 ${reasoning}`);
+
         return lines.join("\n");
       });
 
-      // Agent report as the Action/reasoning line
-      const actionBlock = mgmtReport ? `\n💡 ${mgmtReport.trim()}` : "";
+      // Instruction close prefix (positions auto-closed before agent loop)
+      const prefixBlock = instructionClosePrefix.length > 0
+        ? instructionClosePrefix.join("\n") + "\n\n———————————\n\n"
+        : "";
 
       // Balance + next management run
       const nextMgmt = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
@@ -375,10 +385,10 @@ When calling close_position, always set close_reason to the same 1-sentence reas
         const wb = await import("./tools/wallet.js").then(m => m.getWalletBalances({})).catch(() => null);
         if (wb?.sol != null) walletSol = `💰 Balance: ${wb.sol.toFixed(2)} SOL | `;
       } catch { /* non-fatal */ }
-      const footer = `\n${walletSol}⏰ Next: ${nextMgmt}`;
+      const footer = `\n———————————\n${walletSol}⏰ Next: ${nextMgmt}`;
 
       const body = posBlocks.length > 0
-        ? posBlocks.join("\n\n") + actionBlock + footer
+        ? prefixBlock + posBlocks.join("\n\n———————————\n\n") + footer
         : (mgmtReport || "No open positions.") + footer;
 
       if (mgmtReport || liveData.length > 0) sendMessage(`🔄 MANAGE\n\n${body}`).catch(() => {});
@@ -556,10 +566,17 @@ DECISION RULES (apply to the pre-loaded candidates above, no re-fetching needed)
 - Smart wallets present → strong confidence boost
 
 STEPS:
-1. Pick the best candidate from the pre-loaded analysis above. If none pass, report why and stop.
+1. Pick the best candidate from the pre-loaded analysis above. If none pass, stop.
 2. deploy_position directly — it fetches the active bin internally, no separate get_active_bin needed.
    Use ${deployAmount} SOL. Do NOT use a smaller amount — this is compounded from your ${currentBalance.sol.toFixed(3)} SOL wallet.
-3. Report: pool chosen, key signals, deploy outcome.
+
+REPORT FORMAT (strict, no markdown, no tables, no headers):
+If deployed:
+  [PAIR]: DEPLOY — [1 sentence why this was best pick]
+If no deploy:
+  NO DEPLOY — [1 sentence reason]
+  Best candidate: [PAIR] — [why it didn't pass]
+Do NOT write next steps, lessons, observations, or anything else.
       `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 4096);
       screenReport = content;
     } catch (error) {
@@ -568,8 +585,15 @@ STEPS:
       screenReport = `Screening cycle failed: ${error.message}`;
     } finally {
       _screeningBusy = false;
-      if (telegramEnabled()) {
-        if (screenReport) sendMessage(`🔍 SCREEN\n\n${screenReport}`).catch(() => {});
+      if (telegramEnabled() && screenReport) {
+        const nextScreen = formatCountdown(nextRunIn(timers.screeningLastRun, config.schedule.screeningIntervalMin));
+        let screenWalletSol = "";
+        try {
+          const wb = await import("./tools/wallet.js").then(m => m.getWalletBalances({})).catch(() => null);
+          if (wb?.sol != null) screenWalletSol = `💰 Balance: ${wb.sol.toFixed(2)} SOL | `;
+        } catch { /* non-fatal */ }
+        const screenFooter = `\n———————————\n${screenWalletSol}⏰ Next: ${nextScreen}`;
+        sendMessage(`🔍 SCREEN\n\n💡 ${screenReport.trim()}${screenFooter}`).catch(() => {});
       }
     }
 }

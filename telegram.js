@@ -145,13 +145,14 @@ export async function notifyDeploy({ pair, amountSol, position, tx }) {
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, reason }) {
+export async function notifyClose({ pair, pnlUsd, pnlSol, pnlPct, reason }) {
   const su = (pnlUsd ?? 0) >= 0 ? "+" : "";
+  const ss = (pnlSol ?? 0) >= 0 ? "+" : "";
   const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
   await sendMessage(
     `🔒 CLOSE\n\n` +
     `📍 ${pair}\n` +
-    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
+    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${ss}${(pnlSol ?? 0).toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
     (reason ? `\n💡 ${reason}` : "")
   );
 }
@@ -165,34 +166,52 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
 }
 
 export async function notifyCycleSummary({ cycleType, positions, walletSol }) {
-  await sendHTML(
-    `🔄 <b>${cycleType === "management" ? "Management" : "Screening"} cycle done</b>\n` +
+  await sendMessage(
+    `🔄 ${cycleType === "management" ? "MANAGE" : "SCREEN"}\n\n` +
     `Positions: ${positions} open | SOL: ${walletSol}`
   );
 }
 
 export async function notifySwap({ pair, tokenSymbol, usdValue }) {
-  await sendHTML(
-    `💱 <b>Swapped</b> ${tokenSymbol} → SOL\n` +
-    `Value: $${(usdValue || 0).toFixed(2)}\n` +
-    `Pair: ${pair}`
+  await sendMessage(
+    `💱 SWAP\n\n` +
+    `📍 ${pair}\n` +
+    `${tokenSymbol} → SOL\n` +
+    `💰 Value: $${(usdValue || 0).toFixed(2)}`
   );
 }
 
 export async function notifySwapFailed({ pair, tokenSymbol, usdValue, error }) {
-  await sendHTML(`⚠️ <b>Swap Failed</b> — ${pair}\nToken: ${tokenSymbol} ($${(usdValue||0).toFixed(2)})\nReason: ${error?.slice(0,80) || "unknown"}`);
+  await sendMessage(
+    `⚠️ SWAP FAILED\n\n` +
+    `📍 ${pair}\n` +
+    `${tokenSymbol} ($${(usdValue || 0).toFixed(2)})\n` +
+    `Reason: ${error?.slice(0, 80) || "unknown"}`
+  );
 }
 
 export async function notifyGasLow({ solBalance, needed }) {
-  await sendHTML(`⛽ <b>Low Gas Warning</b>\nSOL balance: ${solBalance.toFixed(3)} SOL\nNeeded: ${needed.toFixed(3)} SOL\nScreening paused until topped up.`);
+  await sendMessage(
+    `⛽ LOW GAS\n\n` +
+    `Balance: ${solBalance.toFixed(3)} SOL\n` +
+    `Needed: ${needed.toFixed(3)} SOL\n` +
+    `Screening paused until topped up.`
+  );
 }
 
 export async function notifyMaxPositions({ count, max }) {
-  await sendHTML(`📵 <b>Max Positions Reached</b>\n${count}/${max} positions open — screening skipped.`);
+  await sendMessage(
+    `📵 MAX POSITIONS\n\n` +
+    `${count}/${max} open — screening skipped.`
+  );
 }
 
 export async function notifyThresholdEvolved({ field, oldVal, newVal, reason }) {
-  await sendHTML(`🧠 <b>Threshold Auto-Evolved</b>\n${field}: ${oldVal} → ${newVal}\nReason: ${reason?.slice(0,120) || "performance data"}`);
+  await sendMessage(
+    `🧠 THRESHOLD EVOLVED\n\n` +
+    `${field}: ${oldVal} → ${newVal}\n` +
+    `${reason?.slice(0, 120) || "performance data"}`
+  );
 }
 
 export async function notifyInstructionClose({ pair, instruction, pnlPct }) {

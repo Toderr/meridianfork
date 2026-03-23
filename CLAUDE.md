@@ -72,13 +72,13 @@ If the primary model fails 3 times (empty response, provider error, or timeout),
 
 **Never compute `pnl_sol` via USD conversion.** The Meteora DLMM API returns native SOL fields: `pnlSol`, `balancesSol`, `amountSol`. Use these directly.
 
-Chain: `cachedPos.pnl_sol` (from `tools/dlmm.js` → Meteora API `pnlSol`) → `recordPerformance` → `recordJournalClose` → `journal.json` → reports.
+Chain: `getMyPositions()` returns `pnl_sol` from Meteora API `pnlSol` → cached as `_positionsCache` → `closePosition` snapshots `cachedPos.pnl_sol` → `recordPerformance` → `recordJournalClose` → `journal.json` → reports. Also passed to `notifyClose()` for Telegram.
 
 **PnL passthrough**: `closePosition` passes `pnl_usd` from Meteora's API to `recordPerformance`. `lessons.js` uses `perf.pnl_usd` directly when provided, avoiding formula recalculation errors caused by missing `initial_value_usd`.
 
 ## Management Cycle — Report
 
-The `finally` block in the management cron (`index.js`) sends the Telegram report. It re-fetches positions **after** the agent loop so closed positions don't appear. Each open position gets its own block:
+The `finally` block in the management cron (`index.js`) sends the Telegram report. It reuses the pre-loaded PnL from the start of the cycle (no re-fetch) so the PnL shown matches what the agent saw. Positions closed during the agent loop are filtered out. Each open position gets its own block with inline reasoning:
 
 ```
 🔄 MANAGE
@@ -89,10 +89,23 @@ The `finally` block in the management cron (`index.js`) sends the Telegram repor
 
 📊 Ranges:
 TOKEN-SOL [━━━━━━━━●━━━━━━━] ✅
+💡 STAY — in range, no rules triggered
 
-💡 <agent reasoning / action>
+———————————
+
+📍 OTHER-SOL
+💰 PnL: -$0.10 | -0.0002 SOL | -0.22%
+⏱️ Age: 25m
+
+📊 Ranges:
+OTHER-SOL [━━━━━━━━━━━━━━━●] ⚠️
+💡 STAY — OOR 2 bins, below 5-bin threshold
+
+———————————
 💰 Balance: 0.32 SOL | ⏰ Next: 5m
 ```
+
+The LLM report format is one line per position: `[PAIR]: STAY/CLOSE — [short reason]`. This is parsed and embedded inline under each position block.
 
 ## Telegram Notifications
 

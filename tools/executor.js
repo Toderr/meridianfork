@@ -348,7 +348,7 @@ export async function executeTool(name, args) {
         _stats.positionsClosed++;
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
-        notifyClose({ pair: _pair, pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
+        notifyClose({ pair: _pair, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
         _flags.gasLowNotified = false; // position closed — SOL may have returned, allow fresh gas warning
         if (hiveEnabled()) syncToHive().catch(() => {});
         // Auto-swap base token back to SOL unless user said to hold

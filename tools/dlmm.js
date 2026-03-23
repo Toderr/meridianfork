@@ -102,6 +102,20 @@ async function getPool(poolAddress) {
 
 setInterval(() => poolCache.clear(), 5 * 60 * 1000);
 
+// ─── Transaction retry wrapper ─────────────────────────────────
+async function sendWithRetry(connection, tx, signers, label = "tx", maxAttempts = 5) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await sendAndConfirmTransaction(connection, tx, signers);
+    } catch (e) {
+      if (attempt === maxAttempts) throw e;
+      const delay = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s, 8s
+      log("retry", `${label} attempt ${attempt}/${maxAttempts} failed (${e.message}), retrying in ${delay / 1000}s...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
 // ─── Get Active Bin ────────────────────────────────────────────
 export async function getActiveBin({ pool_address }) {
   pool_address = normalizeMint(pool_address);
@@ -220,7 +234,7 @@ export async function deployPosition({
       const createTxArray = Array.isArray(createTxs) ? createTxs : [createTxs];
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
-        const txHash = await sendAndConfirmTransaction(getConnection(), createTxArray[i], signers);
+        const txHash = await sendWithRetry(getConnection(), createTxArray[i], signers, `deploy:create:${i + 1}`);
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
@@ -236,7 +250,7 @@ export async function deployPosition({
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
-        const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
+        const txHash = await sendWithRetry(getConnection(), addTxArray[i], [wallet], `deploy:addliq:${i + 1}`);
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
       }
@@ -250,7 +264,7 @@ export async function deployPosition({
         strategy: { maxBinId, minBinId, strategyType },
         slippage: 1000, // 10% in bps
       });
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);
+      const txHash = await sendWithRetry(getConnection(), tx, [wallet, newPosition], "deploy:init");
       txHashes.push(txHash);
     }
 
@@ -446,6 +460,7 @@ export async function getMyPositions({ force = false } = {}) {
         collected_fees_usd: Math.round(collectedFees * 100) / 100,
         pnl_usd: Math.round(pnlUsd * 100) / 100,
         pnl_pct: Math.round(pnlPct * 100) / 100,
+        pnl_sol: Math.round((parseFloat(p?.pnlSol ?? 0)) * 10000) / 10000,
         age_minutes: ageMinutes,
         minutes_out_of_range: minutesOutOfRange(r.position),
       };
@@ -562,7 +577,7 @@ export async function claimFees({ position_address }) {
       return { success: false, error: "No fees to claim — transaction is empty" };
     }
 
-    const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+    const txHash = await sendWithRetry(getConnection(), tx, [wallet], "claim:fees");
     log("claim", `SUCCESS tx: ${txHash}`);
     _positionsCacheAt = 0; // invalidate cache after claim
     recordClaim(position_address);
@@ -600,7 +615,7 @@ export async function closePosition({ position_address, close_reason }) {
         owner: wallet.publicKey,
         position: positionPubKey,
       });
-      const claimHash = await sendAndConfirmTransaction(getConnection(), claimTx, [wallet]);
+      const claimHash = await sendWithRetry(getConnection(), claimTx, [wallet], "close:claim");
       txHashes.push(claimHash);
       log("close", `Step 1 OK: ${claimHash}`);
     } catch (e) {
@@ -619,7 +634,7 @@ export async function closePosition({ position_address, close_reason }) {
     });
 
     for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+      const txHash = await sendWithRetry(getConnection(), tx, [wallet], "close:remove");
       txHashes.push(txHash);
     }
     log("close", `SUCCESS txs: ${txHashes.join(", ")}`);
@@ -677,7 +692,7 @@ export async function closePosition({ position_address, close_reason }) {
         variant: tracked.variant || null,
       });
 
-      return { success: true, position: position_address, pool: poolAddress, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, base_mint: pool.lbPair.tokenXMint.toString() };
+      return { success: true, position: position_address, pool: poolAddress, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, base_mint: pool.lbPair.tokenXMint.toString() };
     }
 
     return { success: true, position: position_address, pool: poolAddress, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };
