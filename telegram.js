@@ -145,13 +145,14 @@ export async function notifyDeploy({ pair, amountSol, position, tx }) {
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, reason }) {
   const su = (pnlUsd ?? 0) >= 0 ? "+" : "";
   const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
   await sendMessage(
     `🔒 CLOSE\n\n` +
     `📍 ${pair}\n` +
-    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${sp}${(pnlPct ?? 0).toFixed(2)}%`
+    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
+    (reason ? `\n💡 ${reason}` : "")
   );
 }
 
