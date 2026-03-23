@@ -305,7 +305,7 @@ export async function executeTool(name, args) {
     if (success) {
       if (name === "deploy_position") {
         _stats.positionsDeployed++;
-        notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.tx }).catch(() => {});
+        notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, strategy: args.strategy, position: result.position, tx: result.tx }).catch(() => {});
         // Record open to trading journal — retry up to 3 times in case of transient failure
         (async () => {
           let journalSuccess = false;
@@ -328,7 +328,7 @@ export async function executeTool(name, args) {
                 volatility: args.volatility,
                 fee_tvl_ratio: args.fee_tvl_ratio,
                 organic_score: args.organic_score,
-                bin_range: args.bin_range,
+                bin_range: result.bin_range || args.bin_range,
                 variant: args.variant,
               });
               journalSuccess = true;
@@ -348,7 +348,7 @@ export async function executeTool(name, args) {
         _stats.positionsClosed++;
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
-        notifyClose({ pair: _pair, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
+        notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
         _flags.gasLowNotified = false; // position closed — SOL may have returned, allow fresh gas warning
         if (hiveEnabled()) syncToHive().catch(() => {});
         // Auto-swap base token back to SOL unless user said to hold

@@ -135,23 +135,25 @@ export function stopPolling() {
 }
 
 // ─── Notification helpers ────────────────────────────────────────
-export async function notifyDeploy({ pair, amountSol, position, tx }) {
+export async function notifyDeploy({ pair, amountSol, strategy, position, tx }) {
   await sendMessage(
     `✅ DEPLOY\n\n` +
     `📍 ${pair}\n` +
+    `📊 Strategy: ${strategy || "?"}\n` +
     `💰 Amount: ${amountSol} SOL\n` +
     `📄 Position: ${position?.slice(0, 8)}...\n` +
     `🔗 Tx: ${tx?.slice(0, 16)}...`
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlSol, pnlPct, reason }) {
+export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, reason }) {
   const su = (pnlUsd ?? 0) >= 0 ? "+" : "";
   const ss = (pnlSol ?? 0) >= 0 ? "+" : "";
   const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
   await sendMessage(
     `🔒 CLOSE\n\n` +
     `📍 ${pair}\n` +
+    (strategy ? `📊 Strategy: ${strategy}\n` : ``) +
     `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${ss}${(pnlSol ?? 0).toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
     (reason ? `\n💡 ${reason}` : "")
   );

@@ -111,19 +111,19 @@ The LLM report format is one line per position: `[PAIR]: STAY/CLOSE — [short r
 
 All notifications use plain-text format (no HTML bold). Format:
 
-| Event | Header |
-|-------|--------|
-| Deploy | `✅ DEPLOY` |
-| Close | `🔒 CLOSE` |
-| Instruction close | `📋 INSTRUCTION CLOSE` |
-| Out of range | `⚠️ OUT OF RANGE` |
-| Auto-swap | `💱 SWAP` |
-| Swap failed | `⚠️ SWAP FAILED` |
-| Gas low | `⛽ LOW GAS` |
-| Max positions | `📵 MAX POSITIONS` |
-| Threshold evolved | `🧠 THRESHOLD EVOLVED` |
-| Screening report | `🔍 SCREEN` |
-| Management report | `🔄 MANAGE` |
+| Event | Header | Notable fields |
+|-------|--------|----------------|
+| Deploy | `✅ DEPLOY` | pair, strategy, amount SOL, position, tx |
+| Close | `🔒 CLOSE` | pair, strategy, PnL ($USD \| SOL \| %) |
+| Instruction close | `📋 INSTRUCTION CLOSE` | |
+| Out of range | `⚠️ OUT OF RANGE` | |
+| Auto-swap | `💱 SWAP` | |
+| Swap failed | `⚠️ SWAP FAILED` | |
+| Gas low | `⛽ LOW GAS` | |
+| Max positions | `📵 MAX POSITIONS` | |
+| Threshold evolved | `🧠 THRESHOLD EVOLVED` | field, old→new value, reason |
+| Screening report | `🔍 SCREEN` | |
+| Management report | `🔄 MANAGE` | per-position: PnL, age, strategy, range bar, reasoning |
 
 - **Close format**: `💰 PnL: +$0.02 | +0.0000 SOL | +0.04%` — all three values (USD, SOL, %)
 - **Gas low**: sent once when SOL is insufficient; suppressed until a position closes. Uses `_flags.gasLowNotified` in `stats.js`.
@@ -232,13 +232,13 @@ close_position (on-chain claim + remove liquidity)
 Runs alongside the management cycle via `setInterval`. Skips when `_managementBusy`. If a position has an `instruction` set, it is skipped entirely (deferred to management cycle).
 
 ```
-if pnl_pct >= 15%         → CLOSE (hard take-profit)
-if pnl_pct > 6%           → activate trailing stop, track peak
+if pnl_pct >= fastTpPct         → CLOSE (hard take-profit)
+if pnl_pct > trailingActivate   → activate trailing stop, track peak
 if trailing active AND
-   pnl_pct < 5%           → CLOSE (trailing stop triggered)
+   pnl_pct < trailingFloor      → CLOSE (trailing stop triggered)
 ```
 
-Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
+Thresholds (`fastTpPct=15`, `trailingActivate=6`, `trailingFloor=5`) are stored in `config.management` and read each tick — hot-reload and auto-evolution apply immediately. Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
 
 ### Management Decision Rules (in priority order)
 1. instruction set AND condition met → CLOSE
@@ -275,7 +275,12 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 ## Learning System
 
 - **Lesson derivation**: Auto after each close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0%), bad (<-5%)
-- **Threshold evolution**: Every 5 closes, auto-adjusts volatility ceiling, min fee/TVL floor, min organic score
+- **Threshold evolution**: Every 5 closes, `evolveThresholds()` in `lessons.js` auto-adjusts 7 dimensions:
+  - Screening: `maxVolatility`, `minFeeTvlRatio`, `minOrganic`
+  - Strategy: `strategyRules` (spot vs bid_ask per volatility bucket), `binsBelow` (bin width via range_efficiency)
+  - TP/SL: `takeProfitFeePct`, `fastTpPct`, `trailingFloor`, `emergencyPriceDropPct`
+  - Sizing: `positionSizePct` (based on rolling win rate over last 10 positions)
+- All evolved values written to `user-config.json` and applied live; each change triggers a `🧠 THRESHOLD EVOLVED` Telegram notification
 - **Lesson injection**: ALL lessons injected — no caps. Pinned → Role-matched → Recent. Priority: good > bad > manual > neutral
 - **Max change per step**: 20% to prevent whiplash
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.

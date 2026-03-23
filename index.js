@@ -360,7 +360,7 @@ When calling close_position, set close_reason to the same short reason above.
           const sp = pnl.pnl_pct >= 0 ? "+" : "";
           lines.push(`💰 PnL: ${su}$${pnl.pnl_usd.toFixed(2)} | ${ss}${(pnl.pnl_sol ?? 0).toFixed(4)} SOL | ${sp}${pnl.pnl_pct.toFixed(2)}%`);
         }
-        if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m`);
+        if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 📊 ${p.strategy}` : ""}`);
 
         if (pnl?.lower_bin != null) {
           const bar = formatRangeBar(pnl.lower_bin, pnl.upper_bin, pnl.active_bin);
@@ -598,12 +598,12 @@ Do NOT write next steps, lessons, observations, or anything else.
     }
 }
 
-const FAST_TP_PCT       = 15;  // immediate take-profit threshold
-const TRAILING_ACTIVATE = 6;   // trailing stop activates when PnL exceeds this
-const TRAILING_FLOOR    = 5;   // close if PnL drops below this after activation
-
 async function runPnlChecker() {
   if (_pnlCheckerBusy || _managementBusy) return;
+
+  const FAST_TP_PCT       = config.management.fastTpPct;
+  const TRAILING_ACTIVATE = config.management.trailingActivate;
+  const TRAILING_FLOOR    = config.management.trailingFloor;
 
   const openPositions = getTrackedPositions(true);
   if (openPositions.length === 0) {

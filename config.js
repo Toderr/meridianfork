@@ -53,6 +53,9 @@ export const config = {
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
     positionSizePct:       u.positionSizePct       ?? 0.35,
+    fastTpPct:             u.fastTpPct             ?? 15,
+    trailingActivate:      u.trailingActivate      ?? 6,
+    trailingFloor:         u.trailingFloor         ?? 5,
   },
 
   // ─── Strategy Mapping ───────────────────
@@ -194,14 +197,18 @@ export function reloadConfig() {
     if (f.positionSizePct       != null) m.positionSizePct       = f.positionSizePct;
     if (f.minFeeTvl24h          != null) m.minFeeTvl24h          = f.minFeeTvl24h;
     if (f.minAgeForYieldExit    != null) m.minAgeForYieldExit    = f.minAgeForYieldExit;
+    if (f.fastTpPct             != null) m.fastTpPct             = f.fastTpPct;
+    if (f.trailingActivate      != null) m.trailingActivate      = f.trailingActivate;
+    if (f.trailingFloor         != null) m.trailingFloor         = f.trailingFloor;
 
     const r = config.risk;
     if (f.maxPositions    != null) r.maxPositions    = f.maxPositions;
     if (f.maxDeployAmount != null) r.maxDeployAmount = f.maxDeployAmount;
 
     const st = config.strategy;
-    if (f.strategy  != null) st.strategy  = f.strategy;
-    if (f.binsBelow != null) st.binsBelow = f.binsBelow;
+    if (f.strategy      != null) st.strategy      = f.strategy;
+    if (f.binsBelow     != null) st.binsBelow     = f.binsBelow;
+    if (f.strategyRules != null) st.strategyRules = f.strategyRules;
 
     const l = config.llm;
     if (f.managementModel != null) l.managementModel = f.managementModel;

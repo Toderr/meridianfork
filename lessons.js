@@ -362,6 +362,136 @@ export function evolveThresholds(perfData, config) {
     }
   }
 
+  // ── 4. strategyRules (spot vs bid_ask per volatility bucket) ──
+  {
+    const buckets = { low: [], med: [], high: [] };
+    for (const p of perfData) {
+      if (!p.strategy || p.volatility == null) continue;
+      const b = p.volatility >= 5 ? "high" : p.volatility >= 2 ? "med" : "low";
+      buckets[b].push(p);
+    }
+    const ruleMap = { low: "lowVol", med: "medVol", high: "highVol" };
+    const current = config.strategy.strategyRules;
+    for (const [bk, trades] of Object.entries(buckets)) {
+      if (trades.length < 3) continue;
+      const spotTrades   = trades.filter(p => p.strategy === "spot");
+      const bidAskTrades = trades.filter(p => p.strategy === "bid_ask");
+      if (spotTrades.length < 2 || bidAskTrades.length < 2) continue;
+      const spotWr   = spotTrades.filter(p => p.pnl_pct > 0).length / spotTrades.length;
+      const bidAskWr = bidAskTrades.filter(p => p.pnl_pct > 0).length / bidAskTrades.length;
+      const winner   = spotWr - bidAskWr >= 0.2 ? "spot" : bidAskWr - spotWr >= 0.2 ? "bid_ask" : null;
+      if (!winner) continue;
+      const key = ruleMap[bk];
+      if (current[key] !== winner) {
+        if (!changes.strategyRules) changes.strategyRules = { ...current };
+        changes.strategyRules[key] = winner;
+        rationale[`strategyRules.${key}`] = `${bk} vol: ${winner} win rate ${Math.round((winner === "spot" ? spotWr : bidAskWr) * 100)}% vs ${Math.round((winner === "spot" ? bidAskWr : spotWr) * 100)}%`;
+      }
+    }
+  }
+
+  // ── 5. binsBelow (bin range width) ──────────────────────────────
+  {
+    const withRange = perfData.filter(p => p.bin_range?.bins_below != null && p.range_efficiency != null);
+    if (withRange.length >= 5) {
+      const buckets = {};
+      for (const p of withRange) {
+        const bb = p.bin_range.bins_below;
+        const bk = bb <= 40 ? "narrow" : bb <= 60 ? "med" : bb <= 80 ? "wide" : "xwide";
+        if (!buckets[bk]) buckets[bk] = { efficiencies: [], bbValues: [] };
+        buckets[bk].efficiencies.push(p.range_efficiency);
+        buckets[bk].bbValues.push(bb);
+      }
+      let bestBk = null, bestEff = -1;
+      for (const [bk, d] of Object.entries(buckets)) {
+        if (d.efficiencies.length < 2) continue;
+        const eff = avg(d.efficiencies);
+        if (eff > bestEff) { bestEff = eff; bestBk = bk; }
+      }
+      if (bestBk) {
+        const targetBb = Math.round(avg(buckets[bestBk].bbValues));
+        const current  = config.strategy.binsBelow;
+        const newVal   = clamp(Math.round(nudge(current, targetBb, MAX_CHANGE_PER_STEP)), 20, 100);
+        if (newVal !== current) {
+          changes.binsBelow = newVal;
+          rationale.binsBelow = `Bucket '${bestBk}' has best avg range_efficiency ${bestEff.toFixed(0)}% — nudged binsBelow ${current} → ${newVal}`;
+        }
+      }
+    }
+  }
+
+  // ── 6. TP/SL thresholds ─────────────────────────────────────────
+  {
+    const winnerPnls = winners.map(p => p.pnl_pct).filter(isFiniteNum);
+    const loserPnls  = losers.map(p => p.pnl_pct).filter(isFiniteNum);
+
+    if (winnerPnls.length >= 3) {
+      const avgWin = avg(winnerPnls);
+      const p90Win = percentile(winnerPnls, 90);
+
+      // takeProfitFeePct — management cycle TP
+      {
+        const current = config.management.takeProfitFeePct;
+        const target  = avgWin * 0.6;
+        const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), 2, 20);
+        if (newVal !== current) {
+          changes.takeProfitFeePct = newVal;
+          rationale.takeProfitFeePct = `Avg winner pnl ${avgWin.toFixed(1)}% — nudged TP ${current} → ${newVal}`;
+        }
+      }
+      // fastTpPct — PnL checker hard TP
+      {
+        const current = config.management.fastTpPct;
+        const target  = p90Win * 0.75;
+        const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), 8, 30);
+        if (newVal !== current) {
+          changes.fastTpPct = newVal;
+          rationale.fastTpPct = `p90 winner pnl ${p90Win.toFixed(1)}% — nudged fastTp ${current} → ${newVal}`;
+        }
+      }
+      // trailingFloor — PnL checker trailing stop
+      {
+        const current = config.management.trailingFloor;
+        const target  = avgWin * 0.4;
+        const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), 2, 12);
+        if (newVal !== current) {
+          changes.trailingFloor = newVal;
+          rationale.trailingFloor = `Avg winner pnl ${avgWin.toFixed(1)}% — nudged trailingFloor ${current} → ${newVal}`;
+        }
+      }
+    }
+
+    if (loserPnls.length >= 2) {
+      const avgLoss = avg(loserPnls); // negative number
+      const current = config.management.emergencyPriceDropPct; // negative number
+      const target  = avgLoss * 1.3;
+      const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), -80, -10);
+      if (newVal !== current) {
+        changes.emergencyPriceDropPct = newVal;
+        rationale.emergencyPriceDropPct = `Avg loser pnl ${avgLoss.toFixed(1)}% — nudged SL ${current} → ${newVal}`;
+      }
+    }
+  }
+
+  // ── 7. positionSizePct (deploy sizing) ──────────────────────────
+  {
+    const recent = perfData.slice(-10);
+    if (recent.length >= 5) {
+      const recentWr = recent.filter(p => p.pnl_pct > 0).length / recent.length;
+      const current  = config.management.positionSizePct;
+      let target = current;
+      if (recentWr > 0.7)      target = current * 1.1;
+      else if (recentWr < 0.4) target = current * 0.9;
+      if (target !== current) {
+        const newVal = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(3)), 0.15, 0.5);
+        if (newVal !== current) {
+          changes.positionSizePct = newVal;
+          rationale.positionSizePct = `Recent win rate ${Math.round(recentWr * 100)}% (last ${recent.length}) — nudged sizing ${current} → ${newVal}`;
+        }
+      }
+    }
+  }
+
   if (Object.keys(changes).length === 0) return { changes: {}, rationale: {} };
 
   // ── Persist changes to user-config.json ───────────────────────
@@ -392,6 +522,45 @@ export function evolveThresholds(perfData, config) {
     const oldVal = s.minOrganic;
     s.minOrganic = changes.minOrganic;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "minOrganic", oldVal, newVal: changes.minOrganic, reason: rationale.minOrganic }).catch(() => {});
+  }
+
+  const m  = config.management;
+  const st = config.strategy;
+  if (changes.strategyRules != null) {
+    st.strategyRules = changes.strategyRules;
+    // Single notification summarizing all rule changes
+    const ruleChanges = Object.entries(rationale).filter(([k]) => k.startsWith("strategyRules.")).map(([, v]) => v).join("; ");
+    if (telegramEnabled() && ruleChanges) notifyThresholdEvolved({ field: "strategyRules", oldVal: null, newVal: JSON.stringify(changes.strategyRules), reason: ruleChanges }).catch(() => {});
+  }
+  if (changes.binsBelow != null) {
+    const oldVal = st.binsBelow;
+    st.binsBelow = changes.binsBelow;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "binsBelow", oldVal, newVal: changes.binsBelow, reason: rationale.binsBelow }).catch(() => {});
+  }
+  if (changes.takeProfitFeePct != null) {
+    const oldVal = m.takeProfitFeePct;
+    m.takeProfitFeePct = changes.takeProfitFeePct;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "takeProfitFeePct", oldVal, newVal: changes.takeProfitFeePct, reason: rationale.takeProfitFeePct }).catch(() => {});
+  }
+  if (changes.fastTpPct != null) {
+    const oldVal = m.fastTpPct;
+    m.fastTpPct = changes.fastTpPct;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "fastTpPct", oldVal, newVal: changes.fastTpPct, reason: rationale.fastTpPct }).catch(() => {});
+  }
+  if (changes.trailingFloor != null) {
+    const oldVal = m.trailingFloor;
+    m.trailingFloor = changes.trailingFloor;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "trailingFloor", oldVal, newVal: changes.trailingFloor, reason: rationale.trailingFloor }).catch(() => {});
+  }
+  if (changes.emergencyPriceDropPct != null) {
+    const oldVal = m.emergencyPriceDropPct;
+    m.emergencyPriceDropPct = changes.emergencyPriceDropPct;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "emergencyPriceDropPct", oldVal, newVal: changes.emergencyPriceDropPct, reason: rationale.emergencyPriceDropPct }).catch(() => {});
+  }
+  if (changes.positionSizePct != null) {
+    const oldVal = m.positionSizePct;
+    m.positionSizePct = changes.positionSizePct;
+    if (telegramEnabled()) notifyThresholdEvolved({ field: "positionSizePct", oldVal, newVal: changes.positionSizePct, reason: rationale.positionSizePct }).catch(() => {});
   }
 
   // Log a lesson summarizing the evolution
