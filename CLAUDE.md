@@ -85,7 +85,7 @@ The `finally` block in the management cron (`index.js`) sends the Telegram repor
 
 📍 TOKEN-SOL
 💰 PnL: +$0.02 | +0.0000 SOL | +0.04%
-⏱️ Age: 74m
+⏱️ Age: 74m | 🎯 bid_ask
 
 📊 Ranges:
 TOKEN-SOL [━━━━━━━━●━━━━━━━] ✅
@@ -95,7 +95,7 @@ TOKEN-SOL [━━━━━━━━●━━━━━━━] ✅
 
 📍 OTHER-SOL
 💰 PnL: -$0.10 | -0.0002 SOL | -0.22%
-⏱️ Age: 25m
+⏱️ Age: 25m | 🎯 spot
 
 📊 Ranges:
 OTHER-SOL [━━━━━━━━━━━━━━━●] ⚠️
