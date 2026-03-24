@@ -935,7 +935,7 @@ if (isTTY) {
   // Always start autonomous cycles on launch
   launchCron();
   maybeRunMissedBriefing().catch(() => {});
-  if (config.dashboard.enabled) startDashboard(config.dashboard.port);
+  if (config.dashboard.enabled) startDashboard(config.dashboard.port, config.dashboard.password);
 
   // Telegram bot
   // Startup notification — helps detect duplicate instances
@@ -1275,7 +1275,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => {});
-  if (config.dashboard.enabled) startDashboard(config.dashboard.port);
+  if (config.dashboard.enabled) startDashboard(config.dashboard.port, config.dashboard.password);
   // Startup notification — helps detect duplicate instances
   if (telegramEnabled()) {
     const mode = process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";

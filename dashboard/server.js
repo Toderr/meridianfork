@@ -23,8 +23,19 @@ import {
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML = path.join(__dirname, "index.html");
 
-export function startDashboard(port = 3000) {
+export function startDashboard(port = 3000, password = null) {
   const server = http.createServer(async (req, res) => {
+    // ─── Basic Auth ───────────────────────────────────────────
+    if (password) {
+      const auth = req.headers["authorization"] ?? "";
+      const encoded = Buffer.from(`:${password}`).toString("base64");
+      if (auth !== `Basic ${encoded}`) {
+        res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Meridian"' });
+        res.end("Unauthorized");
+        return;
+      }
+    }
+
     const url      = new URL(req.url, `http://localhost:${port}`);
     const pathname = url.pathname;
 

@@ -98,8 +98,9 @@ export const config = {
 
   // ─── Web Dashboard ─────────────────────
   dashboard: {
-    port:    u.dashboardPort    ?? 3000,
-    enabled: u.dashboardEnabled !== false, // default: true
+    port:     u.dashboardPort     ?? 3000,
+    enabled:  u.dashboardEnabled  !== false, // default: true
+    password: u.dashboardPassword ?? null,   // null = no auth
   },
 };
 
