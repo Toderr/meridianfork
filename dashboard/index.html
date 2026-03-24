@@ -627,8 +627,12 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
       <!-- ═══ HISTORY ══════════════════════════════════ -->
       <section class="section" id="section-history">
         <div class="sh"><div class="sh-title">Position History</div><div class="sh-line"></div></div>
-        <div style="margin-bottom:8px">
-          <input id="hist-search" type="text" placeholder="Search pool or reason…" class="log-input" style="width:100%;max-width:320px">
+        <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input id="hist-search" type="text" placeholder="Search pool or reason…" class="log-input" style="flex:1;max-width:320px">
+          <div class="fbar unit-toggle" id="hist-unit-toggle">
+            <button class="fbtn active" data-unit="usd">USD</button>
+            <button class="fbtn" data-unit="sol">SOL</button>
+          </div>
         </div>
         <div class="card">
           <div class="tbl-wrap">
@@ -637,10 +641,10 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
                 <tr>
                   <th data-col="pool_name">Pool</th>
                   <th data-col="strategy">Strategy</th>
-                  <th data-col="amount_sol">Amount</th>
-                  <th data-col="pnl_usd">PnL $</th>
+                  <th data-col="amount_sol" id="hist-th-amount">Amount</th>
+                  <th data-col="pnl_usd" id="hist-th-pnl">PnL $</th>
                   <th data-col="pnl_pct">PnL %</th>
-                  <th data-col="fees_earned_usd">Fees</th>
+                  <th data-col="fees_earned_usd">Fees $</th>
                   <th data-col="minutes_held">Hold</th>
                   <th data-col="range_efficiency">Range Eff.</th>
                   <th data-col="close_reason">Reason</th>
@@ -656,11 +660,17 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
       <!-- ═══ JOURNAL ══════════════════════════════════ -->
       <section class="section" id="section-journal">
         <div class="sh"><div class="sh-title">Trading Journal</div><div class="sh-line"></div></div>
-        <div class="fbar" id="journal-filters">
-          <button class="fbtn active" data-type="">All</button>
-          <button class="fbtn" data-type="open">Open</button>
-          <button class="fbtn" data-type="close">Close</button>
-          <button class="fbtn" data-type="claim">Claim</button>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <div class="fbar" id="journal-filters" style="margin-bottom:0">
+            <button class="fbtn active" data-type="">All</button>
+            <button class="fbtn" data-type="open">Open</button>
+            <button class="fbtn" data-type="close">Close</button>
+            <button class="fbtn" data-type="claim">Claim</button>
+          </div>
+          <div class="fbar unit-toggle" id="jour-unit-toggle">
+            <button class="fbtn active" data-unit="usd">USD</button>
+            <button class="fbtn" data-unit="sol">SOL</button>
+          </div>
         </div>
         <div class="card">
           <div class="tbl-wrap">
@@ -668,9 +678,9 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
               <thead id="journal-thead">
                 <tr>
                   <th>Type</th><th>Pool</th><th>Strategy</th>
-                  <th data-col="amount_sol" style="cursor:pointer">Amount</th>
-                  <th data-col="pnl_usd" style="cursor:pointer">PnL</th>
-                  <th>Fees</th><th>Reason</th>
+                  <th data-col="amount_sol" style="cursor:pointer" id="jour-th-amount">Amount</th>
+                  <th data-col="pnl_usd" style="cursor:pointer" id="jour-th-pnl">PnL</th>
+                  <th>Fees $</th><th>Reason</th>
                   <th data-col="timestamp" style="cursor:pointer">Date</th>
                 </tr>
               </thead>
@@ -710,6 +720,7 @@ let _history = [], _journal = [], _lessons = [];
 let _hsort = { col: "timestamp", dir: "desc" };
 let _jsort = { col: "timestamp", dir: "desc" };
 let _jfilter = "";
+let _unit = "usd"; // "usd" | "sol"
 let _calMonth = null;
 let miniChart = null, pfChart = null;
 let _logTimer = null;
@@ -1074,16 +1085,29 @@ function renderHistory() {
   });
   if (!data.length) { tbody.innerHTML='<tr><td colspan="10" class="empty">No closed positions yet</td></tr>'; return; }
 
+  const sol = _unit === "sol";
+  if ($("hist-th-amount")) $("hist-th-amount").textContent = sol ? "Amount" : "Amount";
+  if ($("hist-th-pnl"))    $("hist-th-pnl").textContent    = sol ? "PnL SOL" : "PnL $";
+
   tbody.innerHTML = data.map(r => {
     const p = r.pnl_usd??0;
+    const ps = r.pnl_sol??null;
     const statusBadge = p>=0 ? '<span class="badge b-cp">CLOSED +</span>' : '<span class="badge b-cn">CLOSED −</span>';
     const reason = r.close_reason ? `<span class="badge b-cls">${r.close_reason.toUpperCase().slice(0,18)}</span>` : "—";
+    const amountCell = sol
+      ? `${f(r.amount_sol,4)} SOL`
+      : (r.initial_value_usd > 0 ? `$${f(r.initial_value_usd,2)}` : `${f(r.amount_sol,3)} SOL`);
+    const pnlVal   = sol ? ps : p;
+    const pnlClass = (pnlVal??0)>=0 ? "pv" : "nv";
+    const pnlCell  = sol
+      ? (ps!=null ? `<span class="${pnlClass}">${ps>=0?"+":""}${f(ps,4)} SOL</span>` : "—")
+      : `<span class="${pnlClass}">${p>=0?"+":""} $${f(p,2)}</span>`;
     const rIdx = data.indexOf(r);
     return `<tr style="animation-delay:${Math.min(rIdx,14)*0.03}s">
       <td class="nm">${r.pool_name||"—"}</td>
       <td>${r.strategy||"—"}${fmtRange(r.bin_range,r.bin_step) ? `<br><span style="font-size:9px;color:var(--muted)">${fmtRange(r.bin_range,r.bin_step)}</span>` : ""}</td>
-      <td>${f(r.amount_sol,3)} SOL</td>
-      <td class="${p>=0?"pv":"nv"}">$${f(p,2)}</td>
+      <td>${amountCell}</td>
+      <td>${pnlCell}</td>
       <td class="${(r.pnl_pct??0)>=0?"pv":"nv"}">${f(r.pnl_pct,2)}%</td>
       <td>$${f(r.fees_earned_usd,2)}</td>
       <td>${fmtHold(r.minutes_held)}</td>
@@ -1118,6 +1142,9 @@ function renderJournal() {
     th.classList.toggle("sa", th.dataset.col===_jsort.col && _jsort.dir==="asc");
     th.classList.toggle("sd", th.dataset.col===_jsort.col && _jsort.dir==="desc");
   });
+  const sol = _unit === "sol";
+  if ($("jour-th-amount")) $("jour-th-amount").textContent = "Amount";
+  if ($("jour-th-pnl"))    $("jour-th-pnl").textContent    = sol ? "PnL SOL" : "PnL";
   if (!data.length) { tbody.innerHTML='<tr><td colspan="8" class="empty">No journal entries yet</td></tr>'; return; }
 
   tbody.innerHTML = data.map(r => {
@@ -1125,12 +1152,20 @@ function renderJournal() {
     if (r.type==="open")  badge='<span class="badge b-open">OPEN</span>';
     if (r.type==="close") badge=(r.pnl_usd??0)>=0?'<span class="badge b-cp">CLOSE+</span>':'<span class="badge b-cn">CLOSE−</span>';
     if (r.type==="claim") badge='<span class="badge b-clm">CLAIM</span>';
-    const pnl = r.pnl_usd!=null ? `<span class="${r.pnl_usd>=0?"pv":"nv"}">$${f(r.pnl_usd,2)}</span>` : "—";
+    const amountCell = sol
+      ? `${f(r.amount_sol,4)} SOL`
+      : (r.initial_value_usd > 0 ? `$${f(r.initial_value_usd,2)}` : `${f(r.amount_sol,3)} SOL`);
+    let pnlCell;
+    if (sol) {
+      pnlCell = r.pnl_sol!=null ? `<span class="${r.pnl_sol>=0?"pv":"nv"}">${r.pnl_sol>=0?"+":""}${f(r.pnl_sol,4)} SOL</span>` : "—";
+    } else {
+      pnlCell = r.pnl_usd!=null ? `<span class="${r.pnl_usd>=0?"pv":"nv"}">${r.pnl_usd>=0?"+":""} $${f(r.pnl_usd,2)}</span>` : "—";
+    }
     const fees = r.fees_earned_usd!=null?"$"+f(r.fees_earned_usd,2):r.fees_usd!=null?"$"+f(r.fees_usd,2):"—";
     const jIdx = data.indexOf(r);
     return `<tr style="animation-delay:${Math.min(jIdx,14)*0.03}s">
       <td>${badge}</td><td class="nm">${r.pool_name||"—"}</td><td>${r.strategy||"—"}${fmtRange(r.bin_range,r.bin_step) ? `<br><span style="font-size:9px;color:var(--muted)">${fmtRange(r.bin_range,r.bin_step)}</span>` : ""}</td>
-      <td>${f(r.amount_sol,3)} SOL</td><td>${pnl}</td><td>${fees}</td>
+      <td>${amountCell}</td><td>${pnlCell}</td><td>${fees}</td>
       <td>${r.close_reason||"—"}</td><td>${fmtDate(r.timestamp)}</td>
     </tr>`;
   }).join("");
@@ -1139,7 +1174,7 @@ function renderJournal() {
 $("journal-filters").addEventListener("click", e => {
   const btn = e.target.closest(".fbtn"); if (!btn) return;
   _jfilter = btn.dataset.type;
-  document.querySelectorAll(".fbtn").forEach(b=>b.classList.toggle("active",b===btn));
+  $("journal-filters").querySelectorAll(".fbtn").forEach(b=>b.classList.toggle("active",b===btn));
   renderJournal();
 });
 
@@ -1152,6 +1187,22 @@ document.getElementById("journal-thead").addEventListener("click", e => {
 });
 
 $("hist-search").addEventListener("input", renderHistory);
+
+// USD / SOL toggle
+function setUnit(u) {
+  _unit = u;
+  document.querySelectorAll(".unit-toggle .fbtn").forEach(b => b.classList.toggle("active", b.dataset.unit === u));
+  renderHistory();
+  renderJournal();
+}
+document.getElementById("hist-unit-toggle").addEventListener("click", e => {
+  const btn = e.target.closest(".fbtn"); if (!btn?.dataset.unit) return;
+  setUnit(btn.dataset.unit);
+});
+document.getElementById("jour-unit-toggle").addEventListener("click", e => {
+  const btn = e.target.closest(".fbtn"); if (!btn?.dataset.unit) return;
+  setUnit(btn.dataset.unit);
+});
 
 // Mobile sidebar toggle
 document.getElementById("hamburger").addEventListener("click", () => {
