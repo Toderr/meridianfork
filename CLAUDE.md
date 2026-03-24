@@ -194,7 +194,7 @@ The screener rates each candidate 0-10 before deploying. Deploys are only allowe
 
 ## Management Cycle — Exit Rules
 
-Rule 5 (yield-exit: `fee_tvl_24h < minFeeTvl24h`) is suppressed when `pnl_pct < -2`. This prevents closing a losing position just because yield is low — the position needs room to recover first.
+Rule 5 (yield-exit: `fee_tvl_24h < minFeeTvl24h`) is suppressed when `pnl_pct < 0`. This prevents closing a losing position just because yield is low — any loss blocks yield-exit so the position has room to recover.
 
 ## Transaction Retry
 

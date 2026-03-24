@@ -3,10 +3,10 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { getJournalEntries } from "./journal.js";
-import { listLessons } from "./lessons.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
+const LESSONS_FILE = path.join(__dirname, "lessons.json");
 
 const TOKEN = process.env.TELEGRAM_JOURNAL_BOT_TOKEN || null;
 const BASE  = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : null;
@@ -39,6 +39,15 @@ function saveChatId(id) {
 
 loadChatId();
 
+// ─── Lessons (direct read — avoids circular import) ──────────────
+function loadTodayLessons(dateLabel) {
+  try {
+    if (!fs.existsSync(LESSONS_FILE)) return [];
+    const data = JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
+    return (data.lessons || []).filter(l => (l.created_at ?? "").slice(0, 10) >= dateLabel);
+  } catch { return []; }
+}
+
 // ─── Core send ───────────────────────────────────────────────────
 export function isEnabled() {
   return !!TOKEN;
@@ -64,13 +73,23 @@ async function sendMessage(text) {
   }
 }
 
+// ─── bin_range helper ────────────────────────────────────────────
+function fmtBins(bin_range) {
+  if (bin_range == null) return null;
+  if (typeof bin_range === "object") {
+    const total = (bin_range.bins_below ?? 0) + (bin_range.bins_above ?? 0);
+    return total > 0 ? `${total} bins` : null;
+  }
+  return `${bin_range} bins`;
+}
+
 // ─── Notification ────────────────────────────────────────────────
 export async function notifyJournalClose({ pool_name, strategy, bin_range, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
   const su = (pnl_usd ?? 0) >= 0 ? "+" : "";
   const ss = (pnl_sol ?? 0) >= 0 ? "+" : "";
   const sp = (pnl_pct ?? 0) >= 0 ? "+" : "";
-  const stratLine = [strategy, bin_range != null ? `${bin_range} bins` : null].filter(Boolean).join(" | ");
+  const stratLine = [strategy, fmtBins(bin_range)].filter(Boolean).join(" | ");
   await sendMessage(
     `📖 JOURNAL — CLOSE\n\n` +
     `📍 ${pool_name}\n` +
@@ -123,7 +142,10 @@ async function handleCommand(text) {
       const sp = (e.pnl_pct ?? 0) >= 0 ? "+" : "";
       const su = (e.pnl_usd ?? 0) >= 0 ? "+" : "";
       const icon = (e.pnl_pct ?? 0) >= 0 ? "📗" : "📕";
-      return `${icon} ${e.pool_name} | ${su}$${(e.pnl_usd ?? 0).toFixed(2)} | ${sp}${(e.pnl_pct ?? 0).toFixed(2)}% | ${e.strategy ?? "?"} | ${e.minutes_held ?? "?"}m | ${e.close_reason ?? "-"}`;
+      return (
+        `${icon} ${e.pool_name}\n` +
+        `   ${su}$${(e.pnl_usd ?? 0).toFixed(2)} | ${sp}${(e.pnl_pct ?? 0).toFixed(2)}% | ${e.strategy ?? "?"} | ${e.minutes_held ?? "?"}m | ${e.close_reason ?? "-"}`
+      );
     });
 
     // ── Stats ────────────────────────────────────────────────────
@@ -154,58 +176,59 @@ async function handleCommand(text) {
       if (avg > bestStratAvg) { bestStratAvg = avg; bestStrat = s; }
     }
     const bestStratLine = bestStrat
-      ? `🎯 Best strategy: ${bestStrat} (avg ${bestStratAvg >= 0 ? "+" : ""}${bestStratAvg.toFixed(2)}%, ${stratMap[bestStrat].length} trade${stratMap[bestStrat].length > 1 ? "s" : ""})`
+      ? `🎯 Best: ${bestStrat} (avg ${bestStratAvg >= 0 ? "+" : ""}${bestStratAvg.toFixed(2)}%, ${stratMap[bestStrat].length} trade${stratMap[bestStrat].length > 1 ? "s" : ""})`
       : null;
 
     // ── Lessons derived today ─────────────────────────────────────
-    const allLessons = listLessons({ limit: 200 }).lessons;
-    const todayLessons = allLessons.filter(l => l.created_at >= dateLabel);
+    const todayLessons = loadTodayLessons(dateLabel);
     const lessonLines = todayLessons.length > 0
-      ? todayLessons.map(l => `• ${l.rule.slice(0, 100)}`).join("\n")
+      ? todayLessons.map(l => `• ${(l.rule ?? "").slice(0, 100)}`).join("\n")
       : "• No new lessons derived today";
 
     // ── Action plan ───────────────────────────────────────────────
     const actions = [];
     if (bestStrat && bestStratAvg > 0)
-      actions.push(`Prioritize ${bestStrat} strategy — best performer today`);
+      actions.push(`Prioritize ${bestStrat} — best performer today`);
     if (winRate < 40)
-      actions.push("Win rate low (<40%) — review entry criteria before next deploy");
+      actions.push("Win rate <40% — review entry criteria before next deploy");
     else if (winRate >= 70)
-      actions.push("Strong win rate — current screening criteria is working well");
+      actions.push("Strong win rate — screening criteria working well");
     if (losses.length > 0) {
       const emergencyLosses = losses.filter(e => (e.close_reason ?? "").toLowerCase().includes("emergency") || (e.close_reason ?? "").toLowerCase().includes("stop"));
       if (emergencyLosses.length > 0)
-        actions.push(`${emergencyLosses.length} stop-loss trigger(s) — consider tightening entry criteria for volatile pools`);
+        actions.push(`${emergencyLosses.length} stop-loss hit — tighten entry criteria for volatile pools`);
       const avgLossHeld = losses.reduce((s, e) => s + (e.minutes_held ?? 0), 0) / losses.length;
       if (avgLossHeld < 20)
-        actions.push("Losing positions closed quickly (<20m avg) — may indicate bad entries, not bad management");
+        actions.push("Losses closed fast (<20m avg) — may signal bad entries");
     }
     const oorLosses = closes.filter(e => (e.close_reason ?? "").toLowerCase().includes("oor") || (e.close_reason ?? "").toLowerCase().includes("range"));
     if (oorLosses.length > 0)
-      actions.push(`${oorLosses.length} OOR close(s) — consider wider bin range or more volatile-tolerant strategy`);
+      actions.push(`${oorLosses.length} OOR close(s) — consider wider bin range`);
     if (actions.length === 0)
-      actions.push("Performance within normal range — maintain current settings");
+      actions.push("Performance normal — maintain current settings");
 
     const actionLines = actions.map(a => `• ${a}`).join("\n");
 
-    // ── Assemble ──────────────────────────────────────────────────
-    const parts = [
+    // ── Assemble (split at ~3800 chars) ──────────────────────────
+    const msg1 = [
       `📖 TODAY — ${dateLabel}\n`,
-      posLines.join("\n"),
-      `\n——————————————`,
+      posLines.join("\n\n"),
+      `\n———————————`,
       `📊 ${closes.length} trades | ${wins.length}W ${losses.length}L`,
       `💰 PnL: ${suT}$${totalUsd.toFixed(2)} | ${ssT}${totalSol.toFixed(4)} SOL | ${spT}${totalPct.toFixed(2)}%`,
       `📈 Win rate: ${winRate}%`,
       `✅ Avg profit: ${avgProfit >= 0 ? "+" : ""}${avgProfit.toFixed(2)}%`,
       `❌ Avg loss: ${avgLoss.toFixed(2)}%`,
       bestStratLine,
-      `\n——————————————`,
-      `🧠 Lessons today:\n${lessonLines}`,
-      `\n——————————————`,
-      `📋 Action plan:\n${actionLines}`,
     ].filter(Boolean).join("\n");
 
-    return sendMessage(parts);
+    const msg2 = [
+      `🧠 Lessons today:\n${lessonLines}`,
+      `\n📋 Action plan:\n${actionLines}`,
+    ].join("\n");
+
+    await sendMessage(msg1);
+    return sendMessage(msg2);
   }
 
   if (cmd === "/closes") {
@@ -235,9 +258,9 @@ async function handleCommand(text) {
   return sendMessage(
     `📖 Journal Bot\n\n` +
     `/recent [N] — last N entries (default 5)\n` +
-    `/today — all entries today\n` +
+    `/today — daily recap with lessons & action plan\n` +
     `/closes — last 10 closed positions\n` +
-    `/stats — win rate and total PnL`
+    `/stats — all-time win rate and PnL`
   );
 }
 
