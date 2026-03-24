@@ -590,7 +590,7 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
-export async function closePosition({ position_address, close_reason, pnl_usd: pnlUsdOverride, pnl_pct: pnlPctOverride, pnl_sol: pnlSolOverride }) {
+export async function closePosition({ position_address, close_reason }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
@@ -605,6 +605,10 @@ export async function closePosition({ position_address, close_reason, pnl_usd: p
     const pool = await getPool(poolAddress);
 
     const positionPubKey = new PublicKey(position_address);
+
+    // ─── Fetch fresh PnL before closing ────────────────────────
+    // Must happen before transactions — position no longer exists on-chain after close.
+    const freshPnl = await getPositionPnl({ pool_address: poolAddress.toString(), position_address }).catch(() => null);
 
     const txHashes = [];
 
@@ -651,26 +655,30 @@ export async function closePosition({ position_address, close_reason, pnl_usd: p
         minutesOOR = Math.floor((Date.now() - new Date(tracked.out_of_range_since).getTime()) / 60000);
       }
 
-      // Snapshot PnL from cache BEFORE invalidating — this was the last known state before close
+      // Use fresh PnL fetched before close; fall back to cache if API failed
       let pnlUsd = 0;
       let pnlPct = 0;
       let finalValueUsd = 0;
       let pnlSolNative = null;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
-      const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
-      if (cachedPos) {
-        pnlUsd        = cachedPos.pnl_usd   ?? 0;
-        pnlPct        = cachedPos.pnl_pct   ?? 0;
-        finalValueUsd = cachedPos.total_value_usd ?? 0;
-        feesUsd       = (cachedPos.collected_fees_usd || 0) + (cachedPos.unclaimed_fees_usd || 0);
-        pnlSolNative  = cachedPos.pnl_sol   ?? null;
+      if (freshPnl && !freshPnl.error) {
+        pnlUsd        = freshPnl.pnl_usd          ?? 0;
+        pnlPct        = freshPnl.pnl_pct          ?? 0;
+        pnlSolNative  = freshPnl.pnl_sol          ?? null;
+        finalValueUsd = freshPnl.current_value_usd ?? 0;
+        feesUsd       = freshPnl.all_time_fees_usd ?? feesUsd;
+      } else {
+        const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
+        if (cachedPos) {
+          pnlUsd        = cachedPos.pnl_usd        ?? 0;
+          pnlPct        = cachedPos.pnl_pct        ?? 0;
+          finalValueUsd = cachedPos.total_value_usd ?? 0;
+          feesUsd       = (cachedPos.collected_fees_usd || 0) + (cachedPos.unclaimed_fees_usd || 0);
+          pnlSolNative  = cachedPos.pnl_sol        ?? null;
+        }
       }
-      // Fresh PnL from caller (e.g. PnL checker) overrides stale cache
-      if (pnlPctOverride != null) pnlPct       = pnlPctOverride;
-      if (pnlUsdOverride != null) pnlUsd       = pnlUsdOverride;
-      if (pnlSolOverride != null) pnlSolNative = pnlSolOverride;
 
-      _positionsCacheAt = 0; // invalidate cache after snapshotting PnL
+      _positionsCacheAt = 0; // invalidate cache
       const initialUsd = tracked.initial_value_usd || 0;
 
       await recordPerformance({
