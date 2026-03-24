@@ -43,7 +43,7 @@ export function startDashboard(port = 3000, password = null) {
     if (pathname === "/" || pathname === "/index.html") {
       try {
         const html = fs.readFileSync(INDEX_HTML, "utf8");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache, no-store, must-revalidate" });
         res.end(html);
       } catch {
         res.writeHead(500);
