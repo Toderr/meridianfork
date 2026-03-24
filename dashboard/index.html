@@ -423,6 +423,44 @@ td.nv { color: var(--red); }
 .section.leaving { display: block; animation: fadeOut 0.12s ease-in forwards; }
 
 tbody tr { animation: fadeIn 0.25s ease-out both; }
+
+/* ── Responsive (mobile) ──────────────────────────────── */
+.hamburger {
+  display: none; background: none; border: none; cursor: pointer;
+  padding: 0 14px; color: var(--muted2); font-size: 18px; flex-shrink: 0;
+  align-items: center;
+}
+.hamburger:hover { color: var(--text); }
+.sidebar-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55); z-index: 199;
+}
+.cal-nav {
+  background: none; border: 1px solid var(--border); color: var(--muted2);
+  border-radius: 4px; padding: 2px 10px; cursor: pointer; font-size: 12px;
+  line-height: 1.4; flex-shrink: 0;
+}
+.cal-nav:hover { color: var(--text); border-color: var(--gold); }
+.cal-nav:disabled { opacity: 0.3; cursor: default; }
+.cal-nav-row { display: flex; align-items: center; gap: 8px; }
+.cal-nav-row .sh-title { flex: 1; }
+
+@media (max-width: 768px) {
+  .hamburger { display: flex; }
+  .sidebar {
+    position: fixed; top: 0; left: 0; height: 100%;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease; z-index: 200;
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-overlay.open { display: block; }
+  .layout { overflow-y: auto; }
+  .main { overflow: visible; }
+  .content { padding: 12px; }
+  .pos-grid { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
 </style>
 </head>
 <body>
@@ -431,6 +469,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
   <div class="orb orb-blue"></div>
   <div class="orb orb-teal"></div>
 </div>
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
 <div class="layout">
 
   <!-- ══ Sidebar ══════════════════════════════════════ -->
@@ -501,6 +540,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
     <!-- Topbar -->
     <div class="topbar">
+      <button class="hamburger" id="hamburger" aria-label="Menu">&#9776;</button>
       <div class="tb-pill"><span class="tb-label">SOL</span><span class="tb-val g" id="tb-sol">—</span></div>
       <div class="tb-pill"><span class="tb-label">Price</span><span class="tb-val" id="tb-price">—</span></div>
       <div class="tb-pill"><span class="tb-label">Positions</span><span class="tb-val" id="tb-pos">—</span></div>
@@ -550,7 +590,14 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
       <!-- ═══ PORTFOLIO ═══════════════════════════════ -->
       <section class="section" id="section-portfolio">
 
-        <div class="sh"><div class="sh-title">PnL Calendar</div><div class="sh-line"></div></div>
+        <div class="sh">
+          <div class="cal-nav-row">
+            <button class="cal-nav" id="cal-prev" disabled>&#8592;</button>
+            <div class="sh-title" id="cal-label">PnL Calendar</div>
+            <button class="cal-nav" id="cal-next" disabled>&#8594;</button>
+          </div>
+          <div class="sh-line"></div>
+        </div>
         <div class="card" style="padding:18px;margin-bottom:20px;" id="cal-card">
           <div id="calendar-wrap"><div class="empty">Loading calendar...</div></div>
         </div>
@@ -575,6 +622,9 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
       <!-- ═══ HISTORY ══════════════════════════════════ -->
       <section class="section" id="section-history">
         <div class="sh"><div class="sh-title">Position History</div><div class="sh-line"></div></div>
+        <div style="margin-bottom:8px">
+          <input id="hist-search" type="text" placeholder="Search pool or reason…" class="log-input" style="width:100%;max-width:320px">
+        </div>
         <div class="card">
           <div class="tbl-wrap">
             <table id="history-table">
@@ -610,10 +660,13 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
         <div class="card">
           <div class="tbl-wrap">
             <table>
-              <thead>
+              <thead id="journal-thead">
                 <tr>
                   <th>Type</th><th>Pool</th><th>Strategy</th>
-                  <th>Amount</th><th>PnL</th><th>Fees</th><th>Reason</th><th>Date</th>
+                  <th data-col="amount_sol" style="cursor:pointer">Amount</th>
+                  <th data-col="pnl_usd" style="cursor:pointer">PnL</th>
+                  <th>Fees</th><th>Reason</th>
+                  <th data-col="timestamp" style="cursor:pointer">Date</th>
                 </tr>
               </thead>
               <tbody id="journal-tbody"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
@@ -650,7 +703,9 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 let _stats = null, _wallet = null, _positions = null, _portfolio = null;
 let _history = [], _journal = [], _lessons = [];
 let _hsort = { col: "timestamp", dir: "desc" };
+let _jsort = { col: "timestamp", dir: "desc" };
 let _jfilter = "";
+let _calMonth = null;
 let miniChart = null, pfChart = null;
 let _logTimer = null;
 
@@ -701,6 +756,9 @@ document.getElementById("nav").addEventListener("click", e => {
   document.querySelectorAll(".nav-item").forEach(n => n.classList.toggle("active", n === item));
   switchTo(sec);
   if (sec === "logs") startLogPoll(); else stopLogPoll();
+  // Close sidebar on mobile after navigation
+  document.querySelector(".sidebar").classList.remove("open");
+  document.getElementById("sidebar-overlay").classList.remove("open");
 });
 
 // ── Helpers ────────────────────────────────────────────
@@ -847,7 +905,16 @@ function renderMiniChart() {
     data: { labels, datasets: [{ data: values, borderColor: "#00D97E", backgroundColor: fgrad, borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.4 }] },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => "$"+c.parsed.y.toFixed(2) }}},
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => items[0]?.label || "",
+            label: c => "  PnL: $" + c.parsed.y.toFixed(2)
+          }
+        }
+      },
       scales: {
         x: { display: false },
         y: { grid: { color: "rgba(255,255,255,0.03)", drawBorder: false }, ticks: { color: "#4a5568", font: { size: 9 }, callback: v => "$"+v.toFixed(0) }, border: { display: false } }
@@ -871,48 +938,60 @@ function renderPortfolio() {
   renderPfChart(p.cumulative||[]);
 }
 
+function getCalMonths(cal) {
+  const s = new Set();
+  Object.keys(cal).forEach(k => s.add(k.slice(0,7)));
+  return [...s].sort();
+}
+
 function renderCalendar(cal, calPct) {
   const wrap = $("calendar-wrap");
-  const keys = Object.keys(cal).sort();
-  if (!keys.length) { wrap.innerHTML='<div class="empty">No trade data yet</div>'; return; }
+  const allMonths = getCalMonths(cal);
+  if (!allMonths.length) { wrap.innerHTML='<div class="empty">No trade data yet</div>'; updateCalNav([], null); return; }
 
+  if (!_calMonth || !allMonths.includes(_calMonth)) _calMonth = allMonths[allMonths.length - 1];
+  updateCalNav(allMonths, _calMonth);
+
+  const month = _calMonth;
   const today = new Date().toISOString().slice(0,10);
-  const months = {};
-  for (const k of keys) {
-    const m = k.slice(0,7);
-    if (!months[m]) months[m] = {};
-    months[m][k] = cal[k];
-  }
+  const d0 = new Date(month+"-01");
+  const lastD = new Date(d0.getFullYear(), d0.getMonth()+1, 0).getDate();
+  const startDow = d0.getDay();
 
-  let html = "";
+  let html = '<div class="cal-dow">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=>`<span>${d}</span>`).join("")+"</div>";
+  html += '<div class="cal-grid">';
   let cellIdx = 0;
-  for (const [month, days] of Object.entries(months)) {
-    const d0 = new Date(month+"-01");
-    html += `<div class="cal-month-label">${d0.toLocaleString("default",{month:"long",year:"numeric"})}</div>`;
-    html += '<div class="cal-dow">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=>`<span>${d}</span>`).join("")+"</div>";
-    html += '<div class="cal-grid">';
-
-    const lastD = new Date(d0.getFullYear(), d0.getMonth()+1, 0).getDate();
-    const startDow = d0.getDay();
-    for (let i=0; i<startDow; i++) { html += `<div class="cal-cell empty" style="animation-delay:${cellIdx*0.012}s"></div>`; cellIdx++; }
-
-    for (let d=1; d<=lastD; d++) {
-      const ds = month+"-"+String(d).padStart(2,"0");
-      const v  = cal[ds];
-      const vp = calPct[ds];
-      const isToday = ds===today;
-      let cls = isToday ? " today" : "";
-      if (v != null) cls += v>0 ? " pos-c" : " neg-c";
-      const sign = v>0 ? "+" : "";
-      const inner = v != null
-        ? `<div class="cal-usd">${sign}$${Math.abs(v).toFixed(2)}</div><div class="cal-pct">${sign}${vp!=null?vp.toFixed(1):"—"}%</div>`
-        : "";
-      html += `<div class="cal-cell${cls}" style="animation-delay:${cellIdx*0.012}s"><div class="cal-num">${d}</div>${inner}</div>`;
-      cellIdx++;
-    }
-    html += "</div>";
+  for (let i=0; i<startDow; i++) { html += `<div class="cal-cell empty" style="animation-delay:${cellIdx*0.012}s"></div>`; cellIdx++; }
+  for (let d=1; d<=lastD; d++) {
+    const ds = month+"-"+String(d).padStart(2,"0");
+    const v  = cal[ds];
+    const vp = calPct[ds];
+    const isToday = ds===today;
+    let cls = isToday ? " today" : "";
+    if (v != null) cls += v>0 ? " pos-c" : " neg-c";
+    const sign = v>0 ? "+" : "";
+    const inner = v != null
+      ? `<div class="cal-usd">${sign}$${Math.abs(v).toFixed(2)}</div><div class="cal-pct">${sign}${vp!=null?vp.toFixed(1):"—"}%</div>`
+      : "";
+    html += `<div class="cal-cell${cls}" style="animation-delay:${cellIdx*0.012}s"><div class="cal-num">${d}</div>${inner}</div>`;
+    cellIdx++;
   }
+  html += "</div>";
   wrap.innerHTML = html;
+}
+
+function updateCalNav(allMonths, current) {
+  const label = $("cal-label");
+  const prev  = $("cal-prev");
+  const next  = $("cal-next");
+  if (!label || !prev || !next) return;
+  if (current) {
+    const d0 = new Date(current+"-01");
+    label.textContent = d0.toLocaleString("default",{month:"long",year:"numeric"});
+  }
+  const idx = allMonths.indexOf(current);
+  prev.disabled = idx <= 0;
+  next.disabled = idx >= allMonths.length - 1;
 }
 
 function renderPfChart(cumulative) {
@@ -956,7 +1035,13 @@ function renderPfChart(cumulative) {
 // ── History ────────────────────────────────────────────
 function renderHistory() {
   const tbody = $("history-tbody");
-  const data  = [..._history];
+  const q = ($("hist-search")?.value || "").toLowerCase().trim();
+  let data = [..._history];
+  if (q) data = data.filter(h =>
+    (h.pool_name||"").toLowerCase().includes(q) ||
+    (h.close_reason||"").toLowerCase().includes(q) ||
+    (h.strategy||"").toLowerCase().includes(q)
+  );
   data.sort((a,b) => {
     let av=a[_hsort.col], bv=b[_hsort.col];
     if (typeof av==="string") av=av.toLowerCase();
@@ -1002,7 +1087,19 @@ document.querySelector("#history-table thead").addEventListener("click", e => {
 // ── Journal ────────────────────────────────────────────
 function renderJournal() {
   const tbody = $("journal-tbody");
-  const data = _jfilter ? _journal.filter(e=>e.type===_jfilter) : _journal;
+  let data = _jfilter ? _journal.filter(e=>e.type===_jfilter) : [..._journal];
+  data.sort((a,b) => {
+    let av=a[_jsort.col], bv=b[_jsort.col];
+    if (typeof av==="string") av=av.toLowerCase();
+    if (typeof bv==="string") bv=bv.toLowerCase();
+    av = av ?? (_jsort.dir==="asc"?Infinity:-Infinity);
+    bv = bv ?? (_jsort.dir==="asc"?Infinity:-Infinity);
+    return _jsort.dir==="asc" ? (av>bv?1:-1) : (av<bv?1:-1);
+  });
+  document.querySelectorAll("#journal-thead th").forEach(th => {
+    th.classList.toggle("sa", th.dataset.col===_jsort.col && _jsort.dir==="asc");
+    th.classList.toggle("sd", th.dataset.col===_jsort.col && _jsort.dir==="desc");
+  });
   if (!data.length) { tbody.innerHTML='<tr><td colspan="8" class="empty">No journal entries yet</td></tr>'; return; }
 
   tbody.innerHTML = data.map(r => {
@@ -1026,6 +1123,42 @@ $("journal-filters").addEventListener("click", e => {
   _jfilter = btn.dataset.type;
   document.querySelectorAll(".fbtn").forEach(b=>b.classList.toggle("active",b===btn));
   renderJournal();
+});
+
+document.getElementById("journal-thead").addEventListener("click", e => {
+  const th = e.target.closest("th"); if (!th?.dataset.col) return;
+  _jsort = _jsort.col===th.dataset.col
+    ? {col:th.dataset.col, dir:_jsort.dir==="asc"?"desc":"asc"}
+    : {col:th.dataset.col, dir:"desc"};
+  renderJournal();
+});
+
+$("hist-search").addEventListener("input", renderHistory);
+
+// Mobile sidebar toggle
+document.getElementById("hamburger").addEventListener("click", () => {
+  const s = document.querySelector(".sidebar");
+  const o = document.getElementById("sidebar-overlay");
+  const open = s.classList.toggle("open");
+  o.classList.toggle("open", open);
+});
+document.getElementById("sidebar-overlay").addEventListener("click", () => {
+  document.querySelector(".sidebar").classList.remove("open");
+  document.getElementById("sidebar-overlay").classList.remove("open");
+});
+
+// Calendar nav
+document.getElementById("cal-prev").addEventListener("click", () => {
+  if (!_portfolio) return;
+  const months = getCalMonths(_portfolio.calendar||{});
+  const idx = months.indexOf(_calMonth);
+  if (idx > 0) { _calMonth = months[idx-1]; renderCalendar(_portfolio.calendar||{}, _portfolio.calendar_pct||{}); }
+});
+document.getElementById("cal-next").addEventListener("click", () => {
+  if (!_portfolio) return;
+  const months = getCalMonths(_portfolio.calendar||{});
+  const idx = months.indexOf(_calMonth);
+  if (idx < months.length-1) { _calMonth = months[idx+1]; renderCalendar(_portfolio.calendar||{}, _portfolio.calendar_pct||{}); }
 });
 
 // ── Lessons ────────────────────────────────────────────

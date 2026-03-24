@@ -114,6 +114,7 @@ export function recordJournalClose(d) {
       range_efficiency: d.range_efficiency,
       close_reason: d.close_reason,
       bin_range: d.bin_range ?? null,
+      bin_step: d.bin_step ?? null,
       variant: d.variant || null,
     });
     log("journal", `Recorded close: ${d.pool_name} pnl=$${d.pnl_usd?.toFixed(2)} (${pnl_sol != null ? pnl_sol.toFixed(4) : "?"} SOL)`);
@@ -122,6 +123,7 @@ export function recordJournalClose(d) {
         pool_name: d.pool_name,
         strategy: d.strategy,
         bin_range: d.bin_range ?? null,
+        bin_step: d.bin_step ?? null,
         amount_sol: d.amount_sol,
         initial_value_usd: d.initial_value_usd,
         pnl_usd: d.pnl_usd,

@@ -84,27 +84,36 @@ async function sendMessage(text) {
 }
 
 // ─── bin_range helper ────────────────────────────────────────────
-function fmtBins(bin_range) {
+function fmtBins(bin_range, bin_step) {
   if (bin_range == null) return null;
   if (typeof bin_range === "object") {
-    const total = (bin_range.bins_below ?? 0) + (bin_range.bins_above ?? 0);
-    return total > 0 ? `${total} bins` : null;
+    const below = bin_range.bins_below ?? 0;
+    const above = bin_range.bins_above ?? 0;
+    const total = below + above;
+    if (!total) return null;
+    if (bin_step > 0) {
+      const pBelow = Math.round(below * bin_step / 100);
+      const pAbove = Math.round(above * bin_step / 100);
+      return `${total} bins (-${pBelow}% / +${pAbove}%)`;
+    }
+    return `${total} bins`;
   }
   return `${bin_range} bins`;
 }
 
 // ─── Notification ────────────────────────────────────────────────
-export async function notifyJournalClose({ pool_name, strategy, bin_range, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, minutes_held, close_reason }) {
+export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
   const su = (pnl_usd ?? 0) >= 0 ? "+" : "";
   const ss = (pnl_sol ?? 0) >= 0 ? "+" : "";
   const sp = (pnl_pct ?? 0) >= 0 ? "+" : "";
-  const stratLine = [strategy, fmtBins(bin_range)].filter(Boolean).join(" | ");
+  const stratLine = [strategy, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
+  const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
   await sendMessage(
     `📖 JOURNAL — CLOSE\n\n` +
     `📍 ${pool_name}\n` +
     (stratLine ? `📊 ${stratLine}\n` : ``) +
-    `💵 Invested: ${(amount_sol ?? 0).toFixed(4)} SOL ($${(initial_value_usd ?? 0).toFixed(2)})\n` +
+    `💵 Invested: ${(amount_sol ?? 0).toFixed(4)} SOL${usdPart}\n` +
     `💰 PnL: ${su}$${(pnl_usd ?? 0).toFixed(2)} | ${ss}${(pnl_sol ?? 0).toFixed(4)} SOL | ${sp}${(pnl_pct ?? 0).toFixed(2)}%` +
     (close_reason ? `\n💡 ${close_reason}` : ``) +
     (minutes_held != null ? `\n⏱️ Held: ${minutes_held}m` : ``)

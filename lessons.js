@@ -100,6 +100,7 @@ export async function recordPerformance(perf) {
       range_efficiency: entry.range_efficiency,
       close_reason: entry.close_reason,
       bin_range: entry.bin_range ?? null,
+      bin_step: entry.bin_step ?? null,
       variant: entry.variant || null,
     });
   } catch (e) {
