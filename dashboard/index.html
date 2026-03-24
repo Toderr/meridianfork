@@ -1102,7 +1102,7 @@ function renderHistory() {
     const reason = r.close_reason ? `<span class="badge b-cls">${r.close_reason.toUpperCase().slice(0,18)}</span>` : "—";
     const amountCell = sol
       ? `${f(r.amount_sol,4)} SOL`
-      : (r.initial_value_usd > 0 ? `$${f(r.initial_value_usd,2)}` : `${f(r.amount_sol,3)} SOL`);
+      : (r.initial_value_usd > 0 ? `$${f(r.initial_value_usd,2)}` : `<span style="color:var(--muted)">${f(r.amount_sol,4)} SOL</span>`);
     const pnlVal   = sol ? ps : p;
     const pnlClass = (pnlVal??0)>=0 ? "pv" : "nv";
     const pnlCell  = sol
@@ -1160,7 +1160,7 @@ function renderJournal() {
     if (r.type==="claim") badge='<span class="badge b-clm">CLAIM</span>';
     const amountCell = sol
       ? `${f(r.amount_sol,4)} SOL`
-      : (r.initial_value_usd > 0 ? `$${f(r.initial_value_usd,2)}` : `${f(r.amount_sol,3)} SOL`);
+      : (r.initial_value_usd > 0 ? `$${f(r.initial_value_usd,2)}` : `<span style="color:var(--muted)">${f(r.amount_sol,4)} SOL</span>`);
     let pnlCell;
     if (sol) {
       pnlCell = r.pnl_sol!=null ? `<span class="${r.pnl_sol>=0?"pv":"nv"}">${r.pnl_sol>=0?"+":""}${f(r.pnl_sol,4)} SOL</span>` : "—";
