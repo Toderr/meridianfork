@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { getJournalEntries } from "./journal.js";
+import { listLessons } from "./lessons.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -109,11 +110,102 @@ async function handleCommand(text) {
   }
 
   if (cmd === "/today") {
-    const from = new Date();
-    from.setHours(0, 0, 0, 0);
-    const entries = getJournalEntries({ from: from.toISOString() });
-    if (!entries.length) return sendMessage("No entries today.");
-    return sendMessage(`📖 Today (${entries.length} entries):\n\n` + entries.map(fmtEntry).join("\n"));
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStr = todayStart.toISOString();
+    const dateLabel = todayStart.toISOString().slice(0, 10);
+
+    const closes = getJournalEntries({ from: todayStr, type: "close" });
+    if (!closes.length) return sendMessage(`📖 TODAY — ${dateLabel}\n\nNo closed positions yet.`);
+
+    // ── Per-position lines ────────────────────────────────────────
+    const posLines = closes.map((e) => {
+      const sp = (e.pnl_pct ?? 0) >= 0 ? "+" : "";
+      const su = (e.pnl_usd ?? 0) >= 0 ? "+" : "";
+      const icon = (e.pnl_pct ?? 0) >= 0 ? "📗" : "📕";
+      return `${icon} ${e.pool_name} | ${su}$${(e.pnl_usd ?? 0).toFixed(2)} | ${sp}${(e.pnl_pct ?? 0).toFixed(2)}% | ${e.strategy ?? "?"} | ${e.minutes_held ?? "?"}m | ${e.close_reason ?? "-"}`;
+    });
+
+    // ── Stats ────────────────────────────────────────────────────
+    const wins   = closes.filter(e => (e.pnl_pct ?? 0) >= 0);
+    const losses = closes.filter(e => (e.pnl_pct ?? 0) < 0);
+    const totalUsd = closes.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
+    const totalSol = closes.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+    const totalInvested = closes.reduce((s, e) => s + (e.initial_value_usd ?? 0), 0);
+    const totalPct = totalInvested > 0 ? (totalUsd / totalInvested) * 100 : 0;
+    const winRate = Math.round((wins.length / closes.length) * 100);
+    const avgProfit = wins.length  > 0 ? wins.reduce((s, e)   => s + (e.pnl_pct ?? 0), 0) / wins.length   : 0;
+    const avgLoss   = losses.length > 0 ? losses.reduce((s, e) => s + (e.pnl_pct ?? 0), 0) / losses.length : 0;
+
+    const suT = totalUsd >= 0 ? "+" : "";
+    const ssT = totalSol >= 0 ? "+" : "";
+    const spT = totalPct >= 0 ? "+" : "";
+
+    // ── Best strategy ─────────────────────────────────────────────
+    const stratMap = {};
+    for (const e of closes) {
+      const s = e.strategy ?? "unknown";
+      if (!stratMap[s]) stratMap[s] = [];
+      stratMap[s].push(e.pnl_pct ?? 0);
+    }
+    let bestStrat = null, bestStratAvg = -Infinity;
+    for (const [s, pcts] of Object.entries(stratMap)) {
+      const avg = pcts.reduce((a, b) => a + b, 0) / pcts.length;
+      if (avg > bestStratAvg) { bestStratAvg = avg; bestStrat = s; }
+    }
+    const bestStratLine = bestStrat
+      ? `🎯 Best strategy: ${bestStrat} (avg ${bestStratAvg >= 0 ? "+" : ""}${bestStratAvg.toFixed(2)}%, ${stratMap[bestStrat].length} trade${stratMap[bestStrat].length > 1 ? "s" : ""})`
+      : null;
+
+    // ── Lessons derived today ─────────────────────────────────────
+    const allLessons = listLessons({ limit: 200 }).lessons;
+    const todayLessons = allLessons.filter(l => l.created_at >= dateLabel);
+    const lessonLines = todayLessons.length > 0
+      ? todayLessons.map(l => `• ${l.rule.slice(0, 100)}`).join("\n")
+      : "• No new lessons derived today";
+
+    // ── Action plan ───────────────────────────────────────────────
+    const actions = [];
+    if (bestStrat && bestStratAvg > 0)
+      actions.push(`Prioritize ${bestStrat} strategy — best performer today`);
+    if (winRate < 40)
+      actions.push("Win rate low (<40%) — review entry criteria before next deploy");
+    else if (winRate >= 70)
+      actions.push("Strong win rate — current screening criteria is working well");
+    if (losses.length > 0) {
+      const emergencyLosses = losses.filter(e => (e.close_reason ?? "").toLowerCase().includes("emergency") || (e.close_reason ?? "").toLowerCase().includes("stop"));
+      if (emergencyLosses.length > 0)
+        actions.push(`${emergencyLosses.length} stop-loss trigger(s) — consider tightening entry criteria for volatile pools`);
+      const avgLossHeld = losses.reduce((s, e) => s + (e.minutes_held ?? 0), 0) / losses.length;
+      if (avgLossHeld < 20)
+        actions.push("Losing positions closed quickly (<20m avg) — may indicate bad entries, not bad management");
+    }
+    const oorLosses = closes.filter(e => (e.close_reason ?? "").toLowerCase().includes("oor") || (e.close_reason ?? "").toLowerCase().includes("range"));
+    if (oorLosses.length > 0)
+      actions.push(`${oorLosses.length} OOR close(s) — consider wider bin range or more volatile-tolerant strategy`);
+    if (actions.length === 0)
+      actions.push("Performance within normal range — maintain current settings");
+
+    const actionLines = actions.map(a => `• ${a}`).join("\n");
+
+    // ── Assemble ──────────────────────────────────────────────────
+    const parts = [
+      `📖 TODAY — ${dateLabel}\n`,
+      posLines.join("\n"),
+      `\n——————————————`,
+      `📊 ${closes.length} trades | ${wins.length}W ${losses.length}L`,
+      `💰 PnL: ${suT}$${totalUsd.toFixed(2)} | ${ssT}${totalSol.toFixed(4)} SOL | ${spT}${totalPct.toFixed(2)}%`,
+      `📈 Win rate: ${winRate}%`,
+      `✅ Avg profit: ${avgProfit >= 0 ? "+" : ""}${avgProfit.toFixed(2)}%`,
+      `❌ Avg loss: ${avgLoss.toFixed(2)}%`,
+      bestStratLine,
+      `\n——————————————`,
+      `🧠 Lessons today:\n${lessonLines}`,
+      `\n——————————————`,
+      `📋 Action plan:\n${actionLines}`,
+    ].filter(Boolean).join("\n");
+
+    return sendMessage(parts);
   }
 
   if (cmd === "/closes") {
