@@ -570,7 +570,12 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
           <div class="kpi"><div class="kpi-label">Profit Factor</div><div class="kpi-val" id="ov-pf">—</div><div class="kpi-sub">gross profit / loss</div></div>
         </div>
 
-        <div class="sh"><div class="sh-title">Agent Stats</div><div class="sh-line"></div></div>
+        <div class="sh" style="cursor:pointer;user-select:none" id="agent-stats-header">
+          <div class="sh-title">Agent Stats</div>
+          <div class="sh-line"></div>
+          <button class="cal-nav" id="agent-stats-toggle" style="flex-shrink:0" aria-label="Toggle agent stats">&#9660;</button>
+        </div>
+        <div id="agent-stats-body">
         <div class="kpi-grid">
           <div class="kpi"><div class="kpi-label">Uptime</div><div class="kpi-val" id="ov-uptime">—</div><div class="kpi-sub" id="ov-started">—</div></div>
           <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-val" id="ov-open">—</div><div class="kpi-sub" id="ov-closed">—</div></div>
@@ -578,6 +583,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
           <div class="kpi"><div class="kpi-label">Deployed</div><div class="kpi-val" id="ov-deployed">—</div><div class="kpi-sub" id="ov-fee-claims">—</div></div>
           <div class="kpi"><div class="kpi-label">Fees Earned</div><div class="kpi-val" id="ov-fees">—</div><div class="kpi-sub">USD</div></div>
           <div class="kpi"><div class="kpi-label">Errors</div><div class="kpi-val" id="ov-errors">—</div><div class="kpi-sub">agent errors</div></div>
+        </div>
         </div>
 
         <div class="sh"><div class="sh-title">Active Positions</div><div class="sh-line"></div></div>
@@ -1229,6 +1235,20 @@ document.getElementById("cal-next").addEventListener("click", () => {
   const idx = months.indexOf(_calMonth);
   if (idx < months.length-1) { _calMonth = months[idx+1]; renderCalendar(_portfolio.calendar||{}, _portfolio.calendar_pct||{}); }
 });
+
+// Agent Stats collapse toggle
+(function() {
+  let _statsVisible = true;
+  const header = document.getElementById("agent-stats-header");
+  const body   = document.getElementById("agent-stats-body");
+  const btn    = document.getElementById("agent-stats-toggle");
+  function applyState() {
+    body.style.display = _statsVisible ? "" : "none";
+    btn.innerHTML = _statsVisible ? "&#9660;" : "&#9654;";
+  }
+  header.addEventListener("click", () => { _statsVisible = !_statsVisible; applyState(); });
+  btn.addEventListener("click", e => { e.stopPropagation(); _statsVisible = !_statsVisible; applyState(); });
+})();
 
 // ── Lessons ────────────────────────────────────────────
 function renderLessons() {
