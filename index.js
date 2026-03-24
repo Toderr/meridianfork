@@ -657,7 +657,7 @@ async function runPnlChecker() {
       if (pct >= FAST_TP_PCT) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${FAST_TP_PCT}% — TAKE PROFIT`);
         _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%` });
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%`, pnl_pct: pnl.pnl_pct, pnl_usd: pnl.pnl_usd, pnl_sol: pnl.pnl_sol });
         continue;
       }
 
@@ -676,7 +676,7 @@ async function runPnlChecker() {
       if (stop && pct < TRAILING_FLOOR) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${TRAILING_FLOOR}% — CLOSE`);
         _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%` });
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%`, pnl_pct: pnl.pnl_pct, pnl_usd: pnl.pnl_usd, pnl_sol: pnl.pnl_sol });
       }
     }
   } finally {

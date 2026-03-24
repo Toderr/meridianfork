@@ -590,7 +590,7 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
-export async function closePosition({ position_address, close_reason }) {
+export async function closePosition({ position_address, close_reason, pnl_usd: pnlUsdOverride, pnl_pct: pnlPctOverride, pnl_sol: pnlSolOverride }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
@@ -665,6 +665,10 @@ export async function closePosition({ position_address, close_reason }) {
         feesUsd       = (cachedPos.collected_fees_usd || 0) + (cachedPos.unclaimed_fees_usd || 0);
         pnlSolNative  = cachedPos.pnl_sol   ?? null;
       }
+      // Fresh PnL from caller (e.g. PnL checker) overrides stale cache
+      if (pnlPctOverride != null) pnlPct       = pnlPctOverride;
+      if (pnlUsdOverride != null) pnlUsd       = pnlUsdOverride;
+      if (pnlSolOverride != null) pnlSolNative = pnlSolOverride;
 
       _positionsCacheAt = 0; // invalidate cache after snapshotting PnL
       const initialUsd = tracked.initial_value_usd || 0;
