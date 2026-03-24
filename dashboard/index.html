@@ -766,6 +766,19 @@ const $  = id => document.getElementById(id);
 const f  = (n, d=2) => n == null ? "—" : (+n).toFixed(d);
 const pc = v => v > 0 ? "p" : v < 0 ? "n" : "";
 
+function fmtRange(bin_range, bin_step) {
+  if (!bin_range || typeof bin_range !== "object") return "";
+  const below = bin_range.bins_below ?? 0;
+  const above = bin_range.bins_above ?? 0;
+  if (!below && !above) return "";
+  if (bin_step > 0) {
+    const pB = Math.round(below * bin_step / 100);
+    const pA = Math.round(above * bin_step / 100);
+    return `-${pB}%/+${pA}%`;
+  }
+  return `${below+above} bins`;
+}
+
 function setV(id, text, cls) {
   const el = $(id); if (!el) return;
   const changed = el.textContent !== "—" && el.textContent !== text;
@@ -1063,7 +1076,7 @@ function renderHistory() {
     const rIdx = data.indexOf(r);
     return `<tr style="animation-delay:${Math.min(rIdx,14)*0.03}s">
       <td class="nm">${r.pool_name||"—"}</td>
-      <td>${r.strategy||"—"}</td>
+      <td>${r.strategy||"—"}${fmtRange(r.bin_range,r.bin_step) ? `<br><span style="font-size:9px;color:var(--muted)">${fmtRange(r.bin_range,r.bin_step)}</span>` : ""}</td>
       <td>${f(r.amount_sol,3)} SOL</td>
       <td class="${p>=0?"pv":"nv"}">$${f(p,2)}</td>
       <td class="${(r.pnl_pct??0)>=0?"pv":"nv"}">${f(r.pnl_pct,2)}%</td>
@@ -1111,7 +1124,7 @@ function renderJournal() {
     const fees = r.fees_earned_usd!=null?"$"+f(r.fees_earned_usd,2):r.fees_usd!=null?"$"+f(r.fees_usd,2):"—";
     const jIdx = data.indexOf(r);
     return `<tr style="animation-delay:${Math.min(jIdx,14)*0.03}s">
-      <td>${badge}</td><td class="nm">${r.pool_name||"—"}</td><td>${r.strategy||"—"}</td>
+      <td>${badge}</td><td class="nm">${r.pool_name||"—"}</td><td>${r.strategy||"—"}${fmtRange(r.bin_range,r.bin_step) ? `<br><span style="font-size:9px;color:var(--muted)">${fmtRange(r.bin_range,r.bin_step)}</span>` : ""}</td>
       <td>${f(r.amount_sol,3)} SOL</td><td>${pnl}</td><td>${fees}</td>
       <td>${r.close_reason||"—"}</td><td>${fmtDate(r.timestamp)}</td>
     </tr>`;
