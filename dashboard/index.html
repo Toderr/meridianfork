@@ -44,15 +44,34 @@ html, body {
   line-height: 1.5;
 }
 
-body {
+/* Animated ambient background */
+body::before, body::after {
+  content: '';
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 0;
+}
+body::before {
+  background:
+    radial-gradient(ellipse 55% 45% at 15% 20%, rgba(201,169,110,0.055) 0%, transparent 65%),
+    radial-gradient(ellipse 45% 40% at 85% 75%, rgba(74,158,255,0.04) 0%, transparent 65%),
+    radial-gradient(ellipse 35% 30% at 60% 10%, rgba(0,217,126,0.025) 0%, transparent 60%);
+  animation: ambientDrift 22s ease-in-out infinite alternate;
+}
+body::after {
   background-image:
-    linear-gradient(rgba(255,255,255,0.013) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.013) 1px, transparent 1px);
+    linear-gradient(rgba(255,255,255,0.011) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.011) 1px, transparent 1px);
   background-size: 32px 32px;
+}
+@keyframes ambientDrift {
+  0%   { transform: translate(0, 0) scale(1); }
+  33%  { transform: translate(18px, -14px) scale(1.03); }
+  66%  { transform: translate(-12px, 10px) scale(0.98); }
+  100% { transform: translate(22px, -8px) scale(1.04); }
 }
 
 /* ── Layout ────────────────────────────────────────────── */
-.layout { display: flex; height: 100vh; overflow: hidden; }
+.layout { display: flex; height: 100vh; overflow: hidden; position: relative; z-index: 1; }
 
 /* ── Sidebar ───────────────────────────────────────────── */
 .sidebar {
@@ -449,9 +468,9 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
     <div class="topbar">
       <div class="tb-pill"><span class="tb-label">SOL</span><span class="tb-val g" id="tb-sol">—</span></div>
       <div class="tb-pill"><span class="tb-label">Price</span><span class="tb-val" id="tb-price">—</span></div>
-      <div class="tb-pill"><span class="tb-label">Positions</span><span class="tb-val g" id="tb-pos">—</span></div>
+      <div class="tb-pill"><span class="tb-label">Positions</span><span class="tb-val" id="tb-pos">—</span></div>
       <div class="tb-pill"><span class="tb-label">Net PnL</span><span class="tb-val" id="tb-pnl">—</span></div>
-      <div class="tb-pill"><span class="tb-label">Win Rate</span><span class="tb-val b" id="tb-wr">—</span></div>
+      <div class="tb-pill"><span class="tb-label">Win Rate</span><span class="tb-val" id="tb-wr">—</span></div>
       <div class="tb-pill"><span class="tb-label">Profit Factor</span><span class="tb-val" id="tb-pf">—</span></div>
       <div class="tb-pill"><span class="tb-label">Uptime</span><span class="tb-val" id="tb-uptime">—</span></div>
     </div>
@@ -464,7 +483,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
         <div class="sh"><div class="sh-title">Performance</div><div class="sh-line"></div></div>
         <div class="kpi-grid">
           <div class="kpi"><div class="kpi-label">SOL Balance</div><div class="kpi-val g" id="ov-sol">—</div><div class="kpi-sub" id="ov-usd">—</div></div>
-          <div class="kpi"><div class="kpi-label">SOL Price</div><div class="kpi-val b" id="ov-price">—</div><div class="kpi-sub">per SOL</div></div>
+          <div class="kpi"><div class="kpi-label">SOL Price</div><div class="kpi-val" id="ov-price">—</div><div class="kpi-sub">per SOL</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL</div><div class="kpi-val" id="ov-pnl">—</div><div class="kpi-sub" id="ov-pnl-sol">—</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL %</div><div class="kpi-val" id="ov-pnl-pct">—</div><div class="kpi-sub">portfolio return</div></div>
           <div class="kpi"><div class="kpi-label">Win Rate</div><div class="kpi-val" id="ov-wr">—</div><div class="kpi-sub" id="ov-day-wr">—</div></div>
@@ -473,10 +492,10 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
         <div class="sh"><div class="sh-title">Agent Stats</div><div class="sh-line"></div></div>
         <div class="kpi-grid">
-          <div class="kpi"><div class="kpi-label">Uptime</div><div class="kpi-val g" id="ov-uptime">—</div><div class="kpi-sub" id="ov-started">—</div></div>
-          <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-val b" id="ov-open">—</div><div class="kpi-sub" id="ov-closed">—</div></div>
-          <div class="kpi"><div class="kpi-label">Mgmt Cycles</div><div class="kpi-val g" id="ov-mgmt">—</div><div class="kpi-sub" id="ov-screen">—</div></div>
-          <div class="kpi"><div class="kpi-label">Deployed</div><div class="kpi-val b" id="ov-deployed">—</div><div class="kpi-sub" id="ov-fee-claims">—</div></div>
+          <div class="kpi"><div class="kpi-label">Uptime</div><div class="kpi-val" id="ov-uptime">—</div><div class="kpi-sub" id="ov-started">—</div></div>
+          <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-val" id="ov-open">—</div><div class="kpi-sub" id="ov-closed">—</div></div>
+          <div class="kpi"><div class="kpi-label">Mgmt Cycles</div><div class="kpi-val" id="ov-mgmt">—</div><div class="kpi-sub" id="ov-screen">—</div></div>
+          <div class="kpi"><div class="kpi-label">Deployed</div><div class="kpi-val" id="ov-deployed">—</div><div class="kpi-sub" id="ov-fee-claims">—</div></div>
           <div class="kpi"><div class="kpi-label">Fees Earned</div><div class="kpi-val g" id="ov-fees">—</div><div class="kpi-sub">USD</div></div>
           <div class="kpi"><div class="kpi-label">Errors</div><div class="kpi-val" id="ov-errors">—</div><div class="kpi-sub">agent errors</div></div>
         </div>
@@ -688,11 +707,11 @@ const api = p => fetch(p).then(r => r.json());
 // ── Topbar ─────────────────────────────────────────────
 function updateTopbar() {
   if (_wallet)    { setV("tb-sol", f(_wallet.sol,3)+" SOL","g"); setV("tb-price","$"+f(_wallet.sol_price,0)); }
-  if (_positions) { setV("tb-pos", _positions.total,"g"); }
+  if (_positions) { setV("tb-pos", _positions.total); }
   if (_portfolio) {
     const p = _portfolio.net_pnl_usd;
     setV("tb-pnl","$"+f(p,2), pc(p));
-    setV("tb-wr",  f(_portfolio.win_rate_pct,1)+"%","b");
+    setV("tb-wr",  f(_portfolio.win_rate_pct,1)+"%");
     setV("tb-pf",  _portfolio.profit_factor != null ? f(_portfolio.profit_factor,2) : "—");
   }
   if (_stats) setV("tb-uptime", fmtUp(_stats.uptime_min));
@@ -703,7 +722,7 @@ function renderOverview() {
   if (_wallet) {
     setV("ov-sol",   f(_wallet.sol,4)+" SOL", "g");
     setV("ov-usd",   "$"+f(_wallet.sol_usd,2)+" total");
-    setV("ov-price", "$"+f(_wallet.sol_price,2), "b");
+    setV("ov-price", "$"+f(_wallet.sol_price,2));
   }
   if (_portfolio) {
     const p = _portfolio.net_pnl_usd;
@@ -716,13 +735,13 @@ function renderOverview() {
     setV("ov-pf", pf != null ? f(pf,2) : "—", pf > 1 ? "p" : pf < 1 ? "n" : "");
   }
   if (_stats) {
-    setV("ov-uptime",   fmtUp(_stats.uptime_min), "g");
+    setV("ov-uptime",   fmtUp(_stats.uptime_min));
     setV("ov-started",  "since "+new Date(_stats.started_at).toLocaleTimeString());
-    setV("ov-open",     String(_stats.open_positions ?? "—"), "b");
+    setV("ov-open",     String(_stats.open_positions ?? "—"));
     setV("ov-closed",   (_stats.closed_positions ?? 0)+" closed total");
-    setV("ov-mgmt",     String(_stats.management_cycles), "g");
+    setV("ov-mgmt",     String(_stats.management_cycles));
     setV("ov-screen",   _stats.screening_cycles+" screening");
-    setV("ov-deployed", String(_stats.positions_deployed), "b");
+    setV("ov-deployed", String(_stats.positions_deployed));
     setV("ov-fee-claims",_stats.fees_claimed+" claims");
     setV("ov-fees",     "$"+f(_stats.total_fees_usd,2), "g");
     setV("ov-errors",   String(_stats.errors), _stats.errors > 0 ? "n" : "");
