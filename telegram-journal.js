@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import cron from "node-cron";
 import { log } from "./logger.js";
 import { getJournalEntries } from "./journal.js";
 
@@ -110,6 +111,50 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, amoun
   );
 }
 
+// ─── Shared report builder ───────────────────────────────────────
+function buildSummaryReport(closes, header) {
+  if (!closes.length) return `${header}\n\nNo closed positions.`;
+
+  const wins   = closes.filter(e => (e.pnl_pct ?? 0) >= 0);
+  const losses = closes.filter(e => (e.pnl_pct ?? 0) < 0);
+  const totalUsd = closes.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
+  const totalSol = closes.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+  const totalInvested = closes.reduce((s, e) => s + (e.initial_value_usd ?? 0), 0);
+  const totalPct = totalInvested > 0 ? (totalUsd / totalInvested) * 100 : 0;
+  const winRate = Math.round((wins.length / closes.length) * 100);
+  const avgProfit = wins.length  > 0 ? wins.reduce((s, e)   => s + (e.pnl_pct ?? 0), 0) / wins.length   : 0;
+  const avgLoss   = losses.length > 0 ? losses.reduce((s, e) => s + (e.pnl_pct ?? 0), 0) / losses.length : 0;
+
+  const suT = totalUsd >= 0 ? "+" : "";
+  const ssT = totalSol >= 0 ? "+" : "";
+  const spT = totalPct >= 0 ? "+" : "";
+
+  const stratMap = {};
+  for (const e of closes) {
+    const s = e.strategy ?? "unknown";
+    if (!stratMap[s]) stratMap[s] = [];
+    stratMap[s].push(e.pnl_pct ?? 0);
+  }
+  let bestStrat = null, bestStratAvg = -Infinity;
+  for (const [s, pcts] of Object.entries(stratMap)) {
+    const avg = pcts.reduce((a, b) => a + b, 0) / pcts.length;
+    if (avg > bestStratAvg) { bestStratAvg = avg; bestStrat = s; }
+  }
+  const bestStratLine = bestStrat
+    ? `🎯 Best: ${bestStrat} (avg ${bestStratAvg >= 0 ? "+" : ""}${bestStratAvg.toFixed(2)}%, ${stratMap[bestStrat].length} trade${stratMap[bestStrat].length > 1 ? "s" : ""})`
+    : null;
+
+  return [
+    `${header}\n`,
+    `📊 ${closes.length} trades | ${wins.length}W ${losses.length}L`,
+    `💰 PnL: ${suT}$${totalUsd.toFixed(2)} | ${ssT}${totalSol.toFixed(4)} SOL | ${spT}${totalPct.toFixed(2)}%`,
+    `📈 Win rate: ${winRate}%`,
+    `✅ Avg profit: ${avgProfit >= 0 ? "+" : ""}${avgProfit.toFixed(2)}%`,
+    `❌ Avg loss: ${avgLoss.toFixed(2)}%`,
+    bestStratLine,
+  ].filter(Boolean).join("\n");
+}
+
 // ─── Command handlers ────────────────────────────────────────────
 function fmtEntry(e) {
   const t = fmtTime(e.timestamp);
@@ -140,51 +185,8 @@ async function handleCommand(text) {
 
   if (cmd === "/today") {
     const dateLabel = todayUtc7();
-    const todayStr  = midnightUtc7(dateLabel);
-
-    const closes = getJournalEntries({ from: todayStr, type: "close" });
-    if (!closes.length) return sendMessage(`📖 TODAY — ${dateLabel}\n\nNo closed positions yet.`);
-
-    // ── Stats ────────────────────────────────────────────────────
-    const wins   = closes.filter(e => (e.pnl_pct ?? 0) >= 0);
-    const losses = closes.filter(e => (e.pnl_pct ?? 0) < 0);
-    const totalUsd = closes.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
-    const totalSol = closes.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
-    const totalInvested = closes.reduce((s, e) => s + (e.initial_value_usd ?? 0), 0);
-    const totalPct = totalInvested > 0 ? (totalUsd / totalInvested) * 100 : 0;
-    const winRate = Math.round((wins.length / closes.length) * 100);
-    const avgProfit = wins.length  > 0 ? wins.reduce((s, e)   => s + (e.pnl_pct ?? 0), 0) / wins.length   : 0;
-    const avgLoss   = losses.length > 0 ? losses.reduce((s, e) => s + (e.pnl_pct ?? 0), 0) / losses.length : 0;
-
-    const suT = totalUsd >= 0 ? "+" : "";
-    const ssT = totalSol >= 0 ? "+" : "";
-    const spT = totalPct >= 0 ? "+" : "";
-
-    // ── Best strategy ─────────────────────────────────────────────
-    const stratMap = {};
-    for (const e of closes) {
-      const s = e.strategy ?? "unknown";
-      if (!stratMap[s]) stratMap[s] = [];
-      stratMap[s].push(e.pnl_pct ?? 0);
-    }
-    let bestStrat = null, bestStratAvg = -Infinity;
-    for (const [s, pcts] of Object.entries(stratMap)) {
-      const avg = pcts.reduce((a, b) => a + b, 0) / pcts.length;
-      if (avg > bestStratAvg) { bestStratAvg = avg; bestStrat = s; }
-    }
-    const bestStratLine = bestStrat
-      ? `🎯 Best: ${bestStrat} (avg ${bestStratAvg >= 0 ? "+" : ""}${bestStratAvg.toFixed(2)}%, ${stratMap[bestStrat].length} trade${stratMap[bestStrat].length > 1 ? "s" : ""})`
-      : null;
-
-    return sendMessage([
-      `📖 TODAY — ${dateLabel}\n`,
-      `📊 ${closes.length} trades | ${wins.length}W ${losses.length}L`,
-      `💰 PnL: ${suT}$${totalUsd.toFixed(2)} | ${ssT}${totalSol.toFixed(4)} SOL | ${spT}${totalPct.toFixed(2)}%`,
-      `📈 Win rate: ${winRate}%`,
-      `✅ Avg profit: ${avgProfit >= 0 ? "+" : ""}${avgProfit.toFixed(2)}%`,
-      `❌ Avg loss: ${avgLoss.toFixed(2)}%`,
-      bestStratLine,
-    ].filter(Boolean).join("\n"));
+    const closes = getJournalEntries({ from: midnightUtc7(dateLabel), type: "close" });
+    return sendMessage(buildSummaryReport(closes, `📖 TODAY — ${dateLabel}`));
   }
 
   if (cmd === "/closes") {
@@ -258,11 +260,69 @@ async function poll() {
   }
 }
 
+// ─── Scheduled reports ───────────────────────────────────────────
+async function sendDailyReport() {
+  const dateLabel = todayUtc7();
+  const closes = getJournalEntries({ from: midnightUtc7(dateLabel), type: "close" });
+  await sendMessage(buildSummaryReport(closes, `📖 DAILY — ${dateLabel}`));
+}
+
+async function sendWeeklyReport() {
+  const dateLabel = todayUtc7();
+  // 7 days back: midnight of (today - 6 days) in UTC+7
+  const sevenDaysAgo = new Date(new Date(dateLabel + "T00:00:00.000Z").getTime() - TZ_OFFSET_MS - 6 * 24 * 60 * 60 * 1000).toISOString();
+  const closes = getJournalEntries({ from: sevenDaysAgo, type: "close" });
+  // Week label: "Mon DD – Mon DD"
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const endDate = new Date(Date.now() + TZ_OFFSET_MS);
+  const startDate = new Date(endDate.getTime() - 6 * 24 * 60 * 60 * 1000);
+  const fmtDate = (d) => `${d.getUTCDate()} ${MONTH_NAMES[d.getUTCMonth()]}`;
+  const weekLabel = `${fmtDate(startDate)} – ${fmtDate(endDate)}`;
+  await sendMessage(buildSummaryReport(closes, `📅 WEEKLY — ${weekLabel}`));
+}
+
+async function sendMonthlyReport() {
+  const dateLabel = todayUtc7(); // YYYY-MM-DD
+  const [year, month] = dateLabel.split("-").map(Number);
+  // First day of this month midnight UTC+7 expressed as UTC
+  const firstOfMonth = new Date(new Date(`${year}-${String(month).padStart(2, "0")}-01T00:00:00.000Z`).getTime() - TZ_OFFSET_MS).toISOString();
+  const closes = getJournalEntries({ from: firstOfMonth, type: "close" });
+  const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  await sendMessage(buildSummaryReport(closes, `📆 MONTHLY — ${MONTH_NAMES[month - 1]} ${year}`));
+}
+
 export function startJournalPolling() {
   if (!TOKEN) return;
   _polling = true;
   poll();
   log("journal_bot", "Journal bot polling started");
+}
+
+export function startJournalCrons() {
+  if (!TOKEN) return;
+
+  // Daily at 23:59 UTC+7 = 16:59 UTC
+  cron.schedule("59 16 * * *", () => {
+    sendDailyReport().catch(e => log("journal_bot_error", `Daily report failed: ${e.message}`));
+  });
+
+  // Weekly Sunday at 23:59 UTC+7 = 16:59 UTC
+  cron.schedule("59 16 * * 0", () => {
+    sendWeeklyReport().catch(e => log("journal_bot_error", `Weekly report failed: ${e.message}`));
+  });
+
+  // Monthly: last day of month — run every day on 28-31, send only on last day of month (UTC+7)
+  cron.schedule("59 16 28-31 * *", () => {
+    const now7 = new Date(Date.now() + TZ_OFFSET_MS);
+    const tomorrow7 = new Date(now7.getTime() + 24 * 60 * 60 * 1000);
+    // If tomorrow is the 1st, today is the last day of the month
+    if (tomorrow7.getUTCDate() === 1) {
+      sendMonthlyReport().catch(e => log("journal_bot_error", `Monthly report failed: ${e.message}`));
+    }
+  });
+
+  log("journal_bot", "Journal report crons scheduled (daily/weekly/monthly at 23:59 UTC+7)");
 }
 
 export function stopJournalPolling() {

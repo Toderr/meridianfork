@@ -148,11 +148,16 @@ Separate Telegram bot dedicated to the trading journal. Configured via `TELEGRAM
 ⏱️ Held: 74m
 ```
 
+**Scheduled reports** (all at 23:59 UTC+7):
+- Daily — every day
+- Weekly — every Sunday (last 7 days)
+- Monthly — last day of the month
+
 **Commands:**
 - `/recent [N]` — last N entries (default 5, max 20)
-- `/today` — all entries from today
+- `/today` — today's summary stats
 - `/closes` — last 10 closed positions with PnL
-- `/stats` — total trades, win rate, total PnL
+- `/stats` — all-time win rate and total PnL
 
 ## Screening Cycle — Report
 

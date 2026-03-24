@@ -11,7 +11,7 @@ import fs from "fs";
 import { evolveThresholds, getPerformanceSummary, addLesson } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
-import { startJournalPolling, stopJournalPolling } from "./telegram-journal.js";
+import { startJournalPolling, stopJournalPolling, startJournalCrons } from "./telegram-journal.js";
 import { generateBriefing } from "./briefing.js";
 import { generateReport } from "./reports.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions } from "./state.js";
@@ -945,6 +945,7 @@ if (isTTY) {
   }
 
   startJournalPolling();
+  startJournalCrons();
 
   startPolling(async (text) => {
     if (busy) {
@@ -1282,6 +1283,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   }
 
   startJournalPolling();
+  startJournalCrons();
 
   // Telegram chat handler (non-TTY / VPS mode)
   startPolling(async (text) => {
