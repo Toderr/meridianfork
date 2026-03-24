@@ -288,6 +288,13 @@ export async function executeTool(name, args) {
       if (!args.strategy || args.strategy === config.strategy.strategy) {
         args = { ...args, strategy: resolveStrategy(args.volatility) };
       }
+      // Ensure initial_value_usd is always set before trackPosition stores it in state.json
+      if (!(args.initial_value_usd > 0)) {
+        const amountSol = args.amount_y ?? args.amount_sol ?? 0;
+        const wPre = await getWalletBalances({});
+        const computed = amountSol * (wPre?.sol_price || 0);
+        if (computed > 0) args = { ...args, initial_value_usd: computed };
+      }
     }
 
     const result = await fn(args);
@@ -322,7 +329,7 @@ export async function executeTool(name, args) {
                 amount_sol: args.amount_y ?? args.amount_sol ?? 0,
                 initial_value_usd: args.initial_value_usd
                   || ((args.amount_y ?? args.amount_sol ?? 0) * (w?.sol_price || 0))
-                  || undefined,
+                  || null,
                 sol_price: w?.sol_price || 0,
                 bin_step: args.bin_step,
                 volatility: args.volatility,
