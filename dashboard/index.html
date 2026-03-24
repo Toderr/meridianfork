@@ -121,6 +121,7 @@ html, body {
   border-left: 2px solid transparent;
   transition: color 0.18s, background 0.18s, border-color 0.18s;
   font-size: 12px; font-weight: 500; letter-spacing: 0.01em;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent; user-select: none;
 }
 .nav-item svg { flex-shrink: 0; transition: opacity 0.18s; opacity: 0.45; }
 .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.022); }
@@ -428,7 +429,8 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 .hamburger {
   display: none; background: none; border: none; cursor: pointer;
   padding: 0 14px; color: var(--muted2); font-size: 18px; flex-shrink: 0;
-  align-items: center;
+  align-items: center; min-width: 44px; min-height: 44px;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
 .hamburger:hover { color: var(--text); }
 .sidebar-overlay {
@@ -447,12 +449,15 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
 @media (max-width: 768px) {
   .hamburger { display: flex; }
+  /* Remove layout's stacking context so sidebar z-index works against root */
+  .layout { z-index: auto; }
   .sidebar {
     position: fixed; top: 0; left: 0; height: 100%;
     transform: translateX(-100%);
     transition: transform 0.25s ease; z-index: 200;
+    pointer-events: none;
   }
-  .sidebar.open { transform: translateX(0); }
+  .sidebar.open { transform: translateX(0); pointer-events: auto; }
   .sidebar-overlay.open { display: block; }
   .layout { overflow-y: auto; }
   .main { overflow: visible; }
@@ -475,7 +480,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
   <!-- ══ Sidebar ══════════════════════════════════════ -->
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-name">Meridian</div>
+      <div class="brand-name">Meridianfork</div>
       <div class="brand-sub">LP Agent</div>
     </div>
 
