@@ -7,6 +7,7 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
+import { notifyJournalClose, isEnabled as journalBotEnabled } from "./telegram-journal.js";
 
 const JOURNAL_FILE = "./journal.json";
 
@@ -112,9 +113,24 @@ export function recordJournalClose(d) {
       minutes_held: d.minutes_held,
       range_efficiency: d.range_efficiency,
       close_reason: d.close_reason,
+      bin_range: d.bin_range ?? null,
       variant: d.variant || null,
     });
     log("journal", `Recorded close: ${d.pool_name} pnl=$${d.pnl_usd?.toFixed(2)} (${pnl_sol != null ? pnl_sol.toFixed(4) : "?"} SOL)`);
+    if (journalBotEnabled()) {
+      notifyJournalClose({
+        pool_name: d.pool_name,
+        strategy: d.strategy,
+        bin_range: d.bin_range ?? null,
+        amount_sol: d.amount_sol,
+        initial_value_usd: d.initial_value_usd,
+        pnl_usd: d.pnl_usd,
+        pnl_sol,
+        pnl_pct: d.pnl_pct,
+        minutes_held: d.minutes_held,
+        close_reason: d.close_reason,
+      }).catch(() => {});
+    }
   } catch (e) {
     log("journal_error", `recordJournalClose failed: ${e.message}`);
   }

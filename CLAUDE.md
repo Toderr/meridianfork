@@ -28,6 +28,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `briefing.js` | Morning briefing (wraps `generateReport("daily")`) |
 | `prompt.js` | System prompt builder |
 | `telegram.js` | Telegram bot (long-polling) |
+| `telegram-journal.js` | Dedicated journal bot — notifies on close, supports `/recent`, `/today`, `/closes`, `/stats` |
 | `hive-mind.js` | Opt-in collective intelligence network |
 | `stats.js` | Shared in-memory counters + flags (`_stats`, `_flags`) |
 | `strategy-library.js` | LP strategy template storage and retrieval |
@@ -130,6 +131,28 @@ All notifications use plain-text format (no HTML bold). Format:
 - **Close format**: `💰 PnL: +$0.02 | +0.0000 SOL | +0.04%` — all three values (USD, SOL, %)
 - **Gas low**: sent once when SOL is insufficient; suppressed until a position closes. Uses `_flags.gasLowNotified` in `stats.js`.
 - **Max positions**: sent once when slot limit is hit; suppressed until a position closes. Uses `_flags.maxPositionsNotified` in `stats.js`.
+
+## Journal Bot (telegram-journal.js)
+
+Separate Telegram bot dedicated to the trading journal. Configured via `TELEGRAM_JOURNAL_BOT_TOKEN` in `.env`. Chat ID auto-saved as `telegramJournalChatId` in `user-config.json` on first message.
+
+**Notification** — fires on every position close:
+```
+📖 JOURNAL — CLOSE
+
+📍 TOKEN-SOL
+📊 bid_ask | 10 bins
+💵 Invested: 0.50 SOL ($85.00)
+💰 PnL: +$0.02 | +0.0001 SOL | +0.04%
+💡 yield-exit
+⏱️ Held: 74m
+```
+
+**Commands:**
+- `/recent [N]` — last N entries (default 5, max 20)
+- `/today` — all entries from today
+- `/closes` — last 10 closed positions with PnL
+- `/stats` — total trades, win rate, total PnL
 
 ## Screening Cycle — Report
 

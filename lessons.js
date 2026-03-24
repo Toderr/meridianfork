@@ -99,6 +99,7 @@ export async function recordPerformance(perf) {
       minutes_held: entry.minutes_held,
       range_efficiency: entry.range_efficiency,
       close_reason: entry.close_reason,
+      bin_range: entry.bin_range ?? null,
       variant: entry.variant || null,
     });
   } catch (e) {

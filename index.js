@@ -11,6 +11,7 @@ import fs from "fs";
 import { evolveThresholds, getPerformanceSummary, addLesson } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
+import { startJournalPolling, stopJournalPolling } from "./telegram-journal.js";
 import { generateBriefing } from "./briefing.js";
 import { generateReport } from "./reports.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions } from "./state.js";
@@ -943,6 +944,8 @@ if (isTTY) {
     sendMessage(`🚀 Bot started (PID: ${process.pid}, mode: ${mode}). If you see this twice, kill duplicate instances.`).catch(() => {});
   }
 
+  startJournalPolling();
+
   startPolling(async (text) => {
     if (busy) {
       sendMessage("Agent is busy with another chat — try again in a moment.").catch(() => {});
@@ -1277,6 +1280,8 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
     const mode = process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";
     sendMessage(`🚀 Bot started (PID: ${process.pid}, mode: ${mode}). If you see this twice, kill duplicate instances.`).catch(() => {});
   }
+
+  startJournalPolling();
 
   // Telegram chat handler (non-TTY / VPS mode)
   startPolling(async (text) => {
