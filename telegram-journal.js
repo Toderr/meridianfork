@@ -38,6 +38,25 @@ function saveChatId(id) {
 
 loadChatId();
 
+// ─── Timezone (UTC+7) ────────────────────────────────────────────
+const TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/** Current date string YYYY-MM-DD in UTC+7 */
+function todayUtc7() {
+  return new Date(Date.now() + TZ_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** Midnight of a YYYY-MM-DD date in UTC+7, returned as UTC ISO string */
+function midnightUtc7(dateLabel) {
+  return new Date(new Date(dateLabel + "T00:00:00.000Z").getTime() - TZ_OFFSET_MS).toISOString();
+}
+
+/** Format a UTC ISO timestamp as HH:MM in UTC+7 */
+function fmtTime(isoStr) {
+  if (!isoStr) return "?";
+  return new Date(new Date(isoStr).getTime() + TZ_OFFSET_MS).toISOString().slice(11, 16);
+}
+
 // ─── Core send ───────────────────────────────────────────────────
 export function isEnabled() {
   return !!TOKEN;
@@ -93,16 +112,17 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, amoun
 
 // ─── Command handlers ────────────────────────────────────────────
 function fmtEntry(e) {
+  const t = fmtTime(e.timestamp);
   if (e.type === "open") {
-    return `📗 OPEN ${e.pool_name} — ${(e.amount_sol ?? 0).toFixed(4)} SOL`;
+    return `📗 [${t}] OPEN ${e.pool_name} — ${(e.amount_sol ?? 0).toFixed(4)} SOL`;
   }
   if (e.type === "close") {
     const sp = (e.pnl_pct ?? 0) >= 0 ? "+" : "";
     const su = (e.pnl_usd ?? 0) >= 0 ? "+" : "";
-    return `📕 CLOSE ${e.pool_name} — ${su}$${(e.pnl_usd ?? 0).toFixed(2)} (${sp}${(e.pnl_pct ?? 0).toFixed(2)}%) ${e.close_reason ? `· ${e.close_reason}` : ""}`;
+    return `📕 [${t}] CLOSE ${e.pool_name} — ${su}$${(e.pnl_usd ?? 0).toFixed(2)} (${sp}${(e.pnl_pct ?? 0).toFixed(2)}%) ${e.close_reason ? `· ${e.close_reason}` : ""}`;
   }
   if (e.type === "claim") {
-    return `💸 CLAIM ${e.pool_name} — $${(e.fees_usd ?? 0).toFixed(2)}`;
+    return `💸 [${t}] CLAIM ${e.pool_name} — $${(e.fees_usd ?? 0).toFixed(2)}`;
   }
   return `? ${e.type} ${e.pool_name}`;
 }
@@ -119,10 +139,8 @@ async function handleCommand(text) {
   }
 
   if (cmd === "/today") {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayStr = todayStart.toISOString();
-    const dateLabel = todayStart.toISOString().slice(0, 10);
+    const dateLabel = todayUtc7();
+    const todayStr  = midnightUtc7(dateLabel);
 
     const closes = getJournalEntries({ from: todayStr, type: "close" });
     if (!closes.length) return sendMessage(`📖 TODAY — ${dateLabel}\n\nNo closed positions yet.`);
