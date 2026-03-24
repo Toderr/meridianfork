@@ -6,7 +6,6 @@ import { getJournalEntries } from "./journal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
-const LESSONS_FILE = path.join(__dirname, "lessons.json");
 
 const TOKEN = process.env.TELEGRAM_JOURNAL_BOT_TOKEN || null;
 const BASE  = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : null;
@@ -38,15 +37,6 @@ function saveChatId(id) {
 }
 
 loadChatId();
-
-// ─── Lessons (direct read — avoids circular import) ──────────────
-function loadTodayLessons(dateLabel) {
-  try {
-    if (!fs.existsSync(LESSONS_FILE)) return [];
-    const data = JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
-    return (data.lessons || []).filter(l => (l.created_at ?? "").slice(0, 10) >= dateLabel);
-  } catch { return []; }
-}
 
 // ─── Core send ───────────────────────────────────────────────────
 export function isEnabled() {
@@ -137,17 +127,6 @@ async function handleCommand(text) {
     const closes = getJournalEntries({ from: todayStr, type: "close" });
     if (!closes.length) return sendMessage(`📖 TODAY — ${dateLabel}\n\nNo closed positions yet.`);
 
-    // ── Per-position lines ────────────────────────────────────────
-    const posLines = closes.map((e) => {
-      const sp = (e.pnl_pct ?? 0) >= 0 ? "+" : "";
-      const su = (e.pnl_usd ?? 0) >= 0 ? "+" : "";
-      const icon = (e.pnl_pct ?? 0) >= 0 ? "📗" : "📕";
-      return (
-        `${icon} ${e.pool_name}\n` +
-        `   ${su}$${(e.pnl_usd ?? 0).toFixed(2)} | ${sp}${(e.pnl_pct ?? 0).toFixed(2)}% | ${e.strategy ?? "?"} | ${e.minutes_held ?? "?"}m | ${e.close_reason ?? "-"}`
-      );
-    });
-
     // ── Stats ────────────────────────────────────────────────────
     const wins   = closes.filter(e => (e.pnl_pct ?? 0) >= 0);
     const losses = closes.filter(e => (e.pnl_pct ?? 0) < 0);
@@ -179,56 +158,15 @@ async function handleCommand(text) {
       ? `🎯 Best: ${bestStrat} (avg ${bestStratAvg >= 0 ? "+" : ""}${bestStratAvg.toFixed(2)}%, ${stratMap[bestStrat].length} trade${stratMap[bestStrat].length > 1 ? "s" : ""})`
       : null;
 
-    // ── Lessons derived today ─────────────────────────────────────
-    const todayLessons = loadTodayLessons(dateLabel);
-    const lessonLines = todayLessons.length > 0
-      ? todayLessons.map(l => `• ${(l.rule ?? "").slice(0, 100)}`).join("\n")
-      : "• No new lessons derived today";
-
-    // ── Action plan ───────────────────────────────────────────────
-    const actions = [];
-    if (bestStrat && bestStratAvg > 0)
-      actions.push(`Prioritize ${bestStrat} — best performer today`);
-    if (winRate < 40)
-      actions.push("Win rate <40% — review entry criteria before next deploy");
-    else if (winRate >= 70)
-      actions.push("Strong win rate — screening criteria working well");
-    if (losses.length > 0) {
-      const emergencyLosses = losses.filter(e => (e.close_reason ?? "").toLowerCase().includes("emergency") || (e.close_reason ?? "").toLowerCase().includes("stop"));
-      if (emergencyLosses.length > 0)
-        actions.push(`${emergencyLosses.length} stop-loss hit — tighten entry criteria for volatile pools`);
-      const avgLossHeld = losses.reduce((s, e) => s + (e.minutes_held ?? 0), 0) / losses.length;
-      if (avgLossHeld < 20)
-        actions.push("Losses closed fast (<20m avg) — may signal bad entries");
-    }
-    const oorLosses = closes.filter(e => (e.close_reason ?? "").toLowerCase().includes("oor") || (e.close_reason ?? "").toLowerCase().includes("range"));
-    if (oorLosses.length > 0)
-      actions.push(`${oorLosses.length} OOR close(s) — consider wider bin range`);
-    if (actions.length === 0)
-      actions.push("Performance normal — maintain current settings");
-
-    const actionLines = actions.map(a => `• ${a}`).join("\n");
-
-    // ── Assemble (split at ~3800 chars) ──────────────────────────
-    const msg1 = [
+    return sendMessage([
       `📖 TODAY — ${dateLabel}\n`,
-      posLines.join("\n\n"),
-      `\n———————————`,
       `📊 ${closes.length} trades | ${wins.length}W ${losses.length}L`,
       `💰 PnL: ${suT}$${totalUsd.toFixed(2)} | ${ssT}${totalSol.toFixed(4)} SOL | ${spT}${totalPct.toFixed(2)}%`,
       `📈 Win rate: ${winRate}%`,
       `✅ Avg profit: ${avgProfit >= 0 ? "+" : ""}${avgProfit.toFixed(2)}%`,
       `❌ Avg loss: ${avgLoss.toFixed(2)}%`,
       bestStratLine,
-    ].filter(Boolean).join("\n");
-
-    const msg2 = [
-      `🧠 Lessons today:\n${lessonLines}`,
-      `\n📋 Action plan:\n${actionLines}`,
-    ].join("\n");
-
-    await sendMessage(msg1);
-    return sendMessage(msg2);
+    ].filter(Boolean).join("\n"));
   }
 
   if (cmd === "/closes") {
