@@ -52,9 +52,9 @@ body::before, body::after {
 }
 body::before {
   background:
-    radial-gradient(ellipse 55% 45% at 15% 20%, rgba(201,169,110,0.055) 0%, transparent 65%),
-    radial-gradient(ellipse 45% 40% at 85% 75%, rgba(74,158,255,0.04) 0%, transparent 65%),
-    radial-gradient(ellipse 35% 30% at 60% 10%, rgba(0,217,126,0.025) 0%, transparent 60%);
+    radial-gradient(ellipse 55% 45% at 15% 20%, rgba(201,169,110,0.10) 0%, transparent 65%),
+    radial-gradient(ellipse 45% 40% at 85% 75%, rgba(74,158,255,0.07) 0%, transparent 65%),
+    radial-gradient(ellipse 35% 30% at 60% 10%, rgba(0,217,126,0.05) 0%, transparent 60%);
   animation: ambientDrift 22s ease-in-out infinite alternate;
 }
 body::after {
@@ -65,9 +65,9 @@ body::after {
 }
 @keyframes ambientDrift {
   0%   { transform: translate(0, 0) scale(1); }
-  33%  { transform: translate(18px, -14px) scale(1.03); }
-  66%  { transform: translate(-12px, 10px) scale(0.98); }
-  100% { transform: translate(22px, -8px) scale(1.04); }
+  33%  { transform: translate(40px, -30px) scale(1.06); }
+  66%  { transform: translate(-28px, 22px) scale(0.96); }
+  100% { transform: translate(50px, -18px) scale(1.08); }
 }
 
 /* ── Layout ────────────────────────────────────────────── */
@@ -482,7 +482,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
         <div class="sh"><div class="sh-title">Performance</div><div class="sh-line"></div></div>
         <div class="kpi-grid">
-          <div class="kpi"><div class="kpi-label">SOL Balance</div><div class="kpi-val g" id="ov-sol">—</div><div class="kpi-sub" id="ov-usd">—</div></div>
+          <div class="kpi"><div class="kpi-label">SOL Balance</div><div class="kpi-val" id="ov-sol">—</div><div class="kpi-sub" id="ov-usd">—</div></div>
           <div class="kpi"><div class="kpi-label">SOL Price</div><div class="kpi-val" id="ov-price">—</div><div class="kpi-sub">per SOL</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL</div><div class="kpi-val" id="ov-pnl">—</div><div class="kpi-sub" id="ov-pnl-sol">—</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL %</div><div class="kpi-val" id="ov-pnl-pct">—</div><div class="kpi-sub">portfolio return</div></div>
@@ -496,7 +496,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
           <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-val" id="ov-open">—</div><div class="kpi-sub" id="ov-closed">—</div></div>
           <div class="kpi"><div class="kpi-label">Mgmt Cycles</div><div class="kpi-val" id="ov-mgmt">—</div><div class="kpi-sub" id="ov-screen">—</div></div>
           <div class="kpi"><div class="kpi-label">Deployed</div><div class="kpi-val" id="ov-deployed">—</div><div class="kpi-sub" id="ov-fee-claims">—</div></div>
-          <div class="kpi"><div class="kpi-label">Fees Earned</div><div class="kpi-val g" id="ov-fees">—</div><div class="kpi-sub">USD</div></div>
+          <div class="kpi"><div class="kpi-label">Fees Earned</div><div class="kpi-val" id="ov-fees">—</div><div class="kpi-sub">USD</div></div>
           <div class="kpi"><div class="kpi-label">Errors</div><div class="kpi-val" id="ov-errors">—</div><div class="kpi-sub">agent errors</div></div>
         </div>
 
@@ -706,11 +706,11 @@ const api = p => fetch(p).then(r => r.json());
 
 // ── Topbar ─────────────────────────────────────────────
 function updateTopbar() {
-  if (_wallet)    { setV("tb-sol", f(_wallet.sol,3)+" SOL","g"); setV("tb-price","$"+f(_wallet.sol_price,0)); }
+  if (_wallet)    { setV("tb-sol", f(_wallet.sol,3)+" SOL"); setV("tb-price","$"+f(_wallet.sol_price,0)); }
   if (_positions) { setV("tb-pos", _positions.total); }
   if (_portfolio) {
     const p = _portfolio.net_pnl_usd;
-    setV("tb-pnl","$"+f(p,2), pc(p));
+    setV("tb-pnl","$"+f(p,2));
     setV("tb-wr",  f(_portfolio.win_rate_pct,1)+"%");
     setV("tb-pf",  _portfolio.profit_factor != null ? f(_portfolio.profit_factor,2) : "—");
   }
@@ -720,19 +720,19 @@ function updateTopbar() {
 // ── Overview ───────────────────────────────────────────
 function renderOverview() {
   if (_wallet) {
-    setV("ov-sol",   f(_wallet.sol,4)+" SOL", "g");
+    setV("ov-sol",   f(_wallet.sol,4)+" SOL");
     setV("ov-usd",   "$"+f(_wallet.sol_usd,2)+" total");
     setV("ov-price", "$"+f(_wallet.sol_price,2));
   }
   if (_portfolio) {
     const p = _portfolio.net_pnl_usd;
-    setV("ov-pnl",     "$"+f(p,2), pc(p));
+    setV("ov-pnl",     "$"+f(p,2));
     setV("ov-pnl-sol", f(_portfolio.net_pnl_sol,4)+" SOL");
-    setV("ov-pnl-pct", f(_portfolio.net_pnl_pct,2)+"%", pc(_portfolio.net_pnl_pct));
-    setV("ov-wr",      f(_portfolio.win_rate_pct,1)+"%", pc(_portfolio.win_rate_pct-50));
+    setV("ov-pnl-pct", f(_portfolio.net_pnl_pct,2)+"%");
+    setV("ov-wr",      f(_portfolio.win_rate_pct,1)+"%");
     setV("ov-day-wr",  f(_portfolio.day_win_rate_pct,1)+"% days positive");
     const pf = _portfolio.profit_factor;
-    setV("ov-pf", pf != null ? f(pf,2) : "—", pf > 1 ? "p" : pf < 1 ? "n" : "");
+    setV("ov-pf", pf != null ? f(pf,2) : "—");
   }
   if (_stats) {
     setV("ov-uptime",   fmtUp(_stats.uptime_min));
@@ -743,8 +743,8 @@ function renderOverview() {
     setV("ov-screen",   _stats.screening_cycles+" screening");
     setV("ov-deployed", String(_stats.positions_deployed));
     setV("ov-fee-claims",_stats.fees_claimed+" claims");
-    setV("ov-fees",     "$"+f(_stats.total_fees_usd,2), "g");
-    setV("ov-errors",   String(_stats.errors), _stats.errors > 0 ? "n" : "");
+    setV("ov-fees",     "$"+f(_stats.total_fees_usd,2));
+    setV("ov-errors",   String(_stats.errors));
   }
   renderPosCards("pos-grid");
   renderMiniChart();
@@ -783,7 +783,7 @@ function renderPosCards(id) {
       <div class="pc-metrics">
         <div class="pc-metric">PnL<span class="pc-metric-val ${pc(pu)}">$${f(pu,2)}</span></div>
         <div class="pc-metric">PnL %<span class="pc-metric-val ${pc(p.pnl_pct)}">${f(p.pnl_pct,2)}%</span></div>
-        <div class="pc-metric">Fees<span class="pc-metric-val g">$${f(p.unclaimed_fees_usd??p.total_fees_claimed_usd,2)}</span></div>
+        <div class="pc-metric">Fees<span class="pc-metric-val">$${f(p.unclaimed_fees_usd??p.total_fees_claimed_usd,2)}</span></div>
         <div class="pc-metric">Age<span class="pc-metric-val">${fmtHold(p.age_minutes)}</span></div>
       </div>
       ${instr}
