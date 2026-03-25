@@ -555,8 +555,8 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
       <div class="tb-pill"><span class="tb-label">Errors</span><span class="tb-val" id="tb-errors">—</span></div>
       <div class="tb-pill" style="margin-left:auto;border-right:none;padding:0 12px">
         <div class="fbar unit-toggle" id="global-unit-toggle" style="margin:0">
-          <button class="fbtn active" data-unit="usd" style="padding:2px 9px;font-size:8px">USD</button>
-          <button class="fbtn" data-unit="sol" style="padding:2px 9px;font-size:8px">SOL</button>
+          <button class="fbtn active" data-unit="usd" style="padding:5px 14px;font-size:11px;font-weight:700">USD</button>
+          <button class="fbtn" data-unit="sol" style="padding:5px 14px;font-size:11px;font-weight:700">SOL</button>
         </div>
       </div>
     </div>
@@ -852,9 +852,11 @@ function renderOverview() {
     setV("ov-usd",       "$"+f(_wallet.sol_usd,2)+" available");
   }
   if (_portfolio) {
-    const p = _portfolio.net_pnl_usd;
-    setV("ov-pnl",     "$"+f(p,2),      pc(p));
-    setV("ov-pnl-sol", f(_portfolio.net_pnl_sol,4)+" SOL");
+    const sol = _unit === "sol";
+    const pu = _portfolio.net_pnl_usd;
+    const ps = _portfolio.net_pnl_sol;
+    setV("ov-pnl",     sol ? f(ps,4)+" SOL" : "$"+f(pu,2),   pc(sol ? ps : pu));
+    setV("ov-pnl-sol", sol ? "$"+f(pu,2)    : f(ps,4)+" SOL");
     setV("ov-pnl-pct", f(_portfolio.net_pnl_pct,2)+"%", pc(_portfolio.net_pnl_pct));
     setV("ov-wr",      f(_portfolio.win_rate_pct,1)+"%");
     setV("ov-day-wr",  f(_portfolio.day_win_rate_pct,1)+"% days positive");
@@ -978,8 +980,9 @@ function renderPortfolio() {
     setV("pf-total",     "$"+f(totalUsd,2));
     setV("pf-total-sub", "$"+f(_wallet.sol_usd,2)+" free + $"+f(deployedUsd,2)+" deployed");
   }
-  setV("pf-usd",    "$"+f(p.net_pnl_usd,2),      pc(p.net_pnl_usd));
-  setV("pf-sol",    f(p.net_pnl_sol,4)+" SOL",   pc(p.net_pnl_sol));
+  const sol = _unit === "sol";
+  setV("pf-usd",    sol ? f(p.net_pnl_sol,4)+" SOL" : "$"+f(p.net_pnl_usd,2),   pc(sol ? p.net_pnl_sol : p.net_pnl_usd));
+  setV("pf-sol",    sol ? "$"+f(p.net_pnl_usd,2)    : f(p.net_pnl_sol,4)+" SOL", pc(sol ? p.net_pnl_usd : p.net_pnl_sol));
   setV("pf-pct",    f(p.net_pnl_pct,2)+"%",       pc(p.net_pnl_pct));
   setV("pf-pos-wr", f(p.win_rate_pct,1)+"%",      pc(p.win_rate_pct-50));
   setV("pf-day-wr", f(p.day_win_rate_pct,1)+"%",  pc(p.day_win_rate_pct-50));
@@ -1214,7 +1217,8 @@ $("hist-search").addEventListener("input", renderHistory);
 function setUnit(u) {
   _unit = u;
   document.querySelectorAll(".unit-toggle .fbtn").forEach(b => b.classList.toggle("active", b.dataset.unit === u));
-  renderPosCards("pos-grid");
+  renderOverview();
+  renderPortfolio();
   renderHistory();
   renderJournal();
 }

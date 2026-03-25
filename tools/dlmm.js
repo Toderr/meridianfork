@@ -666,7 +666,10 @@ export async function closePosition({ position_address, close_reason }) {
         pnlPct        = freshPnl.pnl_pct          ?? 0;
         pnlSolNative  = freshPnl.pnl_sol          ?? null;
         finalValueUsd = freshPnl.current_value_usd ?? 0;
-        feesUsd       = freshPnl.all_time_fees_usd ?? feesUsd;
+        // allTimeFees.total.usd often missing from Meteora datapi — fall back to unclaimed fees snapshot taken before close
+        feesUsd = freshPnl.all_time_fees_usd > 0
+          ? freshPnl.all_time_fees_usd
+          : (freshPnl.unclaimed_fee_usd ?? feesUsd);
       } else {
         const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
         if (cachedPos) {
