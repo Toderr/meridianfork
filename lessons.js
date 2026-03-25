@@ -246,9 +246,9 @@ function derivLesson(perf) {
  * Infer lesson category from rule text, tags, and performance data.
  * Categories: "sizing" | "taking_profit" | "stop_loss" | "strategy" | "general"
  */
-function inferCategory({ rule = "", tags = [], perf = {} } = {}) {
+function inferCategory({ rule = "", tags, perf = {} } = {}) {
   const r = rule.toLowerCase();
-  const t = tags.map(s => s.toLowerCase());
+  const t = (Array.isArray(tags) ? tags : []).map(s => s.toLowerCase());
 
   if (t.includes("sizing") || t.includes("position_size") || r.includes("position size") || r.includes("amount_sol") || r.includes("deploy amount") || r.includes("size"))
     return "sizing";

@@ -546,13 +546,19 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
     <!-- Topbar -->
     <div class="topbar">
       <button class="hamburger" id="hamburger" aria-label="Menu">&#9776;</button>
-      <div class="tb-pill"><span class="tb-label">SOL</span><span class="tb-val g" id="tb-sol">—</span></div>
-      <div class="tb-pill"><span class="tb-label">Price</span><span class="tb-val" id="tb-price">—</span></div>
+      <div class="tb-pill"><span class="tb-label">SOL Price</span><span class="tb-val g" id="tb-price">—</span></div>
       <div class="tb-pill"><span class="tb-label">Positions</span><span class="tb-val" id="tb-pos">—</span></div>
-      <div class="tb-pill"><span class="tb-label">Net PnL</span><span class="tb-val" id="tb-pnl">—</span></div>
-      <div class="tb-pill"><span class="tb-label">Win Rate</span><span class="tb-val" id="tb-wr">—</span></div>
-      <div class="tb-pill"><span class="tb-label">Profit Factor</span><span class="tb-val" id="tb-pf">—</span></div>
       <div class="tb-pill"><span class="tb-label">Uptime</span><span class="tb-val" id="tb-uptime">—</span></div>
+      <div class="tb-pill"><span class="tb-label">Mgmt</span><span class="tb-val" id="tb-mgmt">—</span></div>
+      <div class="tb-pill"><span class="tb-label">Screen</span><span class="tb-val" id="tb-screen">—</span></div>
+      <div class="tb-pill"><span class="tb-label">Deployed</span><span class="tb-val" id="tb-deployed">—</span></div>
+      <div class="tb-pill"><span class="tb-label">Errors</span><span class="tb-val" id="tb-errors">—</span></div>
+      <div class="tb-pill" style="margin-left:auto;border-right:none;padding:0 12px">
+        <div class="fbar unit-toggle" id="global-unit-toggle" style="margin:0">
+          <button class="fbtn active" data-unit="usd" style="padding:2px 9px;font-size:8px">USD</button>
+          <button class="fbtn" data-unit="sol" style="padding:2px 9px;font-size:8px">SOL</button>
+        </div>
+      </div>
     </div>
 
     <div class="content">
@@ -562,28 +568,12 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
         <div class="sh"><div class="sh-title">Performance</div><div class="sh-line"></div></div>
         <div class="kpi-grid">
+          <div class="kpi"><div class="kpi-label">Total Portfolio</div><div class="kpi-val" id="ov-total">—</div><div class="kpi-sub" id="ov-total-sub">—</div></div>
           <div class="kpi"><div class="kpi-label">SOL Balance</div><div class="kpi-val" id="ov-sol">—</div><div class="kpi-sub" id="ov-usd">—</div></div>
-          <div class="kpi"><div class="kpi-label">SOL Price</div><div class="kpi-val" id="ov-price">—</div><div class="kpi-sub">per SOL</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL</div><div class="kpi-val" id="ov-pnl">—</div><div class="kpi-sub" id="ov-pnl-sol">—</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL %</div><div class="kpi-val" id="ov-pnl-pct">—</div><div class="kpi-sub">portfolio return</div></div>
           <div class="kpi"><div class="kpi-label">Win Rate</div><div class="kpi-val" id="ov-wr">—</div><div class="kpi-sub" id="ov-day-wr">—</div></div>
           <div class="kpi"><div class="kpi-label">Profit Factor</div><div class="kpi-val" id="ov-pf">—</div><div class="kpi-sub">gross profit / loss</div></div>
-        </div>
-
-        <div class="sh" style="cursor:pointer;user-select:none" id="agent-stats-header">
-          <div class="sh-title">Agent Stats</div>
-          <div class="sh-line"></div>
-          <button class="cal-nav" id="agent-stats-toggle" style="flex-shrink:0" aria-label="Toggle agent stats">&#9660;</button>
-        </div>
-        <div id="agent-stats-body">
-        <div class="kpi-grid">
-          <div class="kpi"><div class="kpi-label">Uptime</div><div class="kpi-val" id="ov-uptime">—</div><div class="kpi-sub" id="ov-started">—</div></div>
-          <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-val" id="ov-open">—</div><div class="kpi-sub" id="ov-closed">—</div></div>
-          <div class="kpi"><div class="kpi-label">Mgmt Cycles</div><div class="kpi-val" id="ov-mgmt">—</div><div class="kpi-sub" id="ov-screen">—</div></div>
-          <div class="kpi"><div class="kpi-label">Deployed</div><div class="kpi-val" id="ov-deployed">—</div><div class="kpi-sub" id="ov-fee-claims">—</div></div>
-          <div class="kpi"><div class="kpi-label">Fees Earned</div><div class="kpi-val" id="ov-fees">—</div><div class="kpi-sub">USD</div></div>
-          <div class="kpi"><div class="kpi-label">Errors</div><div class="kpi-val" id="ov-errors">—</div><div class="kpi-sub">agent errors</div></div>
-        </div>
         </div>
 
         <div class="sh"><div class="sh-title">Active Positions</div><div class="sh-line"></div></div>
@@ -615,6 +605,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
         <div class="sh"><div class="sh-title">Portfolio Metrics</div><div class="sh-line"></div></div>
         <div class="kpi-grid">
+          <div class="kpi"><div class="kpi-label">Total Portfolio</div><div class="kpi-val" id="pf-total">—</div><div class="kpi-sub" id="pf-total-sub">—</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL (USD)</div><div class="kpi-val" id="pf-usd">—</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL (SOL)</div><div class="kpi-val" id="pf-sol">—</div></div>
           <div class="kpi"><div class="kpi-label">Net PnL %</div><div class="kpi-val" id="pf-pct">—</div></div>
@@ -635,10 +626,6 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
         <div class="sh"><div class="sh-title">Position History</div><div class="sh-line"></div></div>
         <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <input id="hist-search" type="text" placeholder="Search pool or reason…" class="log-input" style="flex:1;max-width:320px">
-          <div class="fbar unit-toggle" id="hist-unit-toggle">
-            <button class="fbtn active" data-unit="usd">USD</button>
-            <button class="fbtn" data-unit="sol">SOL</button>
-          </div>
         </div>
         <div class="card">
           <div class="tbl-wrap">
@@ -672,10 +659,6 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
             <button class="fbtn" data-type="open">Open</button>
             <button class="fbtn" data-type="close">Close</button>
             <button class="fbtn" data-type="claim">Claim</button>
-          </div>
-          <div class="fbar unit-toggle" id="jour-unit-toggle">
-            <button class="fbtn active" data-unit="usd">USD</button>
-            <button class="fbtn" data-unit="sol">SOL</button>
           </div>
         </div>
         <div class="card">
@@ -834,45 +817,37 @@ const api = p => fetch(p).then(r => r.json());
 
 // ── Topbar ─────────────────────────────────────────────
 function updateTopbar() {
-  if (_wallet)    { setV("tb-sol", f(_wallet.sol,3)+" SOL"); setV("tb-price","$"+f(_wallet.sol_price,0)); }
+  if (_wallet)    { setV("tb-price", "$"+f(_wallet.sol_price,0)); }
   if (_positions) { setV("tb-pos", _positions.total); }
-  if (_portfolio) {
-    const p = _portfolio.net_pnl_usd;
-    setV("tb-pnl","$"+f(p,2));
-    setV("tb-wr",  f(_portfolio.win_rate_pct,1)+"%");
-    setV("tb-pf",  _portfolio.profit_factor != null ? f(_portfolio.profit_factor,2) : "—");
+  if (_stats) {
+    setV("tb-uptime",   fmtUp(_stats.uptime_min));
+    setV("tb-mgmt",     String(_stats.management_cycles ?? "—"));
+    setV("tb-screen",   String(_stats.screening_cycles ?? "—"));
+    setV("tb-deployed", String(_stats.positions_deployed ?? "—"));
+    setV("tb-errors",   String(_stats.errors ?? "—"));
   }
-  if (_stats) setV("tb-uptime", fmtUp(_stats.uptime_min));
 }
 
 // ── Overview ───────────────────────────────────────────
 function renderOverview() {
   if (_wallet) {
-    setV("ov-sol",   f(_wallet.sol,4)+" SOL");
-    setV("ov-usd",   "$"+f(_wallet.sol_usd,2)+" total");
-    setV("ov-price", "$"+f(_wallet.sol_price,2));
+    const totalUsd = _wallet.sol_usd ?? 0;
+    const solBal   = _wallet.sol ?? 0;
+    const price    = _wallet.sol_price ?? 0;
+    setV("ov-total",     "$"+f(totalUsd,2));
+    setV("ov-total-sub", f(solBal,4)+" SOL @ $"+f(price,0));
+    setV("ov-sol",       f(solBal,4)+" SOL");
+    setV("ov-usd",       "$"+f(totalUsd,2)+" total");
   }
   if (_portfolio) {
     const p = _portfolio.net_pnl_usd;
-    setV("ov-pnl",     "$"+f(p,2));
+    setV("ov-pnl",     "$"+f(p,2),      pc(p));
     setV("ov-pnl-sol", f(_portfolio.net_pnl_sol,4)+" SOL");
-    setV("ov-pnl-pct", f(_portfolio.net_pnl_pct,2)+"%");
+    setV("ov-pnl-pct", f(_portfolio.net_pnl_pct,2)+"%", pc(_portfolio.net_pnl_pct));
     setV("ov-wr",      f(_portfolio.win_rate_pct,1)+"%");
     setV("ov-day-wr",  f(_portfolio.day_win_rate_pct,1)+"% days positive");
     const pf = _portfolio.profit_factor;
     setV("ov-pf", pf != null ? f(pf,2) : "—");
-  }
-  if (_stats) {
-    setV("ov-uptime",   fmtUp(_stats.uptime_min));
-    setV("ov-started",  "since "+new Date(_stats.started_at).toLocaleTimeString());
-    setV("ov-open",     String(_stats.open_positions ?? "—"));
-    setV("ov-closed",   (_stats.closed_positions ?? 0)+" closed total");
-    setV("ov-mgmt",     String(_stats.management_cycles));
-    setV("ov-screen",   _stats.screening_cycles+" screening");
-    setV("ov-deployed", String(_stats.positions_deployed));
-    setV("ov-fee-claims",_stats.fees_claimed+" claims");
-    setV("ov-fees",     "$"+f(_stats.total_fees_usd,2));
-    setV("ov-errors",   String(_stats.errors));
   }
   renderPosCards("pos-grid");
   renderMiniChart();
@@ -883,18 +858,41 @@ function renderPosCards(id) {
   const grid = $(id); if (!grid) return;
   if (!_positions?.positions?.length) { grid.innerHTML = '<div class="empty">No open positions</div>'; return; }
 
-  grid.innerHTML = _positions.positions.map((p, i) => {
+  const sorted   = [..._positions.positions].sort((a, b) => (b.age_minutes ?? 0) - (a.age_minutes ?? 0));
+  const sol      = _unit === "sol";
+  const solPrice = _wallet?.sol_price ?? 0;
+
+  grid.innerHTML = sorted.map((p, i) => {
     const lower  = p.lower_bin  ?? p.bin_range?.[0] ?? 0;
     const upper  = p.upper_bin  ?? p.bin_range?.[1] ?? 0;
     const active = p.active_bin ?? 0;
     const pct    = lower < upper ? Math.max(0, Math.min(100, ((active-lower)/(upper-lower))*100)) : 50;
     const pu     = p.pnl_usd ?? 0;
+    const ps     = p.pnl_sol ?? (solPrice > 0 ? pu / solPrice : null);
     const status = p.in_range
       ? '<span class="badge b-in">In Range</span>'
       : '<span class="badge b-out">Out of Range</span>';
     const instr = p.instruction
       ? `<div class="pc-instr"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>${p.instruction}</div>`
       : "";
+
+    const amtSol = p.amount_sol ?? 0;
+    const amtUsd = p.initial_value_usd ?? (amtSol * solPrice);
+    const investedStr = sol
+      ? f(amtSol,4)+" SOL"
+      : (amtUsd > 0 ? "$"+f(amtUsd,2) : f(amtSol,4)+" SOL");
+
+    const pnlVal = sol ? ps : pu;
+    const pnlStr = sol
+      ? (ps != null ? (ps>=0?"+":"")+f(ps,4)+" SOL" : "—")
+      : (pu>=0?"+":"")+  "$"+f(pu,2);
+
+    const feesUsd = p.unclaimed_fees_usd ?? p.total_fees_claimed_usd ?? 0;
+    const feesSol = p.unclaimed_fees_sol ?? (solPrice > 0 ? feesUsd / solPrice : null);
+    const feesStr = sol
+      ? (feesSol != null ? f(feesSol,4)+" SOL" : "—")
+      : "$"+f(feesUsd,2);
+
     return `<div class="card pos-card" style="animation-delay:${i*0.07}s">
       <div class="pc-header">
         <div class="pc-name">${p.pair||p.pool_name||"—"}</div>
@@ -909,9 +907,10 @@ function renderPosCards(id) {
         </div>
       </div>
       <div class="pc-metrics">
-        <div class="pc-metric">PnL<span class="pc-metric-val ${pc(pu)}">$${f(pu,2)}</span></div>
+        <div class="pc-metric">Invested<span class="pc-metric-val g">${investedStr}</span></div>
+        <div class="pc-metric">PnL<span class="pc-metric-val ${pc(pnlVal)}">${pnlStr}</span></div>
         <div class="pc-metric">PnL %<span class="pc-metric-val ${pc(p.pnl_pct)}">${f(p.pnl_pct,2)}%</span></div>
-        <div class="pc-metric">Fees<span class="pc-metric-val">$${f(p.unclaimed_fees_usd??p.total_fees_claimed_usd,2)}</span></div>
+        <div class="pc-metric">Fees<span class="pc-metric-val">${feesStr}</span></div>
         <div class="pc-metric">Age<span class="pc-metric-val">${fmtHold(p.age_minutes)}</span></div>
       </div>
       ${instr}
@@ -962,6 +961,10 @@ function renderMiniChart() {
 function renderPortfolio() {
   if (!_portfolio) return;
   const p = _portfolio;
+  if (_wallet) {
+    setV("pf-total",     "$"+f(_wallet.sol_usd,2));
+    setV("pf-total-sub", f(_wallet.sol,4)+" SOL");
+  }
   setV("pf-usd",    "$"+f(p.net_pnl_usd,2),      pc(p.net_pnl_usd));
   setV("pf-sol",    f(p.net_pnl_sol,4)+" SOL",   pc(p.net_pnl_sol));
   setV("pf-pct",    f(p.net_pnl_pct,2)+"%",       pc(p.net_pnl_pct));
@@ -1194,18 +1197,15 @@ document.getElementById("journal-thead").addEventListener("click", e => {
 
 $("hist-search").addEventListener("input", renderHistory);
 
-// USD / SOL toggle
+// USD / SOL toggle (global)
 function setUnit(u) {
   _unit = u;
   document.querySelectorAll(".unit-toggle .fbtn").forEach(b => b.classList.toggle("active", b.dataset.unit === u));
+  renderPosCards("pos-grid");
   renderHistory();
   renderJournal();
 }
-document.getElementById("hist-unit-toggle").addEventListener("click", e => {
-  const btn = e.target.closest(".fbtn"); if (!btn?.dataset.unit) return;
-  setUnit(btn.dataset.unit);
-});
-document.getElementById("jour-unit-toggle").addEventListener("click", e => {
+document.getElementById("global-unit-toggle").addEventListener("click", e => {
   const btn = e.target.closest(".fbtn"); if (!btn?.dataset.unit) return;
   setUnit(btn.dataset.unit);
 });
@@ -1236,19 +1236,6 @@ document.getElementById("cal-next").addEventListener("click", () => {
   if (idx < months.length-1) { _calMonth = months[idx+1]; renderCalendar(_portfolio.calendar||{}, _portfolio.calendar_pct||{}); }
 });
 
-// Agent Stats collapse toggle
-(function() {
-  let _statsVisible = true;
-  const header = document.getElementById("agent-stats-header");
-  const body   = document.getElementById("agent-stats-body");
-  const btn    = document.getElementById("agent-stats-toggle");
-  function applyState() {
-    body.style.display = _statsVisible ? "" : "none";
-    btn.innerHTML = _statsVisible ? "&#9660;" : "&#9654;";
-  }
-  header.addEventListener("click", () => { _statsVisible = !_statsVisible; applyState(); });
-  btn.addEventListener("click", e => { e.stopPropagation(); _statsVisible = !_statsVisible; applyState(); });
-})();
 
 // ── Lessons ────────────────────────────────────────────
 function renderLessons() {
