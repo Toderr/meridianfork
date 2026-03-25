@@ -426,48 +426,6 @@ When calling close_position, set close_reason to the same short reason above.
  * Study top LPers for each currently open position and save pool notes + screener lessons.
  * Runs hourly. No-ops if LPAGENT_API_KEY is not set.
  */
-async function runLearningCycle() {
-  if (!process.env.LPAGENT_API_KEY) return;
-  log("cron", "Starting learning cycle (top LPers)");
-  try {
-    const { positions = [] } = await getMyPositions().catch(() => ({}));
-    if (!positions.length) { log("cron", "Learning cycle: no open positions to study"); return; }
-
-    for (const p of positions) {
-      try {
-        const result = await studyTopLPers({ pool_address: p.pool, limit: 4 });
-        if (!result.patterns?.top_lper_count) continue;
-
-        const { patterns } = result;
-        const poolName = p.pair || p.pool.slice(0, 8);
-        const winRatePct = Math.round((patterns.avg_win_rate ?? 0) * 100);
-        const holdStyle = (patterns.avg_hold_hours ?? 0) < 2 ? "short holds (<2h)" : "long holds (>4h)";
-
-        // Pool note: concise summary for this pool's top LP behavior
-        const note = [
-          `Top LPers (n=${patterns.top_lper_count}):`,
-          `avg hold ${patterns.avg_hold_hours}h`,
-          `win rate ${winRatePct}%`,
-          `avg ROI ${(patterns.avg_roi_pct ?? 0).toFixed(1)}%`,
-          patterns.scalper_count > patterns.holder_count ? "mostly scalpers (<1h)" : "mostly holders (>4h)",
-        ].join(" | ");
-        addPoolNote({ pool_address: p.pool, note });
-        log("cron", `Learning cycle — ${poolName}: ${note}`);
-
-        // Screener lesson if there's a clear signal
-        if (patterns.avg_win_rate != null && patterns.avg_roi_pct != null) {
-          const rule = `${poolName}: top LPers prefer ${holdStyle} with ${winRatePct}% win rate and ${(patterns.avg_roi_pct).toFixed(1)}% avg ROI. Match hold duration to this pattern.`;
-          addLesson(rule, ["top_lpers", "strategy", p.pair?.split("-")[0]?.toLowerCase()].filter(Boolean), { role: "SCREENER" });
-        }
-      } catch (e) {
-        log("cron_warn", `Learning cycle skipped ${p.pool.slice(0, 8)}: ${e.message}`);
-      }
-    }
-    log("cron", "Learning cycle complete");
-  } catch (e) {
-    log("cron_error", `Learning cycle error: ${e.message}`);
-  }
-}
 
 async function runScreeningCycle() {
   if (_screeningBusy) return;
@@ -761,13 +719,9 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   });
 
-  // Hourly top-LPers learning cycle — studies open positions and saves pool notes + screener lessons
-  const learnTask = cron.schedule("0 * * * *", () => runLearningCycle().catch(() => {}));
-  runLearningCycle().catch(() => {}); // run once on start
-
   _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
 
-  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask, learnTask];
+  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask];
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, pnl-check every 30s`);
 }
 

@@ -828,16 +828,28 @@ function updateTopbar() {
   }
 }
 
+// Total portfolio = available wallet USD + sum of invested in open positions
+function computeTotalPortfolio() {
+  const walletUsd = _wallet?.sol_usd ?? 0;
+  const price     = _wallet?.sol_price ?? 0;
+  const positions = _positions?.positions ?? [];
+  const deployedUsd = positions.reduce((s, p) => {
+    const usd = p.initial_value_usd ?? (p.amount_sol ?? 0) * price;
+    return s + usd;
+  }, 0);
+  return { totalUsd: walletUsd + deployedUsd, walletUsd, deployedUsd };
+}
+
 // ── Overview ───────────────────────────────────────────
 function renderOverview() {
   if (_wallet) {
-    const totalUsd = _wallet.sol_usd ?? 0;
-    const solBal   = _wallet.sol ?? 0;
-    const price    = _wallet.sol_price ?? 0;
+    const { totalUsd, deployedUsd } = computeTotalPortfolio();
+    const solBal = _wallet.sol ?? 0;
+    const price  = _wallet.sol_price ?? 0;
     setV("ov-total",     "$"+f(totalUsd,2));
-    setV("ov-total-sub", f(solBal,4)+" SOL @ $"+f(price,0));
+    setV("ov-total-sub", "$"+f(_wallet.sol_usd,2)+" free + $"+f(deployedUsd,2)+" deployed");
     setV("ov-sol",       f(solBal,4)+" SOL");
-    setV("ov-usd",       "$"+f(totalUsd,2)+" total");
+    setV("ov-usd",       "$"+f(_wallet.sol_usd,2)+" available");
   }
   if (_portfolio) {
     const p = _portfolio.net_pnl_usd;
@@ -962,8 +974,9 @@ function renderPortfolio() {
   if (!_portfolio) return;
   const p = _portfolio;
   if (_wallet) {
-    setV("pf-total",     "$"+f(_wallet.sol_usd,2));
-    setV("pf-total-sub", f(_wallet.sol,4)+" SOL");
+    const { totalUsd, deployedUsd } = computeTotalPortfolio();
+    setV("pf-total",     "$"+f(totalUsd,2));
+    setV("pf-total-sub", "$"+f(_wallet.sol_usd,2)+" free + $"+f(deployedUsd,2)+" deployed");
   }
   setV("pf-usd",    "$"+f(p.net_pnl_usd,2),      pc(p.net_pnl_usd));
   setV("pf-sol",    f(p.net_pnl_sol,4)+" SOL",   pc(p.net_pnl_sol));
