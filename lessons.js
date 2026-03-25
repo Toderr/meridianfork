@@ -213,7 +213,7 @@ function derivLesson(perf) {
 
   if (!rule) return null;
 
-  // Improvement 7: Cross-role learning — tag screener-catchable failures
+  // Cross-role learning — tag screener-catchable failures
   if (
     (outcome === "bad" || outcome === "poor") &&
     !tags.includes("screener") &&
@@ -234,11 +234,38 @@ function derivLesson(perf) {
     tags,
     outcome,
     context,
+    category: inferCategory({ rule, tags, perf }),
     pnl_pct: perf.pnl_pct,
     range_efficiency: perf.range_efficiency,
     pool: perf.pool,
     created_at: new Date().toISOString(),
   };
+}
+
+/**
+ * Infer lesson category from rule text, tags, and performance data.
+ * Categories: "sizing" | "taking_profit" | "stop_loss" | "strategy" | "general"
+ */
+function inferCategory({ rule = "", tags = [], perf = {} } = {}) {
+  const r = rule.toLowerCase();
+  const t = tags.map(s => s.toLowerCase());
+
+  if (t.includes("sizing") || t.includes("position_size") || r.includes("position size") || r.includes("amount_sol") || r.includes("deploy amount") || r.includes("size"))
+    return "sizing";
+
+  const isBadPnl = typeof perf.pnl_pct === "number" && perf.pnl_pct < -3;
+  const isGoodPnl = typeof perf.pnl_pct === "number" && perf.pnl_pct > 3;
+
+  if (t.some(x => ["tp", "take_profit", "profit", "yield-exit"].includes(x)) || r.includes("take profit") || r.includes("yield exit") || r.includes("exit at") || (isGoodPnl && (r.includes("close") || r.includes("exit"))))
+    return "taking_profit";
+
+  if (t.some(x => ["sl", "stop_loss", "stop loss", "emergency", "oor", "volume_collapse", "failed"].includes(x)) || r.includes("stop loss") || r.includes("emergency") || r.includes("oor") || r.includes("out of range") || r.includes("volume collapse") || (isBadPnl && r.includes("close")))
+    return "stop_loss";
+
+  if (t.some(x => ["strategy", "bid_ask", "spot", "curve", "bins", "efficient"].includes(x)) || r.includes("strategy") || r.includes("bin_range") || r.includes("bin_step") || r.includes("bid_ask") || r.includes("in-range efficiency") || r.includes("volatility"))
+    return "strategy";
+
+  return "general";
 }
 
 // ─── Adaptive Threshold Evolution ──────────────────────────────
@@ -572,6 +599,7 @@ export function evolveThresholds(perfData, config) {
     rule: `[AUTO-EVOLVED @ ${perfData.length} positions] ${Object.entries(changes).map(([k, v]) => `${k}=${v}`).join(", ")} — ${Object.values(rationale).join("; ")}`,
     tags: ["evolution", "config_change"],
     outcome: "manual",
+    category: "general",
     created_at: new Date().toISOString(),
   });
   save(data);
@@ -620,7 +648,7 @@ function nudge(current, target, maxChange) {
  * @param {boolean}  opts.pinned - Always inject regardless of cap
  * @param {string}   opts.role   - "SCREENER" | "MANAGER" | "GENERAL" | null (all roles)
  */
-export function addLesson(rule, tags = [], { pinned = false, role = null } = {}) {
+export function addLesson(rule, tags = [], { pinned = false, role = null, category = null } = {}) {
   const data = load();
   data.lessons.push({
     id: Date.now(),
@@ -629,6 +657,7 @@ export function addLesson(rule, tags = [], { pinned = false, role = null } = {})
     outcome: "manual",
     pinned: !!pinned,
     role: role || null,
+    category: category || inferCategory({ rule, tags }),
     created_at: new Date().toISOString(),
   });
   save(data);
@@ -804,10 +833,37 @@ export function getLessonsForPrompt(opts = {}) {
   const selected = [...pinned, ...roleMatched, ...recent];
   if (selected.length === 0) return null;
 
+  // Group by category — agent must check the relevant category before each action
+  const CATEGORY_META = {
+    sizing:        { label: "SIZING",        when: "CHECK BEFORE: deploy_position (determines position size)" },
+    taking_profit:{ label: "TAKING PROFIT", when: "CHECK BEFORE: close_position on TP / yield-exit decisions" },
+    stop_loss:    { label: "STOP LOSS",      when: "CHECK BEFORE: close_position on loss / OOR / emergency decisions" },
+    strategy:     { label: "STRATEGY",      when: "CHECK BEFORE: deploy_position (strategy, bin_range, bin_step choices)" },
+    general:      { label: "GENERAL",       when: "ALWAYS APPLY" },
+  };
+
+  const byCategory = {};
+  for (const l of selected) {
+    const cat = l.category || inferCategory({ rule: l.rule, tags: l.tags });
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(l);
+  }
+
+  const ORDER = ["sizing", "taking_profit", "stop_loss", "strategy", "general"];
   const sections = [];
-  if (pinned.length)      sections.push(`── PINNED (${pinned.length}) ──\n` + fmt(pinned));
-  if (roleMatched.length) sections.push(`── ${agentType} (${roleMatched.length}) ──\n` + fmt(roleMatched));
-  if (recent.length)      sections.push(`── RECENT (${recent.length}) ──\n` + fmt(recent));
+  for (const cat of ORDER) {
+    const group = byCategory[cat];
+    if (!group?.length) continue;
+    const meta = CATEGORY_META[cat];
+    sections.push(`── ${meta.label} (${group.length}) — ${meta.when} ──\n` + fmt(group));
+  }
+
+  // Any unknown categories fallback
+  for (const [cat, group] of Object.entries(byCategory)) {
+    if (!ORDER.includes(cat) && group.length) {
+      sections.push(`── ${cat.toUpperCase()} (${group.length}) ──\n` + fmt(group));
+    }
+  }
 
   return sections.join("\n\n");
 }

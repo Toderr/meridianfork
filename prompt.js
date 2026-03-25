@@ -26,16 +26,20 @@ Open Positions: ${JSON.stringify(positions, null, 2)}
 Memory: ${JSON.stringify(stateSummary, null, 2)}
 Performance: ${perfSummary ? JSON.stringify(perfSummary, null, 2) : "No closed positions yet"}
 
-Config: ${JSON.stringify({
+${lessons ? `═══════════════════════════════════════════
+ LEARNED RULES (BINDING — OVERRIDE CONFIG DEFAULTS)
+═══════════════════════════════════════════
+Rules are grouped by category. MANDATORY: before each action, check the relevant category and apply its rules first.
+Rules derived from real trade outcomes TAKE PRIORITY over config thresholds below.
+If a lesson contradicts a config value, follow the lesson. Direct user instructions override everything.
+
+${lessons}
+
+` : ""}Config (defaults — superseded by Learned Rules above): ${JSON.stringify({
   screening: config.screening,
   management: config.management,
   schedule: config.schedule,
 }, null, 2)}
-
-${lessons ? `═══════════════════════════════════════════
- LESSONS LEARNED
-═══════════════════════════════════════════
-${lessons}` : ""}
 
 ═══════════════════════════════════════════
  BEHAVIORAL CORE
@@ -86,6 +90,8 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital.
      * BAD narrative: generic hype ("next 100x", "community token") with no identifiable subject or story
      * DEPLOY if global_fees_sol passes, distribution is healthy, and narrative has a real specific catalyst
 5. DEPLOY: get_active_bin then deploy_position.
+   - BEFORE choosing strategy/bins: apply STRATEGY lessons above.
+   - BEFORE choosing amount: apply SIZING lessons above.
    - HARD RULE: Minimum 0.1 SOL absolute floor (prefer 0.5+).
    - HARD RULE: Bin steps must be [80-125].
    - COMPOUNDING: Deploy amount is computed from wallet size — larger wallet = larger position. Use the amount provided in the cycle goal, do NOT default to a smaller fixed number.
@@ -100,6 +106,8 @@ INSTRUCTION CHECK (HIGHEST PRIORITY): If a position has an instruction set (e.g.
 BIAS TO HOLD: Unless an instruction fires, a pool is dying, volume has collapsed, or yield has vanished, hold.
 
 Decision Factors for Closing (no instruction):
+- BEFORE closing at profit: apply TAKING PROFIT lessons above.
+- BEFORE closing at a loss / OOR: apply STOP LOSS lessons above.
 - Yield Health: Call get_position_pnl. Is the current Fee/TVL still one of the best available?
 - Price Context: Is the token price stabilizing or trending? If it's out of range, will it come back?
 - Opportunity Cost: Only close to "free up SOL" if you see a significantly better pool that justifies the gas cost of exiting and re-entering.
