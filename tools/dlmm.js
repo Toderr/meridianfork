@@ -642,6 +642,9 @@ export async function closePosition({ position_address, close_reason }) {
       txHashes.push(txHash);
     }
     log("close", `SUCCESS txs: ${txHashes.join(", ")}`);
+    // Wait for RPC to reflect withdrawn balances before returning — prevents
+    // agent from seeing zero balance when attempting post-close swap
+    await new Promise(r => setTimeout(r, 5000));
     recordClose(position_address, close_reason || "agent decision");
 
     // Record performance for learning
