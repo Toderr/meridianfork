@@ -846,8 +846,13 @@ function renderOverview() {
     const { totalUsd, deployedUsd } = computeTotalPortfolio();
     const solBal = _wallet.sol ?? 0;
     const price  = _wallet.sol_price ?? 0;
-    setV("ov-total",     "$"+f(totalUsd,2));
-    setV("ov-total-sub", "$"+f(_wallet.sol_usd,2)+" free + $"+f(deployedUsd,2)+" deployed");
+    const sol    = _unit === "sol";
+    const totalSol    = price > 0 ? totalUsd / price : 0;
+    const deployedSol = price > 0 ? deployedUsd / price : 0;
+    setV("ov-total",     sol ? f(totalSol,4)+" SOL"    : "$"+f(totalUsd,2));
+    setV("ov-total-sub", sol
+      ? f(solBal,4)+" SOL free + "+f(deployedSol,4)+" SOL deployed"
+      : "$"+f(_wallet.sol_usd,2)+" free + $"+f(deployedUsd,2)+" deployed");
     setV("ov-sol",       f(solBal,4)+" SOL");
     setV("ov-usd",       "$"+f(_wallet.sol_usd,2)+" available");
   }
@@ -977,12 +982,18 @@ function renderPortfolio() {
   const p = _portfolio;
   if (_wallet) {
     const { totalUsd, deployedUsd } = computeTotalPortfolio();
-    setV("pf-total",     "$"+f(totalUsd,2));
-    setV("pf-total-sub", "$"+f(_wallet.sol_usd,2)+" free + $"+f(deployedUsd,2)+" deployed");
+    const price       = _wallet.sol_price ?? 0;
+    const solBal      = _wallet.sol ?? 0;
+    const sol         = _unit === "sol";
+    const totalSol    = price > 0 ? totalUsd / price : 0;
+    const deployedSol = price > 0 ? deployedUsd / price : 0;
+    setV("pf-total",     sol ? f(totalSol,4)+" SOL"    : "$"+f(totalUsd,2));
+    setV("pf-total-sub", sol
+      ? f(solBal,4)+" SOL free + "+f(deployedSol,4)+" SOL deployed"
+      : "$"+f(_wallet.sol_usd,2)+" free + $"+f(deployedUsd,2)+" deployed");
   }
-  const sol = _unit === "sol";
-  setV("pf-usd",    sol ? f(p.net_pnl_sol,4)+" SOL" : "$"+f(p.net_pnl_usd,2),   pc(sol ? p.net_pnl_sol : p.net_pnl_usd));
-  setV("pf-sol",    sol ? "$"+f(p.net_pnl_usd,2)    : f(p.net_pnl_sol,4)+" SOL", pc(sol ? p.net_pnl_usd : p.net_pnl_sol));
+  setV("pf-usd",    "$"+f(p.net_pnl_usd,2),   pc(p.net_pnl_usd));
+  setV("pf-sol",    f(p.net_pnl_sol,4)+" SOL", pc(p.net_pnl_sol));
   setV("pf-pct",    f(p.net_pnl_pct,2)+"%",       pc(p.net_pnl_pct));
   setV("pf-pos-wr", f(p.win_rate_pct,1)+"%",      pc(p.win_rate_pct-50));
   setV("pf-day-wr", f(p.day_win_rate_pct,1)+"%",  pc(p.day_win_rate_pct-50));
