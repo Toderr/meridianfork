@@ -22,6 +22,19 @@ const ROOT = path.join(__dirname, "..");
 const CLAUDE_BIN = "/home/ubuntu/.local/bin/claude";
 const LESSONS_FILE = path.join(ROOT, "lessons.json");
 const USER_CONFIG_FILE = path.join(ROOT, "user-config.json");
+const SKILL_MD_PATH = path.join(
+  process.env.HOME || "/home/ubuntu",
+  ".claude/plugins/cache/standalone/meteora-dlmm-lp/1.0.0/skills/meteora-dlmm-lp/SKILL.md"
+);
+
+function loadSkillPrompt() {
+  if (!fs.existsSync(SKILL_MD_PATH)) return null;
+  try {
+    const raw = fs.readFileSync(SKILL_MD_PATH, "utf8");
+    // Strip YAML frontmatter (--- ... ---) — keep only the knowledge body
+    return raw.replace(/^---[\s\S]*?---\s*/m, "").trim();
+  } catch { return null; }
+}
 
 // Config keys Claude is allowed to update (safe subset only — no risk/structural keys)
 const ALLOWED_CONFIG_KEYS = new Set([
@@ -162,15 +175,14 @@ export async function claudeUpdateLessons() {
     }
 
     const prompt = buildPrompt(recentPerf, existingLessons, currentConfig);
+    const skillPrompt = loadSkillPrompt();
+    const args = ["--print", "--output-format", "json", "--no-session-persistence", "--tools", ""];
+    if (skillPrompt) args.push("--system-prompt", skillPrompt);
 
-    log("claude_review", `Spawning claude CLI (${recentPerf.length} records, ${existingLessons.length} existing lessons)`);
+    log("claude_review", `Spawning claude CLI (${recentPerf.length} records, ${existingLessons.length} existing lessons${skillPrompt ? ", meteora-dlmm-lp skill active" : ""})`);
 
     const stdout = await new Promise((resolve, reject) => {
-      const child = spawn(
-        CLAUDE_BIN,
-        ["--print", "--output-format", "json", "--no-session-persistence", "--tools", ""],
-        { env: { ...process.env } }
-      );
+      const child = spawn(CLAUDE_BIN, args, { env: { ...process.env } });
       let out = "";
       let err = "";
       child.stdout.on("data", d => { out += d; });
@@ -182,7 +194,7 @@ export async function claudeUpdateLessons() {
       child.on("error", reject);
       child.stdin.write(prompt);
       child.stdin.end();
-      setTimeout(() => { child.kill(); reject(new Error("claude subprocess timed out")); }, 3 * 60 * 1000);
+      setTimeout(() => { child.kill(); reject(new Error("claude subprocess timed out")); }, 5 * 60 * 1000);
     });
 
     // Parse outer claude JSON envelope
