@@ -120,6 +120,29 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_s
   );
 }
 
+export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, rationale = "" }) {
+  if (!TOKEN || !chatId) return;
+  const parts = ["🧠 CLAUDE REVIEW"];
+
+  if (newLessons.length > 0) {
+    parts.push(`\n📚 New lessons (${newLessons.length}):`);
+    for (const l of newLessons) parts.push(`• ${l}`);
+  }
+
+  const configKeys = Object.keys(appliedConfig);
+  if (configKeys.length > 0) {
+    parts.push(`\n⚙️ Config updates:`);
+    for (const k of configKeys) {
+      const { old: o, new: n } = appliedConfig[k];
+      parts.push(`• ${k}: ${JSON.stringify(o)} → ${JSON.stringify(n)}`);
+    }
+  }
+
+  if (rationale) parts.push(`\n💡 ${rationale}`);
+
+  await sendMessage(parts.join("\n"));
+}
+
 // ─── Shared report builder ───────────────────────────────────────
 function buildSummaryReport(closes, header) {
   if (!closes.length) return `${header}\n\nNo closed positions.`;

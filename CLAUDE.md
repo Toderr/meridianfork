@@ -331,6 +331,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Lesson injection**: ALL lessons injected — no caps. Pinned → Role-matched → Recent. Priority: good > bad > manual > neutral
 - **Max change per step**: 20% to prevent whiplash
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
+- **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made.
 
 ## Roadmap / Improvement Ideas
 

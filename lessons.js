@@ -161,6 +161,11 @@ export async function recordPerformance(perf) {
       reloadScreeningThresholds();
       log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
     }
+
+    // Claude lesson updater — fire-and-forget, runs after evolveThresholds
+    import("./scripts/claude-lesson-updater.js")
+      .then(m => m.claudeUpdateLessons())
+      .catch(e => log("claude_review_error", `claudeUpdateLessons failed: ${e.message}`));
   }
 }
 
