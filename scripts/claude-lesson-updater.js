@@ -11,6 +11,7 @@
  *   node scripts/claude-lesson-updater.js
  */
 
+import "dotenv/config";
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
@@ -109,14 +110,38 @@ function applyConfigUpdates(updates) {
 
 // ─── Journal bot notification ─────────────────────────────────────
 
-async function notifyJournalBot(newLessons, appliedConfig, rationale) {
+function buildReviewMessage(newLessons, appliedConfig, rationale) {
+  const parts = ["🧠 CLAUDE REVIEW"];
+  if (newLessons.length > 0) {
+    parts.push(`\n📚 New lessons (${newLessons.length}):`);
+    for (const l of newLessons) parts.push(`• ${l}`);
+  }
+  const configKeys = Object.keys(appliedConfig);
+  if (configKeys.length > 0) {
+    parts.push(`\n⚙️ Config updates:`);
+    for (const k of configKeys) {
+      const { old: o, new: n } = appliedConfig[k];
+      parts.push(`• ${k}: ${JSON.stringify(o)} → ${JSON.stringify(n)}`);
+    }
+  }
+  if (rationale) parts.push(`\n💡 ${rationale}`);
+  return parts.join("\n");
+}
+
+async function notifyBots(newLessons, appliedConfig, rationale) {
+  const msg = buildReviewMessage(newLessons, appliedConfig, rationale);
+
+  // Notify main Telegram bot
+  try {
+    const { isEnabled, sendMessage } = await import("../telegram.js");
+    if (isEnabled()) await sendMessage(msg);
+  } catch { /* main bot not available */ }
+
+  // Notify journal bot
   try {
     const { isEnabled, notifyClaudeReview } = await import("../telegram-journal.js");
-    if (!isEnabled()) return;
-    await notifyClaudeReview({ newLessons, appliedConfig, rationale });
-  } catch {
-    // journal bot not available — silently skip
-  }
+    if (isEnabled()) await notifyClaudeReview({ newLessons, appliedConfig, rationale });
+  } catch { /* journal bot not available */ }
 }
 
 // ─── Main ─────────────────────────────────────────────────────────
@@ -200,7 +225,7 @@ export async function claudeUpdateLessons() {
     const hasChanges = newLessons.length > 0 || Object.keys(applied).length > 0;
 
     if (hasChanges) {
-      await notifyJournalBot(newLessons, applied, rationale);
+      await notifyBots(newLessons, applied, rationale);
       log("claude_review", `Done — ${newLessons.length} lesson(s), ${Object.keys(applied).length} config change(s)`);
     } else {
       log("claude_review", "Done — no changes (no new patterns found)");
