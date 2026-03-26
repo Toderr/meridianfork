@@ -352,6 +352,45 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - Prometheus metrics / observability endpoint
 - A/B testing framework for strategy variants
 
+## CLI Harness (agent-harness/)
+
+A Python Click-based CLI (`cli-anything-meridian`) for inspecting and configuring the agent without touching the running Node.js process.
+
+### Installation
+```bash
+cd agent-harness
+pip install -e .
+export MERIDIAN_DIR=/path/to/meridianfork
+```
+
+### Command Groups
+
+| Group | Commands | Description |
+|-------|----------|-------------|
+| `status` | `overview`, `positions`, `config` | Runtime state from state.json / user-config.json |
+| `journal` | `recent`, `closes`, `today`, `stats` | Query journal.json |
+| `report` | `daily`, `weekly`, `monthly` | Period performance reports |
+| `config` | `get [KEY]`, `set KEY VALUE` | Read/write user-config.json (hot-reloaded in ~2s) |
+| `lessons` | `list`, `performance`, `summary` | lessons.json data |
+| `repl` | — | Interactive REPL mode |
+
+All commands support `--json` for machine-readable output. All runtime files are resolved via `MERIDIAN_DIR` env var.
+
+`config set` is the only write operation — it patches user-config.json and the agent hot-reloads within ~2 seconds. Keys requiring restart: `rpcUrl`, `walletKey`, `dryRun`, schedule intervals.
+
+### Structure
+```
+agent-harness/
+├── MERIDIAN.md                          # SOP document
+├── setup.py                             # namespace package (cli_anything.*)
+└── cli_anything/meridian/
+    ├── meridian_cli.py                  # CLI entry point
+    ├── core/  (journal, state, config, lessons, paths)
+    ├── utils/ (formatting)
+    ├── skills/SKILL.md                  # AI-discoverable skill definition
+    └── tests/ (test_core.py, test_full_e2e.py — 66 tests, 100% pass)
+```
+
 ## Git Workflow
 
 - Push to `fork` remote: `git push fork main`
