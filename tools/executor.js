@@ -8,6 +8,8 @@ import {
   claimFees,
   closePosition,
   searchPools,
+  withdrawLiquidity,
+  addLiquidity,
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
@@ -96,6 +98,8 @@ const toolMap = {
   add_to_blacklist: addToBlacklist,
   remove_from_blacklist: removeFromBlacklist,
   list_blacklist: listBlacklist,
+  withdraw_liquidity: withdrawLiquidity,
+  add_liquidity: addLiquidity,
   get_hive_pulse: () => getHivePulse(),
   get_hive_pool_consensus: ({ pool_address }) => queryPoolConsensus(pool_address),
   get_hive_lessons: ({ tags } = {}) => queryLessonConsensus(tags),
@@ -235,6 +239,8 @@ const WRITE_TOOLS = new Set([
   "claim_fees",
   "close_position",
   "swap_token",
+  "withdraw_liquidity",
+  "add_liquidity",
 ]);
 
 /**
@@ -433,10 +439,10 @@ async function runSafetyChecks(name, args) {
       const alreadyInPool = positions.positions.some(
         (p) => p.pool === args.pool_address
       );
-      if (alreadyInPool) {
+      if (alreadyInPool && !args.allow_duplicate_pool) {
         return {
           pass: false,
-          reason: `Already have an open position in pool ${args.pool_address}. Cannot open duplicate.`,
+          reason: `Already have an open position in pool ${args.pool_address}. Cannot open duplicate. Pass allow_duplicate_pool: true for multi-layer strategy.`,
         };
       }
 
@@ -454,41 +460,59 @@ async function runSafetyChecks(name, args) {
       }
 
       // Check amount limits
+      const amountX = args.amount_x ?? 0;
       const amountY = args.amount_y ?? args.amount_sol ?? 0;
-      if (amountY <= 0 && (!args.amount_x || args.amount_x <= 0)) {
-        return {
-          pass: false,
-          reason: `Must provide a positive amount for either SOL (amount_y) or base token (amount_x).`,
-        };
+
+      // tokenX-only deploy: skip SOL amount checks
+      if (amountX > 0 && amountY === 0) {
+        // No SOL needed — tokenX-only deploy
+      } else if (amountX > 0 && amountY > 0) {
+        // Custom ratio dual-sided: skip minimum SOL check, only enforce max
+        if (amountY > config.risk.maxDeployAmount) {
+          return {
+            pass: false,
+            reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
+          };
+        }
+      } else {
+        // Standard SOL-sided deploy
+        if (amountY <= 0) {
+          return {
+            pass: false,
+            reason: `Must provide a positive amount for either SOL (amount_y) or base token (amount_x).`,
+          };
+        }
+
+        // Enforce minimum deploy amount.
+        // When confidence_level is provided, the amount is already scaled (confidence/10 × deployAmount),
+        // so we only enforce the absolute 0.1 SOL floor.
+        // Without confidence, enforce deployAmountSol or 0.1 SOL (whichever is higher).
+        const minDeploy = args.confidence_level != null ? 0.1 : Math.max(0.1, config.management.deployAmountSol);
+        if (amountY < minDeploy) {
+          return {
+            pass: false,
+            reason: `Amount ${amountY} SOL is below the minimum deploy amount (${minDeploy} SOL). Use at least ${minDeploy} SOL.`,
+          };
+        }
+        if (amountY > config.risk.maxDeployAmount) {
+          return {
+            pass: false,
+            reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
+          };
+        }
       }
 
-      // Enforce minimum deploy amount.
-      // When confidence_level is provided, the amount is already scaled (confidence/10 × deployAmount),
-      // so we only enforce the absolute 0.1 SOL floor.
-      // Without confidence, enforce deployAmountSol or 0.1 SOL (whichever is higher).
-      const minDeploy = args.confidence_level != null ? 0.1 : Math.max(0.1, config.management.deployAmountSol);
-      if (amountY < minDeploy) {
-        return {
-          pass: false,
-          reason: `Amount ${amountY} SOL is below the minimum deploy amount (${minDeploy} SOL). Use at least ${minDeploy} SOL.`,
-        };
-      }
-      if (amountY > config.risk.maxDeployAmount) {
-        return {
-          pass: false,
-          reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
-        };
-      }
-
-      // Check SOL balance — must have enough to deploy + gas reserve
-      const balance = await getWalletBalances();
-      const gasReserve = config.management.gasReserve;
-      const minRequired = amountY + gasReserve;
-      if (balance.sol < minRequired) {
-        return {
-          pass: false,
-          reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${amountY} deploy + ${gasReserve} gas reserve).`,
-        };
+      // Check SOL balance — skip for tokenX-only deploys
+      if (amountY > 0) {
+        const balance = await getWalletBalances();
+        const gasReserve = config.management.gasReserve;
+        const minRequired = amountY + gasReserve;
+        if (balance.sol < minRequired) {
+          return {
+            pass: false,
+            reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${amountY} deploy + ${gasReserve} gas reserve).`,
+          };
+        }
       }
 
       return { pass: true };

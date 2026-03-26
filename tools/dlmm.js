@@ -106,7 +106,7 @@ setInterval(() => poolCache.clear(), 5 * 60 * 1000);
 async function sendWithRetry(connection, tx, signers, label = "tx", maxAttempts = 5) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await sendAndConfirmTransaction(connection, tx, signers);
+      return await sendAndConfirmTransaction(connection, tx, signers, { skipPreflight: true });
     } catch (e) {
       if (attempt === maxAttempts) throw e;
       const delay = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s, 8s
@@ -138,6 +138,7 @@ export async function deployPosition({
   strategy,
   bins_below,
   bins_above,
+  single_sided_x,  // if true, deposit only token X across all bins (ask-side / sell wall)
   // optional pool metadata for learning (passed by agent when available)
   pool_name,
   bin_step,
@@ -245,7 +246,7 @@ export async function deployPosition({
         user: wallet.publicKey,
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
-        strategy: { minBinId, maxBinId, strategyType },
+        strategy: { minBinId, maxBinId, strategyType, ...(single_sided_x ? { singleSidedX: true } : {}) },
         slippage: 10, // 10%
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
@@ -261,7 +262,7 @@ export async function deployPosition({
         user: wallet.publicKey,
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
-        strategy: { maxBinId, minBinId, strategyType },
+        strategy: { maxBinId, minBinId, strategyType, ...(single_sided_x ? { singleSidedX: true } : {}) },
         slippage: 1000, // 10% in bps
       });
       const txHash = await sendWithRetry(getConnection(), tx, [wallet, newPosition], "deploy:init");
@@ -271,11 +272,16 @@ export async function deployPosition({
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
 
     _positionsCacheAt = 0;
+    // SOL-only bid_ask (all bins below, no token X) → management strategy is single_sided_reseed
+    const trackedStrategy =
+      finalAmountX === 0 && finalAmountY > 0 && activeStrategy === "bid_ask" && activeBinsAbove === 0
+        ? "single_sided_reseed"
+        : activeStrategy;
     trackPosition({
       position: newPosition.publicKey.toString(),
       pool: pool_address,
       pool_name,
-      strategy: activeStrategy,
+      strategy: trackedStrategy,
       bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
       bin_step,
       volatility,
@@ -744,4 +750,181 @@ async function lookupPoolForPosition(position_address, walletAddress) {
   }
 
   throw new Error(`Position ${position_address} not found in open positions`);
+}
+
+// ─── Withdraw Liquidity (partial or full, keeps position open) ──
+export async function withdrawLiquidity({
+  position_address,
+  pool_address,
+  bps = 10000,
+  claim_fees = true,
+}) {
+  position_address = normalizeMint(position_address);
+  if (pool_address) pool_address = normalizeMint(pool_address);
+
+  if (process.env.DRY_RUN === "true") {
+    return {
+      dry_run: true,
+      would_withdraw: { position_address, pool_address, bps, claim_fees },
+      message: "DRY RUN — no transaction sent",
+    };
+  }
+
+  try {
+    log("withdraw", `Withdrawing ${bps} bps from position: ${position_address}`);
+    const wallet = getWallet();
+    const poolAddress = pool_address || await lookupPoolForPosition(position_address, wallet.publicKey.toString());
+    poolCache.delete(poolAddress.toString());
+    const pool = await getPool(poolAddress);
+
+    const positionPubKey = new PublicKey(position_address);
+    const txHashes = [];
+
+    // ─── Step 1: Claim fees if requested ────────────────────────
+    if (claim_fees) {
+      try {
+        log("withdraw", `Step 1: Claiming fees for ${position_address}`);
+        const positionData = await pool.getPosition(positionPubKey);
+        const claimTxs = await pool.claimSwapFee({
+          owner: wallet.publicKey,
+          position: positionData,
+        });
+        if (claimTxs && claimTxs.length > 0) {
+          for (const tx of claimTxs) {
+            const claimHash = await sendWithRetry(getConnection(), tx, [wallet], "withdraw:claim");
+            txHashes.push(claimHash);
+          }
+          log("withdraw", `Step 1 OK: ${txHashes.join(", ")}`);
+          recordClaim(position_address);
+        }
+      } catch (e) {
+        log("withdraw_warn", `Step 1 (Claim) failed or nothing to claim: ${e.message}`);
+      }
+    }
+
+    // ─── Step 2: Remove liquidity (keep position open) ──────────
+    log("withdraw", `Step 2: Removing ${bps} bps of liquidity`);
+    const withdrawTx = await pool.removeLiquidity({
+      user: wallet.publicKey,
+      position: positionPubKey,
+      fromBinId: -887272,
+      toBinId: 887272,
+      bps: new BN(bps),
+      shouldClaimAndClose: false,
+    });
+
+    for (const tx of Array.isArray(withdrawTx) ? withdrawTx : [withdrawTx]) {
+      const txHash = await sendWithRetry(getConnection(), tx, [wallet], "withdraw:remove");
+      txHashes.push(txHash);
+    }
+    log("withdraw", `SUCCESS txs: ${txHashes.join(", ")}`);
+
+    _positionsCacheAt = 0;
+
+    return {
+      success: true,
+      position: position_address,
+      pool: poolAddress,
+      bps,
+      fees_claimed: claim_fees,
+      position_still_open: true,
+      txs: txHashes,
+    };
+  } catch (error) {
+    log("withdraw_error", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// ─── Add Liquidity (to existing position) ───────────────────────
+export async function addLiquidity({
+  position_address,
+  pool_address,
+  amount_x = 0,
+  amount_y = 0,
+  strategy = "spot",
+  single_sided_x = false,
+}) {
+  position_address = normalizeMint(position_address);
+  if (pool_address) pool_address = normalizeMint(pool_address);
+
+  if (process.env.DRY_RUN === "true") {
+    return {
+      dry_run: true,
+      would_add: { position_address, pool_address, amount_x, amount_y, strategy },
+      message: "DRY RUN — no transaction sent",
+    };
+  }
+
+  try {
+    log("add_liquidity", `Adding liquidity to position: ${position_address}`);
+    const { StrategyType } = await getDLMM();
+    const wallet = getWallet();
+    const poolAddress = pool_address || await lookupPoolForPosition(position_address, wallet.publicKey.toString());
+    const pool = await getPool(poolAddress);
+
+    const positionPubKey = new PublicKey(position_address);
+    const positionInfo = await pool.getPosition(positionPubKey);
+    const minBinId = positionInfo.positionData.lowerBinId;
+    const maxBinId = positionInfo.positionData.upperBinId;
+
+    const strategyMap = {
+      spot: StrategyType.Spot,
+      curve: StrategyType.Curve,
+      bid_ask: StrategyType.BidAsk,
+    };
+
+    const strategyType = strategyMap[strategy];
+    if (strategyType === undefined) {
+      throw new Error(`Invalid strategy: ${strategy}. Use spot, curve, or bid_ask.`);
+    }
+
+    const totalYLamports = new BN(Math.floor(amount_y * 1e9));
+    let totalXLamports = new BN(0);
+    if (amount_x > 0) {
+      const mintInfo = await getConnection().getParsedAccountInfo(new PublicKey(pool.lbPair.tokenXMint));
+      const decimals = mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
+      totalXLamports = new BN(Math.floor(amount_x * Math.pow(10, decimals)));
+    }
+
+    log("add_liquidity", `Pool: ${poolAddress}, Bins: ${minBinId} to ${maxBinId}`);
+    log("add_liquidity", `Amount: ${amount_x} X, ${amount_y} Y, Strategy: ${strategy}`);
+
+    const tx = await pool.addLiquidityByStrategy({
+      positionPubKey,
+      totalXAmount: totalXLamports,
+      totalYAmount: totalYLamports,
+      strategy: {
+        maxBinId,
+        minBinId,
+        strategyType,
+        ...(single_sided_x ? { singleSidedX: true } : {}),
+      },
+      user: wallet.publicKey,
+      slippage: 100,
+    });
+
+    const txHashes = [];
+    for (const t of Array.isArray(tx) ? tx : [tx]) {
+      const txHash = await sendWithRetry(getConnection(), t, [wallet], "add_liquidity");
+      txHashes.push(txHash);
+    }
+    log("add_liquidity", `SUCCESS txs: ${txHashes.join(", ")}`);
+
+    _positionsCacheAt = 0;
+
+    return {
+      success: true,
+      position: position_address,
+      pool: poolAddress,
+      added_x: amount_x,
+      added_y: amount_y,
+      strategy,
+      bin_range: { min: minBinId, max: maxBinId },
+      txs: txHashes,
+    };
+  } catch (error) {
+    log("add_liquidity_error", error.message);
+    return { success: false, error: error.message };
+  }
 }
