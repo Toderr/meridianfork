@@ -110,13 +110,13 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_s
   const stratLine = [strategy, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
   const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
   await sendMessage(
-    `📖 JOURNAL — CLOSE\n\n` +
     `📍 ${pool_name}\n` +
+    `💰 ${sp}${(pnl_pct ?? 0).toFixed(2)}% | ${su}$${(pnl_usd ?? 0).toFixed(2)} | ${ss}${(pnl_sol ?? 0).toFixed(4)} SOL\n\n` +
     (stratLine ? `📊 ${stratLine}\n` : ``) +
     `💵 Invested: ${(amount_sol ?? 0).toFixed(4)} SOL${usdPart}\n` +
-    `💰 PnL: ${su}$${(pnl_usd ?? 0).toFixed(2)} | ${ss}${(pnl_sol ?? 0).toFixed(4)} SOL | ${sp}${(pnl_pct ?? 0).toFixed(2)}%` +
-    (close_reason ? `\n💡 ${close_reason}` : ``) +
-    (minutes_held != null ? `\n⏱️ Held: ${minutes_held}m` : ``)
+    (close_reason ? `💡 ${close_reason}\n` : ``) +
+    (minutes_held != null ? `⏱️ Held: ${minutes_held}m\n` : ``) +
+    `📖 POSITION CLOSED`
   );
 }
 
@@ -311,25 +311,24 @@ export function startJournalPolling() {
 export function startJournalCrons() {
   if (!TOKEN) return;
 
-  // Daily at 23:59 UTC+7 = 16:59 UTC
-  cron.schedule("59 16 * * *", () => {
+  // Daily at 23:59 UTC+7
+  cron.schedule("59 23 * * *", () => {
     sendDailyReport().catch(e => log("journal_bot_error", `Daily report failed: ${e.message}`));
-  });
+  }, { timezone: "Asia/Bangkok" });
 
-  // Weekly Sunday at 23:59 UTC+7 = 16:59 UTC
-  cron.schedule("59 16 * * 0", () => {
+  // Weekly Sunday at 23:59 UTC+7
+  cron.schedule("59 23 * * 0", () => {
     sendWeeklyReport().catch(e => log("journal_bot_error", `Weekly report failed: ${e.message}`));
-  });
+  }, { timezone: "Asia/Bangkok" });
 
-  // Monthly: last day of month — run every day on 28-31, send only on last day of month (UTC+7)
-  cron.schedule("59 16 28-31 * *", () => {
+  // Monthly: last day of month at 23:59 UTC+7 — run on 28-31, send only on last day
+  cron.schedule("59 23 28-31 * *", () => {
     const now7 = new Date(Date.now() + TZ_OFFSET_MS);
     const tomorrow7 = new Date(now7.getTime() + 24 * 60 * 60 * 1000);
-    // If tomorrow is the 1st, today is the last day of the month
     if (tomorrow7.getUTCDate() === 1) {
       sendMonthlyReport().catch(e => log("journal_bot_error", `Monthly report failed: ${e.message}`));
     }
-  });
+  }, { timezone: "Asia/Bangkok" });
 
   log("journal_bot", "Journal report crons scheduled (daily/weekly/monthly at 23:59 UTC+7)");
 }

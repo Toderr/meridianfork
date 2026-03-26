@@ -138,14 +138,14 @@ Separate Telegram bot dedicated to the trading journal. Configured via `TELEGRAM
 
 **Notification** — fires on every position close:
 ```
-📖 JOURNAL — CLOSE
-
 📍 TOKEN-SOL
+💰 +0.04% | +$0.02 | +0.0001 SOL
+
 📊 bid_ask | 10 bins
 💵 Invested: 0.50 SOL ($85.00)
-💰 PnL: +$0.02 | +0.0001 SOL | +0.04%
 💡 yield-exit
 ⏱️ Held: 74m
+📖 POSITION CLOSED
 ```
 
 **Scheduled reports** (all at 23:59 UTC+7):
