@@ -957,6 +957,14 @@ if (isTTY) {
       return;
     }
 
+    if (text === "/review") {
+      sendMessage("🧠 Starting Claude review... (may take ~2 min)").catch(() => {});
+      import("./scripts/claude-lesson-updater.js")
+        .then(m => m.claudeUpdateLessons())
+        .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
+      return;
+    }
+
     busy = true;
     try {
       log("telegram", `Incoming: ${text}`);
@@ -989,6 +997,7 @@ Commands:
   /learn <addr>  Study top LPers from a specific pool address
   /thresholds    Show current screening thresholds + performance stats
   /evolve        Manually trigger threshold evolution from performance data
+  /review        Trigger Claude lesson review (analyzes last 20 closes)
   /reconcile     Re-sync local state.json against on-chain positions
   /stop          Shut down
 `);
@@ -1283,6 +1292,14 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       } catch (e) {
         await sendMessage(`Error: ${e.message}`).catch(() => {});
       }
+      return;
+    }
+
+    if (text === "/review") {
+      sendMessage("🧠 Starting Claude review... (may take ~2 min)").catch(() => {});
+      import("./scripts/claude-lesson-updater.js")
+        .then(m => m.claudeUpdateLessons())
+        .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
       return;
     }
 
