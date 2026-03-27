@@ -23,6 +23,7 @@ import { studyTopLPers } from "./tools/study.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { _stats, _flags } from "./stats.js";
 import { startDashboard } from "./dashboard/server.js";
+import { extractRules, checkPositionCompliance, filterCandidatesByRules } from "./lesson-rules.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
 import { fileURLToPath } from "url";
@@ -67,7 +68,7 @@ const DEPLOY  = config.management.deployAmountSol;
 //  CYCLE TIMERS
 // ═══════════════════════════════════════════
 const timers = {
-  managementLastRun: null,
+  managementLastRun: { high: null, med: null, low: null },
   screeningLastRun: null,
 };
 
@@ -84,9 +85,21 @@ function formatCountdown(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+function nextManagementCountdown() {
+  const tiers = config.schedule.managementTiers;
+  const secs = ["high", "med", "low"].map(t => {
+    const lastRun = timers.managementLastRun[t];
+    if (!lastRun) return 0;
+    const intervalSec = tiers[t].intervalMin * 60;
+    const elapsed = (Date.now() - lastRun) / 1000;
+    return Math.max(0, intervalSec - elapsed);
+  });
+  return Math.min(...secs);
+}
+
 function buildPrompt() {
-  const mgmt  = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
-  const scrn  = formatCountdown(nextRunIn(timers.screeningLastRun,  config.schedule.screeningIntervalMin));
+  const mgmt = formatCountdown(nextManagementCountdown());
+  const scrn = formatCountdown(nextRunIn(timers.screeningLastRun, config.schedule.screeningIntervalMin));
   return `[manage: ${mgmt} | screen: ${scrn}]\n> `;
 }
 
@@ -96,7 +109,7 @@ function buildPrompt() {
 let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
-let _earlyManagementTimer = null; // setTimeout handle for high-vol early re-run
+let _mgmtDispatcher = null;  // setInterval handle for tiered management dispatcher
 let _pnlCheckerBusy = false;
 let _pnlCheckerInterval = null;
 // Map: position_address → { peak: number } — tracks peak PnL for trailing stop
@@ -137,6 +150,10 @@ async function maybeRunMissedBriefing() {
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
   _cronTasks = [];
+  if (_mgmtDispatcher) {
+    clearInterval(_mgmtDispatcher);
+    _mgmtDispatcher = null;
+  }
   if (_pnlCheckerInterval) {
     clearInterval(_pnlCheckerInterval);
     _pnlCheckerInterval = null;
@@ -145,18 +162,34 @@ function stopCronJobs() {
 }
 
 /**
- * Run one management cycle. Shared by the cron schedule and the high-vol
- * early-trigger setTimeout so both paths use identical logic.
+ * Classify a position's volatility into a management tier name.
+ * null volatility (old deploys without volatility stored) → "med".
  */
-async function runManagementCycle() {
+function classifyVolatilityTier(volatility) {
+  if (volatility == null) return "med";
+  if (volatility >= 5) return "high";
+  if (volatility >= 2) return "med";
+  return "low";
+}
+
+/**
+ * Run one management cycle for a specific volatility tier.
+ * Called by dispatchManagement() — each tier runs independently on its own interval.
+ * @param {Object|null} tier - { name: "high"|"med"|"low", minVol, intervalMin } or null for legacy
+ */
+async function runManagementCycle(tier = null) {
   if (_managementBusy) return;
   _managementBusy = true;
   _stats.managementCycles++;
-  timers.managementLastRun = Date.now();
-  log("cron", `Starting management cycle [model: ${config.llm.managementModel}]`);
+  const tierName = tier?.name ?? "med";
+  timers.managementLastRun[tierName] = Date.now();
+  const tierLabel = tier ? ` [${tier.name.toUpperCase()}]` : "";
+  log("cron", `Starting management cycle${tierLabel} [model: ${config.llm.managementModel}]`);
   let mgmtReport = null;
   let positions = [];
   let positionData = [];
+  let allPositionData = [];
+  let tierFilteredToEmpty = false;
   let instructionClosePrefix = [];
   try {
     // Pre-load all positions + PnL in parallel — LLM gets everything, no fetch steps needed
@@ -179,7 +212,28 @@ async function runManagementCycle() {
       return;
     }
 
-    // Snapshot + PnL fetch in parallel for all positions
+    // Build lightweight metadata from state only (no API calls) — used for tier filter + screening trigger
+    allPositionData = positions.map(p => {
+      const tracked = getTrackedPosition(p.position);
+      return { ...p, volatility: tracked?.volatility ?? null };
+    });
+
+    // Apply tier filter BEFORE expensive PnL API calls — avoids wasted requests on empty tiers
+    if (tier) {
+      const tierPositions = positions.filter(p => {
+        const tracked = getTrackedPosition(p.position);
+        return classifyVolatilityTier(tracked?.volatility ?? null) === tier.name;
+      });
+      if (tierPositions.length === 0) {
+        log("cron", `Management${tierLabel}: no ${tier.name}-volatility positions — skipping`);
+        tierFilteredToEmpty = true;
+        return;
+      }
+      positions = tierPositions;
+      log("cron", `Management${tierLabel}: ${positions.length} position(s) in this tier`);
+    }
+
+    // Snapshot + PnL fetch in parallel — only for this tier's positions
     positionData = await Promise.all(positions.map(async (p) => {
       recordPositionSnapshot(p.pool, p);
       const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
@@ -195,7 +249,8 @@ async function runManagementCycle() {
       const strategy = p.strategy || tracked?.strategy || null;
       const invested_sol = tracked?.amount_sol ?? null;
       const initial_value_usd = tracked?.initial_value_usd ?? null;
-      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd };
+      const volatility = tracked?.volatility ?? null;
+      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd, volatility };
     }));
 
     // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
@@ -237,10 +292,42 @@ async function runManagementCycle() {
       positionData = positionData.filter(p => !skippedByInstruction.has(p.position));
     }
 
+    // ── Pre-enforce lesson-based close/hold rules BEFORE the agent loop ─────────
+    // These are HARD RULES derived from past performance — enforced in code, not by LLM.
+    const lessonForceHoldSet = new Set();
+    try {
+      const { management: mgmtRules } = extractRules("MANAGER");
+      if (mgmtRules.length > 0) {
+        for (const p of positionData) {
+          if (skippedByInstruction.has(p.position)) continue;
+          const { action, reason } = checkPositionCompliance(p, mgmtRules);
+          if (action === "force_close") {
+            log("lesson_enforce", `Force-closing ${p.pair} (${p.position}) — ${reason}`);
+            try {
+              await executeTool("close_position", { position_address: p.position });
+              skippedByInstruction.add(p.position);
+              instructionClosePrefix.push(`Lesson-enforced close: ${p.pair} — ${reason}`);
+            } catch (err) {
+              log("cron_error", `Lesson force-close failed for ${p.pair}: ${err.message}`);
+              // Don't skip — let agent handle it as fallback
+            }
+          } else if (action === "force_hold") {
+            log("lesson_enforce", `Force-holding ${p.pair} (${p.position}) — ${reason}`);
+            lessonForceHoldSet.add(p.position);
+            // Mark in positionData so agent sees it
+            p._lesson_force_hold = reason;
+          }
+        }
+        positionData = positionData.filter(p => !skippedByInstruction.has(p.position));
+      }
+    } catch (lessonErr) {
+      log("cron_error", `Lesson management enforcement failed (non-fatal): ${lessonErr.message}`);
+    }
+
     // If all positions were auto-closed, skip the agent loop
     if (positionData.length === 0) {
       mgmtReport = instructionClosePrefix.join("\n");
-      log("cron", "All positions closed by instruction pre-check — skipping agent loop");
+      log("cron", "All positions closed by pre-check — skipping agent loop");
       return;
     }
 
@@ -282,6 +369,7 @@ async function runManagementCycle() {
           (p.feeTvl24h != null && (p.age_minutes||0) >= config.management.minAgeForYieldExit ? ` | to_yield: ${(p.feeTvl24h - config.management.minFeeTvl24h).toFixed(1)}%` : "") +
           (p.binsAbove != null ? ` | to_bin_exit: ${Math.max(0, config.management.outOfRangeBinsToClose - p.binsAbove)}` : "") : null,
         p.instruction ? `  instruction: "${p.instruction}"` : null,
+        p._lesson_force_hold ? `  LESSON_FORCE_HOLD: "${p._lesson_force_hold}" — do NOT close this position` : null,
         p.recall ? `  memory: ${p.recall}` : null,
       ].filter(Boolean);
       return lines.join("\n");
@@ -323,17 +411,10 @@ When calling close_position, set close_reason to the same short reason above.
     log("cron_error", `Management cycle failed: ${error.message}`);
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
-    // ── Adaptive management interval: if any open position has high volatility,
-    //    schedule an early re-run in 3 minutes instead of waiting for the normal interval.
-    const highVolPositions = positionData.filter(p => p.volatility != null && p.volatility >= 5);
-    if (highVolPositions.length > 0 && !_earlyManagementTimer) {
-      const pairs = highVolPositions.map(p => p.pair || p.pool?.slice(0, 8)).join(", ");
-      const earlyMs = 3 * 60 * 1000;
-      log("cron", `High-volatility position(s) detected (${pairs}) — scheduling early management check in 3m`);
-      _earlyManagementTimer = setTimeout(async () => {
-        _earlyManagementTimer = null;
-        await runManagementCycle();
-      }, earlyMs);
+    // If tier filter left no matching positions, skip report and screening — just release lock
+    if (tierFilteredToEmpty) {
+      _managementBusy = false;
+      return;
     }
 
     // Re-fetch position list after agent may have closed some — only show currently open ones.
@@ -390,7 +471,7 @@ When calling close_position, set close_reason to the same short reason above.
         : "";
 
       // Balance + next management run
-      const nextMgmt = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
+      const nextMgmt = formatCountdown(nextManagementCountdown());
       let walletSol = "";
       try {
         const wb = await import("./tools/wallet.js").then(m => m.getWalletBalances({})).catch(() => null);
@@ -402,7 +483,7 @@ When calling close_position, set close_reason to the same short reason above.
         ? prefixBlock + posBlocks.join("\n\n———————————\n\n") + footer
         : (mgmtReport || "No open positions.") + footer;
 
-      if (mgmtReport || liveData.length > 0) sendMessage(`🔄 MANAGE\n\n${body}`).catch(() => {});
+      if (mgmtReport || liveData.length > 0) sendMessage(`🔄 MANAGE${tierLabel}\n\n${body}`).catch(() => {});
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
           notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
@@ -410,10 +491,16 @@ When calling close_position, set close_reason to the same short reason above.
       }
     }
 
-    // If slots are available, trigger screening shortly after management finishes
+    // Trigger screening only from the lowest-frequency active tier (prefer low > med > high).
+    // This prevents redundant screening triggers every 3m when only high-vol positions exist.
     // (30s delay lets auto-swaps settle before screening evaluates wallet balance)
-    if (openPositions.length < config.risk.maxPositions && !_screeningBusy) {
-      log("cron", `Management done with ${openPositions.length}/${config.risk.maxPositions} positions — triggering screening in 30s`);
+    const screeningTierMatch = !tier
+      || tier.name === "low"
+      || (tier.name === "med" && !allPositionData.some(p => classifyVolatilityTier(p.volatility) === "low"))
+      || (tier.name === "high" && !allPositionData.some(p => ["med", "low"].includes(classifyVolatilityTier(p.volatility))));
+
+    if (screeningTierMatch && openPositions.length < config.risk.maxPositions && !_screeningBusy) {
+      log("cron", `Management${tierLabel} done with ${openPositions.length}/${config.risk.maxPositions} positions — triggering screening in 30s`);
       setTimeout(() => { runScreeningCycle(); }, 30_000);
     }
 
@@ -478,7 +565,21 @@ async function runScreeningCycle() {
 
       // Pre-load top candidates + all recon data in parallel (saves 4-6 LLM steps)
       const topCandidates = await getTopCandidates({ limit: 5 }).catch(() => null);
-      const candidates = topCandidates?.candidates || topCandidates?.pools || [];
+      let candidates = topCandidates?.candidates || topCandidates?.pools || [];
+
+      // Pre-filter candidates against lesson HARD RULES before passing to agent
+      try {
+        const { screening: screeningRules } = extractRules("SCREENER");
+        if (screeningRules.length > 0) {
+          const before = candidates.length;
+          candidates = filterCandidatesByRules(candidates, screeningRules);
+          if (candidates.length < before) {
+            log("lesson_enforce", `Filtered ${before - candidates.length} candidate(s) by lesson rules — ${candidates.length} remain`);
+          }
+        }
+      } catch (lessonErr) {
+        log("cron_error", `Lesson screening filter failed (non-fatal): ${lessonErr.message}`);
+      }
 
       const candidateBlocks = await Promise.all(
         candidates.slice(0, 5).map(async (pool) => {
@@ -644,18 +745,34 @@ async function runPnlChecker() {
   }
 }
 
+/**
+ * Tiered management dispatcher — fires every minute, checks which tiers are due,
+ * and runs the highest-priority due tier. Only one tier runs at a time (_managementBusy mutex).
+ * If a tier is due while another is running, it's skipped and retried on the next tick.
+ */
+function dispatchManagement() {
+  if (_managementBusy) return;
+  const tiers = config.schedule.managementTiers;
+  const now = Date.now();
+  for (const tierName of ["high", "med", "low"]) {
+    const tierCfg = tiers[tierName];
+    const lastRun = timers.managementLastRun[tierName];
+    const intervalMs = tierCfg.intervalMin * 60 * 1000;
+    if (!lastRun || now - lastRun >= intervalMs) {
+      runManagementCycle({ name: tierName, ...tierCfg }).catch(e =>
+        log("cron_error", `Management dispatch [${tierName}] error: ${e.message}`)
+      );
+      return; // one tier per dispatcher tick
+    }
+  }
+}
+
 export function startCronJobs() {
   stopCronJobs(); // stop any running tasks before (re)starting
 
-  // Cancel any pending early-trigger timer so it doesn't fire after a cron restart
-  if (_earlyManagementTimer) {
-    clearTimeout(_earlyManagementTimer);
-    _earlyManagementTimer = null;
-  }
-
-  const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
-    await runManagementCycle();
-  });
+  // Tiered management dispatcher — 1-minute resolution, runs all tiers independently
+  _mgmtDispatcher = setInterval(dispatchManagement, 60_000);
+  dispatchManagement(); // run immediately on startup
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, async () => {
     await runScreeningCycle();
@@ -723,8 +840,9 @@ Summarize the current portfolio health, total fees earned, and performance of al
 
   _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
 
-  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask];
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, pnl-check every 30s`);
+  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask];
+  const t = config.schedule.managementTiers;
+  log("cron", `Cycles started — management: high=${t.high.intervalMin}m, med=${t.med.intervalMin}m, low=${t.low.intervalMin}m | screening every ${config.schedule.screeningIntervalMin}m | pnl-check every 30s`);
 }
 
 // ═══════════════════════════════════════════
@@ -967,6 +1085,17 @@ if (isTTY) {
       return;
     }
 
+    if (text.startsWith("/claude ")) {
+      const query = text.slice(8).trim();
+      if (!query) { sendMessage("Usage: /claude <question>").catch(() => {}); return; }
+      sendMessage("🤖 Thinking... (~30s)").catch(() => {});
+      import("./scripts/claude-ask.js")
+        .then(m => m.claudeAsk(query))
+        .then(reply => sendMessage(reply.slice(0, 4096)).catch(() => {}))
+        .catch(e => sendMessage(`Claude error: ${e.message}`).catch(() => {}));
+      return;
+    }
+
     busy = true;
     try {
       log("telegram", `Incoming: ${text}`);
@@ -1000,6 +1129,7 @@ Commands:
   /thresholds    Show current screening thresholds + performance stats
   /evolve        Manually trigger threshold evolution from performance data
   /review        Trigger Claude lesson review (analyzes last 20 closes)
+  /claude <q>    Ask Claude anything about positions, lessons, journal
   /reconcile     Re-sync local state.json against on-chain positions
   /stop          Shut down
 `);
@@ -1302,6 +1432,17 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       import("./scripts/claude-lesson-updater.js")
         .then(m => m.claudeUpdateLessons())
         .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
+      return;
+    }
+
+    if (text.startsWith("/claude ")) {
+      const query = text.slice(8).trim();
+      if (!query) { sendMessage("Usage: /claude <question>").catch(() => {}); return; }
+      sendMessage("🤖 Thinking... (~30s)").catch(() => {});
+      import("./scripts/claude-ask.js")
+        .then(m => m.claudeAsk(query))
+        .then(reply => sendMessage(reply.slice(0, 4096)).catch(() => {}))
+        .catch(e => sendMessage(`Claude error: ${e.message}`).catch(() => {}));
       return;
     }
 

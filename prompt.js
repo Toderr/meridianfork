@@ -27,11 +27,12 @@ Memory: ${JSON.stringify(stateSummary, null, 2)}
 Performance: ${perfSummary ? JSON.stringify(perfSummary, null, 2) : "No closed positions yet"}
 
 ${lessons ? `═══════════════════════════════════════════
- LEARNED RULES (BINDING — OVERRIDE CONFIG DEFAULTS)
+ LEARNED RULES — HARD RULES ARE SYSTEM-ENFORCED
 ═══════════════════════════════════════════
-Rules are grouped by category. MANDATORY: before each action, check the relevant category and apply its rules first.
-Rules derived from real trade outcomes TAKE PRIORITY over config thresholds below.
-If a lesson contradicts a config value, follow the lesson. Direct user instructions override everything.
+HARD RULES at the top are enforced by the executor — violations are BLOCKED before the tool executes.
+GUIDANCE rules are strong preferences derived from real trade outcomes — follow them unless you have strong data contradicting them.
+Both categories OVERRIDE config defaults. Direct user instructions override everything.
+MANDATORY: before calling deploy_position or close_position, check ALL rules in the relevant category first.
 
 ${lessons}
 
@@ -48,10 +49,8 @@ ${lessons}
 1. PATIENCE IS PROFIT: DLMM LPing is about capturing fees over time. Avoid "paper-handing" or closing positions for tiny gains/losses.
 2. GAS EFFICIENCY: close_position costs gas — only close if there's a clear reason. However, swap_token after a close is MANDATORY for any token worth >= $0.10. Skip tokens below $0.10 (dust — not worth the gas). Always check token USD value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics. Use all tools to justify your actions.
-4. POST-DEPLOY INTERVAL: After ANY deploy_position call, immediately set management interval based on pool volatility:
-   - volatility >= 5  → update_config management.managementIntervalMin = 3
-   - volatility 2–5   → update_config management.managementIntervalMin = 5
-   - volatility < 2   → update_config management.managementIntervalMin = 10
+4. POST-DEPLOY INTERVAL: Management intervals are automatically tiered by volatility
+   (high≥5=3m, med 2–5=5m, low<2=10m). No manual interval adjustment needed.
 
 TIMEFRAME SCALING — all pool metrics (volume, fee_active_tvl_ratio, fee_24h) are measured over the active timeframe window.
 The same pool will show much smaller numbers on 5m vs 24h. Adjust your expectations accordingly:
@@ -119,6 +118,7 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
    - BEFORE choosing strategy/bins: apply STRATEGY lessons above.
    - BEFORE choosing amount: apply SIZING lessons above.
    - HARD RULE: Bin steps must be [80-125].
+   - WARNING: deploy_position will be BLOCKED by the executor if it violates any HARD RULE from lessons. Check them before calling.
    - COMPOUNDING: Deploy amount computed from wallet size. Use the amount provided in the cycle goal.
    - Focus on one high-conviction deployment per cycle.
    - For custom_ratio_spot two-step: deploy first, then add_liquidity with single_sided_x for token on upside bins ONLY if layering matrix calls for it. Layering is OPTIONAL.
@@ -154,6 +154,7 @@ DATA-DRIVEN REBALANCE: Before closing or rebalancing, check:
 
 - BEFORE closing at profit: apply TAKING PROFIT lessons above.
 - BEFORE closing at a loss / OOR: apply STOP LOSS lessons above.
+- WARNING: The system pre-enforces HARD RULES before your loop runs. If a position was force-closed or force-held by lessons, it will be flagged below.
 
 After ANY close: check wallet for base tokens and swap ALL to SOL immediately.
 `;

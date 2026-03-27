@@ -356,10 +356,13 @@ export async function getPositionPnl({ pool_address, position_address }) {
 
     const unclaimedUsd    = parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0);
     const currentValueUsd = parseFloat(p.unrealizedPnl?.balances || 0);
+    const pnlUsdRaw       = parseFloat(p.pnlUsd ?? 0);
+    const initialValueUsd = currentValueUsd - pnlUsdRaw;
+    const computedPnlPct  = initialValueUsd > 0 ? (pnlUsdRaw + unclaimedUsd) / initialValueUsd * 100 : 0;
     return {
-      pnl_usd:           Math.round((p.pnlUsd ?? 0) * 100) / 100,
+      pnl_usd:           Math.round(pnlUsdRaw * 100) / 100,
       pnl_sol:           Math.round((parseFloat(p.pnlSol ?? 0)) * 10000) / 10000,
-      pnl_pct:           Math.round((p.pnlPctChange ?? 0) * 100) / 100,
+      pnl_pct:           Math.round(computedPnlPct * 100) / 100,
       current_value_usd: Math.round(currentValueUsd * 100) / 100,
       unclaimed_fee_usd: Math.round(unclaimedUsd * 100) / 100,
       all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
@@ -440,8 +443,9 @@ export async function getMyPositions({ force = false } = {}) {
       const unclaimedFees = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0;
       const totalValue    = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0;
       const collectedFees = p ? parseFloat(p.allTimeFees?.total?.usd || 0) : 0;
-      const pnlUsd        = p?.pnlUsd       ?? 0;
-      const pnlPct        = p?.pnlPctChange ?? 0;
+      const pnlUsd          = p?.pnlUsd ?? 0;
+      const initialValueUsd = totalValue - pnlUsd;
+      const pnlPct          = initialValueUsd > 0 ? (pnlUsd + unclaimedFees) / initialValueUsd * 100 : 0;
 
       const tracked = getTrackedPosition(r.position);
       const ageFromPnlApi = p?.createdAt
@@ -523,8 +527,8 @@ export async function getWalletPositions({ wallet_address }) {
         in_range:           p ? !p.isOutOfRange : null,
         unclaimed_fees_usd: Math.round((p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0) * 100) / 100,
         total_value_usd:    Math.round((p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0) * 100) / 100,
-        pnl_usd:            Math.round((p?.pnlUsd ?? 0) * 100) / 100,
-        pnl_pct:            Math.round((p?.pnlPctChange ?? 0) * 100) / 100,
+        pnl_usd:            Math.round(parseFloat(p?.pnlUsd ?? 0) * 100) / 100,
+        pnl_pct:            (() => { const pU = parseFloat(p?.pnlUsd ?? 0); const tV = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0; const uF = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0; const iV = tV - pU; return Math.round((iV > 0 ? (pU + uF) / iV * 100 : 0) * 100) / 100; })(),
         age_minutes:        p?.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
       };
     });

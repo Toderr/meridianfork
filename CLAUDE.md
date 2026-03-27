@@ -23,6 +23,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `tools/executor.js` | Tool dispatch, post-tool hooks (notify, journal, sync) |
 | `tools/definitions.js` | LLM tool schemas for all agent roles |
 | `lessons.js` | Performance recording and learning system |
+| `lesson-rules.js` | Lesson rule extractor + compliance checkers (hard enforcement) |
 | `journal.js` | Append-only trade journal (open/close/claim events) |
 | `reports.js` | Daily/weekly/monthly plain-text reports |
 | `briefing.js` | Morning briefing (wraps `generateReport("daily")`) |
@@ -49,7 +50,18 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 ## Architecture
 
 ### Cron Cycles
-- **Management** (default 10m): reviews open positions, decides close/hold
+
+Management runs on 3 independent volatility tiers via a 1-minute `setInterval` dispatcher. Each tier fires independently; only one runs at a time (`_managementBusy` mutex).
+
+| Tier | Volatility | Interval | Telegram header |
+|------|-----------|----------|-----------------|
+| high | ≥ 5       | 3 min    | `🔄 MANAGE [HIGH]` |
+| med  | 2–5 or null (old deploys) | 5 min | `🔄 MANAGE [MED]` |
+| low  | < 2       | 10 min   | `🔄 MANAGE [LOW]` |
+
+- Positions with `volatility === null` (deployed before volatility tracking) → classified as **med**
+- If a tier has no matching positions it skips silently (no Telegram send)
+- Screening trigger: only from the **lowest-frequency active tier** (prefer low → med → high)
 - **Screening** (default 30m): scans pools, deploys new positions
 
 ### Agent Types
@@ -79,10 +91,12 @@ Chain: `getMyPositions()` returns `pnl_sol` from Meteora API `pnlSol` → cached
 
 ## Management Cycle — Report
 
-The `finally` block in the management cron (`index.js`) sends the Telegram report. It reuses the pre-loaded PnL from the start of the cycle (no re-fetch) so the PnL shown matches what the agent saw. Positions closed during the agent loop are filtered out. Each open position gets its own block with inline reasoning:
+The `finally` block in the management cycle (`index.js`) sends the Telegram report. It reuses the pre-loaded PnL from the start of the cycle (no re-fetch) so the PnL shown matches what the agent saw. Positions closed during the agent loop are filtered out. Each open position gets its own block with inline reasoning.
+
+The report header includes the tier label: `🔄 MANAGE [HIGH]`, `🔄 MANAGE [MED]`, or `🔄 MANAGE [LOW]`. If a tier has no matching positions it returns immediately without sending any message.
 
 ```
-🔄 MANAGE
+🔄 MANAGE [MED]
 
 📍 TOKEN-SOL
 💵 Invested: 0.50 SOL | $85.00
@@ -329,6 +343,11 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
   - Sizing: `positionSizePct` (based on rolling win rate over last 10 positions)
 - All evolved values written to `user-config.json` and applied live; each change triggers a `🧠 THRESHOLD EVOLVED` Telegram notification
 - **Lesson injection**: ALL lessons injected — no caps. Pinned → Role-matched → Recent. Priority: good > bad > manual > neutral
+- **Lesson enforcement (3-layer)**:
+  1. **Prompt** — HARD RULES (AVOID/NEVER/SKIP/FAILED keywords) shown in numbered checklist with `❌ VIOLATION = ACTION BLOCKED` warning. GUIDANCE (PREFER/WORKED/CONSIDER) shown separately as secondary.
+  2. **Pre-agent** — Before agent loop: screening cycle filters candidates violating lesson rules; management cycle force-closes/force-holds positions matching lesson conditions. Logged as `[lesson_enforce]`.
+  3. **Executor** — `deploy_position` safety checks run `checkDeployCompliance()` from `lesson-rules.js`. Violations return `{ pass: false }` blocking the on-chain action entirely.
+- **Rule extraction** (`lesson-rules.js`): Parses freeform lesson text into structured rules. Matches: `block_strategy` (strategy+volatility condition), `block_high_volatility`, `block_low_fees`, `block_concentration`, `oor_grace_period`, `force_close_aged_losing`. Unmatched rules remain prompt-only.
 - **Max change per step**: 20% to prevent whiplash
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
 - **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made.

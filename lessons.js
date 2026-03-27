@@ -838,35 +838,58 @@ export function getLessonsForPrompt(opts = {}) {
   const selected = [...pinned, ...roleMatched, ...recent];
   if (selected.length === 0) return null;
 
-  // Group by category — agent must check the relevant category before each action
-  const CATEGORY_META = {
-    sizing:        { label: "SIZING",        when: "CHECK BEFORE: deploy_position (determines position size)" },
-    taking_profit:{ label: "TAKING PROFIT", when: "CHECK BEFORE: close_position on TP / yield-exit decisions" },
-    stop_loss:    { label: "STOP LOSS",      when: "CHECK BEFORE: close_position on loss / OOR / emergency decisions" },
-    strategy:     { label: "STRATEGY",      when: "CHECK BEFORE: deploy_position (strategy, bin_range, bin_step choices)" },
-    general:      { label: "GENERAL",       when: "ALWAYS APPLY" },
-  };
+  // Split into HARD RULES (enforceable, blocking) and GUIDANCE (preferences)
+  const HARD_KEYWORDS = ["AVOID:", "AVOID ", "NEVER ", "NEVER:", "SKIP:", "SKIP ", "HARD SKIP", "HARD RULE", "DO NOT ", "MUST NOT", "BLOCKED", "FAILED:", "FAILED "];
+  const isHard = (l) => HARD_KEYWORDS.some((kw) => (l.rule || "").toUpperCase().includes(kw));
 
-  const byCategory = {};
-  for (const l of selected) {
-    const cat = l.category || inferCategory({ rule: l.rule, tags: l.tags });
-    if (!byCategory[cat]) byCategory[cat] = [];
-    byCategory[cat].push(l);
-  }
+  const hardRules = selected.filter(isHard);
+  const guidanceRules = selected.filter((l) => !isHard(l));
 
-  const ORDER = ["sizing", "taking_profit", "stop_loss", "strategy", "general"];
   const sections = [];
-  for (const cat of ORDER) {
-    const group = byCategory[cat];
-    if (!group?.length) continue;
-    const meta = CATEGORY_META[cat];
-    sections.push(`── ${meta.label} (${group.length}) — ${meta.when} ──\n` + fmt(group));
+
+  // ── HARD RULES section (numbered checklist — these are enforced by the system) ──
+  if (hardRules.length > 0) {
+    const hardLines = hardRules.map((l, i) => {
+      const date = l.created_at ? l.created_at.slice(0, 16).replace("T", " ") : "unknown";
+      const pin  = l.pinned ? "📌 " : "";
+      return `${i + 1}. ${pin}[${l.outcome.toUpperCase()}] [${date}] ${l.rule}`;
+    }).join("\n");
+    sections.push(
+      `── HARD RULES (${hardRules.length}) — SYSTEM-ENFORCED: violations are BLOCKED ──\n` +
+      `These rules are checked by the executor before any tool call executes.\n` +
+      `❌ VIOLATION = ACTION BLOCKED. No exceptions.\n\n` +
+      hardLines
+    );
   }
 
-  // Any unknown categories fallback
-  for (const [cat, group] of Object.entries(byCategory)) {
-    if (!ORDER.includes(cat) && group.length) {
-      sections.push(`── ${cat.toUpperCase()} (${group.length}) ──\n` + fmt(group));
+  // ── GUIDANCE section grouped by category ──
+  if (guidanceRules.length > 0) {
+    const CATEGORY_META = {
+      sizing:        { label: "SIZING",        when: "CHECK BEFORE: deploy_position (determines position size)" },
+      taking_profit:{ label: "TAKING PROFIT", when: "CHECK BEFORE: close_position on TP / yield-exit decisions" },
+      stop_loss:    { label: "STOP LOSS",      when: "CHECK BEFORE: close_position on loss / OOR / emergency decisions" },
+      strategy:     { label: "STRATEGY",      when: "CHECK BEFORE: deploy_position (strategy, bin_range, bin_step choices)" },
+      general:      { label: "GENERAL",       when: "ALWAYS APPLY" },
+    };
+
+    const byCategory = {};
+    for (const l of guidanceRules) {
+      const cat = l.category || inferCategory({ rule: l.rule, tags: l.tags });
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(l);
+    }
+
+    const ORDER = ["sizing", "taking_profit", "stop_loss", "strategy", "general"];
+    for (const cat of ORDER) {
+      const group = byCategory[cat];
+      if (!group?.length) continue;
+      const meta = CATEGORY_META[cat];
+      sections.push(`── GUIDANCE: ${meta.label} (${group.length}) — ${meta.when} ──\n` + fmt(group));
+    }
+    for (const [cat, group] of Object.entries(byCategory)) {
+      if (!ORDER.includes(cat) && group.length) {
+        sections.push(`── GUIDANCE: ${cat.toUpperCase()} (${group.length}) ──\n` + fmt(group));
+      }
     }
   }
 

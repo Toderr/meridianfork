@@ -22,6 +22,7 @@ import { syncToHive, isEnabled as hiveEnabled, getHivePulse, queryPoolConsensus,
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, resolveStrategy } from "../config.js";
+import { extractRules, checkDeployCompliance } from "../lesson-rules.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -416,6 +417,29 @@ async function runSafetyChecks(name, args) {
           pass: false,
           reason: `Confidence ${args.confidence_level}/10 is too low (must be > 7). Do not deploy.`,
         };
+      }
+
+      // Lesson-based compliance check — enforce HARD RULES derived from past trade outcomes
+      try {
+        const { screening: screeningRules } = extractRules("SCREENER");
+        if (screeningRules.length > 0) {
+          const poolData = {
+            volatility: args.volatility,
+            global_fees_sol: args.global_fees_sol,
+            top_10_pct: args.top_10_pct,
+            bundlers_pct: args.bundlers_pct,
+          };
+          const { pass: lessonPass, violations } = checkDeployCompliance(args, poolData, screeningRules);
+          if (!lessonPass) {
+            return {
+              pass: false,
+              reason: `Blocked by learned lesson rules:\n${violations.join("\n")}\nReview your HARD RULES and choose a compliant strategy/pool.`,
+            };
+          }
+        }
+      } catch (lessonErr) {
+        // Non-fatal — lesson check failure should not block deploys
+        log("warn", `Lesson compliance check failed (non-fatal): ${lessonErr.message}`);
       }
 
       // Reject pools with bin_step out of configured range
