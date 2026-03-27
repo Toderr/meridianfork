@@ -89,6 +89,8 @@ If the primary model fails 3 times (empty response, provider error, or timeout),
 
 Chain: `getMyPositions()` returns `pnl_sol` from Meteora API `pnlSol` → cached as `_positionsCache` → `closePosition` snapshots `cachedPos.pnl_sol` → `recordPerformance` → `recordJournalClose` → `journal.json` → reports. Also passed to `notifyClose()` for Telegram.
 
+**Pair name resolution** in `getMyPositions()`: tracked state `pool_name` → PnL API `pairName` (or `tokenName0-tokenName1`) → `getPoolDetail()` fallback → address slice. Discovered names are backfilled into state.json via `updatePoolName()` so they persist for future calls.
+
 **PnL passthrough**: `closePosition` passes `pnl_usd` from Meteora's API to `recordPerformance`. `lessons.js` uses `perf.pnl_usd` directly when provided, avoiding formula recalculation errors caused by missing `initial_value_usd`.
 
 ## Management Cycle — Report
@@ -279,6 +281,8 @@ screening cron → getMyPositions (count check) → getWalletBalances (SOL check
 → agent loop (pick best, apply rules) → deploy_position (on-chain)
 → trackPosition (state.json) → recordOpen (journal.json) → notifyDeploy (Telegram)
 ```
+
+**Wide-range deploys** (>69 bins) use a 2-phase process: (1) create position account, (2) add liquidity. The position is tracked in state.json **after phase 1** (create) succeeds, before phase 2 (addLiquidity) begins. This ensures that if addLiquidity fails (e.g., block height exceeded), the position is still tracked and can be managed/closed — preventing zombie positions with no pair name.
 
 ### Position Close & Learning
 ```
