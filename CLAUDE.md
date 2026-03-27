@@ -8,7 +8,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 
 - **Fork (active):** https://github.com/Toderr/meridianfork
 - **Upstream:** https://github.com/yunus-0x/meridian
-- Push all changes to `fork` remote: `git push fork main`
+- Push all changes: `git push origin main`
 
 ## Key Files
 
@@ -35,6 +35,8 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `strategy-library.js` | LP strategy template storage and retrieval |
 | `pool-memory.js` | Per-pool deploy history and notes |
 | `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
+| `scripts/claude-ask.js` | General-purpose Q&A agent for Telegram `/claude` command — loads runtime context, spawns `claude --print` |
+| `scripts/claude-lesson-updater.js` | Auto lesson updater — runs every 5 closes via `claude --print` |
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
@@ -232,6 +234,8 @@ On failure, each attempt logs `[retry] <label> attempt N/5 failed (...), retryin
 | `/stop` | Stop cron cycles |
 | `/briefing` | Last 24h trading report |
 | `/report [daily\|weekly\|monthly]` | Trading report |
+| `/claude <question>` | Ask Claude anything — loads runtime context (positions, journal, lessons, config), answers via `claude --print`. Supports "take lesson" → outputs `LESSON: ...` and "update config" → outputs `CONFIG: key=value` |
+| `/review` | Manually trigger Claude lesson updater |
 
 ## VPS Deployment
 
@@ -359,6 +363,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Max change per step**: 20% to prevent whiplash
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
 - **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made.
+- **Claude Ask** (`scripts/claude-ask.js`): General-purpose Q&A agent triggered by Telegram `/claude <question>`. Loads runtime context (open positions from `state.json`, last 15 journal entries, last 20 lessons, last 10 performance records, strategy config subset) and spawns `claude --print` with a 3-minute timeout. Special output prefixes: `LESSON: <text>` → caller can extract and save lesson; `CONFIG: key=value` → caller can apply config change. Standalone test: `node scripts/claude-ask.js "your question"`.
 
 ## Roadmap / Improvement Ideas
 
