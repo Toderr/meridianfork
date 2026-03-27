@@ -347,7 +347,15 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
   1. **Prompt** — HARD RULES (AVOID/NEVER/SKIP/FAILED keywords) shown in numbered checklist with `❌ VIOLATION = ACTION BLOCKED` warning. GUIDANCE (PREFER/WORKED/CONSIDER) shown separately as secondary.
   2. **Pre-agent** — Before agent loop: screening cycle filters candidates violating lesson rules; management cycle force-closes/force-holds positions matching lesson conditions. Logged as `[lesson_enforce]`.
   3. **Executor** — `deploy_position` safety checks run `checkDeployCompliance()` from `lesson-rules.js`. Violations return `{ pass: false }` blocking the on-chain action entirely.
-- **Rule extraction** (`lesson-rules.js`): Parses freeform lesson text into structured rules. Matches: `block_strategy` (strategy+volatility condition), `block_high_volatility`, `block_low_fees`, `block_concentration`, `oor_grace_period`, `force_close_aged_losing`. Unmatched rules remain prompt-only.
+- **Rule extraction** (`lesson-rules.js`): Parses freeform lesson text into structured rules. Matches:
+  - `block_strategy` (strategy+volatility condition)
+  - `block_high_volatility`, `block_low_fees`, `block_concentration`
+  - `oor_grace_period`, `force_close_aged_losing`, `protect_null_volatility`
+  - `max_deploy_sol` — "NEVER deploy more than X SOL per position" → blocks deploy if `amount_y > X`
+  - `max_loss_pct` — "NEVER hold a position below -X% pnl" → force-closes in management pre-enforcement
+  - `reserve_slot` — "spare N slot for TOKEN-SOL" → blocks other deploys when slot is needed (parsed from ALL lessons, no HARD keyword required)
+  Unmatched rules remain prompt-only.
+- **Constraint persistence (GENERAL role)**: When user gives verbal constraints (sizing cap, stop loss, slot reservation), the GENERAL agent is instructed to call `add_lesson` with exact parseable phrasing AND update config values (e.g. `emergencyPriceDropPct`, `maxDeployAmount`). Verbal-only instructions are NOT persisted across sessions.
 - **Max change per step**: 20% to prevent whiplash
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
 - **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made.

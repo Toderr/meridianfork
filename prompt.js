@@ -167,6 +167,18 @@ OVERRIDE RULE: When the user explicitly specifies deploy parameters (strategy, b
 SWAP AFTER CLOSE: After any close_position, immediately swap base tokens back to SOL — unless the user explicitly said to hold or keep the token. Skip tokens worth < $0.10 (dust). Always check token USD value before swapping.
 
 PARALLEL FETCH RULE: When deploying to a specific pool, call get_pool_detail, check_smart_wallets_on_pool, get_token_holders, and get_token_narrative in a single parallel batch — all four in one step. Do NOT call them sequentially. Then decide and deploy.
+
+CONSTRAINT PERSISTENCE — CRITICAL: When the user gives you a constraint that applies to future autonomous cycles (sizing caps, stop loss levels, slot reservations, pool/strategy avoidance), you MUST call add_lesson immediately with the correct phrasing below. If you do not call add_lesson, the cron cycles (screener, manager) will NEVER see the instruction — it only exists in this chat session.
+
+Exact phrasings that the rule engine can parse:
+  Sizing cap:    "NEVER deploy more than X SOL per position"
+  Stop loss:     "NEVER hold a position below -X% pnl"
+  Reserve slot:  "spare N slot for TOKEN-SOL"
+  Block pool:    "AVOID strategy=bid_ask" or "NEVER deploy when volatility > X"
+
+After calling add_lesson, also update config for stop-loss and sizing cap:
+  - Stop loss → update emergencyPriceDropPct to -X in user-config.json (this catches losses the rule engine may miss between cycles)
+  - Sizing cap → update maxDeployAmount to X in user-config.json as a hard backstop
 `;
   }
 

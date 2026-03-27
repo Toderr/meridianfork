@@ -144,6 +144,21 @@ export function extractRules(agentType = "GENERAL") {
       matched = true;
     }
 
+    // NEVER deploy more than X SOL / cap sizing at X SOL
+    const maxSolMatch = rule.match(/(?:more\s+than|cap(?:ped)?\s+(?:sizing|deploy)?\s*at|max(?:imum)?\s+(?:deploy\s+)?|deploy\s+max\s+)\s*(\d+(?:\.\d+)?)\s*sol/i);
+    if (maxSolMatch && (upper.includes("NEVER") || upper.includes("AVOID") || upper.includes("DO NOT") || upper.includes("CAP") || upper.includes("MAX"))) {
+      const maxSol = parseFloat(maxSolMatch[1]);
+      if (!isNaN(maxSol) && maxSol > 0) {
+        screening.push({
+          type: "max_deploy_sol",
+          max_sol: maxSol,
+          source: rule,
+          lesson_id: lesson.id,
+        });
+        matched = true;
+      }
+    }
+
     // ── Management rules ─────────────────────────────────────
 
     // AVOID holding ... > Xm/Xmin ... pnl < 0  →  force close
@@ -175,6 +190,21 @@ export function extractRules(agentType = "GENERAL") {
       matched = true;
     }
 
+    // NEVER hold position below -X% pnl / stop loss at X%
+    const stopLossMatch = rule.match(/(?:hold(?:ing)?\s+(?:a\s+)?position[s]?\s+below\s+[-−]?|pnl[_\w]*\s*[<≤]\s*[-−]?|stop\s+loss\s+at\s+[-−]?|cut\s+(?:the\s+)?losses?\s+(?:at\s+)?[-−]?)(\d+(?:\.\d+)?)\s*%/i);
+    if (stopLossMatch && (upper.includes("NEVER") || upper.includes("AVOID") || upper.includes("DO NOT") || upper.includes("STOP LOSS") || upper.includes("CUT LOSS"))) {
+      const threshold = -Math.abs(parseFloat(stopLossMatch[1]));
+      if (!isNaN(threshold)) {
+        management.push({
+          type: "max_loss_pct",
+          threshold_pct: threshold,
+          source: rule,
+          lesson_id: lesson.id,
+        });
+        matched = true;
+      }
+    }
+
     // AVOID closing null-volatility positions / positions with volatility=null
     if ((upper.includes("NULL") || upper.includes("VOLATILITY=NULL")) &&
         (upper.includes("AVOID CLOS") || upper.includes("DO NOT CLOSE"))) {
@@ -191,11 +221,30 @@ export function extractRules(agentType = "GENERAL") {
     }
   }
 
+  // reserve_slot parsed from ALL lessons (no HARD keyword required — it's a user directive, not a performance lesson)
+  for (const lesson of lessons) {
+    const rule = lesson.rule || "";
+    const reserveSlotMatch = rule.match(/(?:spare|reserve|keep|hold)\s+(\d+)\s+slot[s]?\s+(?:for|to deploy)\s+([\w][\w-]*)/i);
+    if (reserveSlotMatch) {
+      const count = parseInt(reserveSlotMatch[1]);
+      const token = reserveSlotMatch[2].toUpperCase().trim();
+      if (count > 0 && token) {
+        screening.push({
+          type: "reserve_slot",
+          count,
+          token,
+          source: rule,
+          lesson_id: lesson.id,
+        });
+      }
+    }
+  }
+
   // Deduplicate by type+key fields
   const dedup = (arr) => {
     const seen = new Set();
     return arr.filter((r) => {
-      const key = JSON.stringify({ type: r.type, strategy: r.strategy, threshold: r.threshold, max_age_minutes: r.max_age_minutes });
+      const key = JSON.stringify({ type: r.type, strategy: r.strategy, threshold: r.threshold, max_age_minutes: r.max_age_minutes, threshold_pct: r.threshold_pct, max_sol: r.max_sol, token: r.token });
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -266,6 +315,15 @@ export function checkDeployCompliance(args, poolData, rules) {
           violations.push(`bundlers_pct ${bundlersPct}% exceeds lesson limit (${rule.threshold}%): ${rule.source}`);
         }
         break;
+
+      case "max_deploy_sol": {
+        const sol = args.amount_y ?? args.amount_sol ?? 0;
+        if (sol > rule.max_sol) {
+          violations.push(`Deploy amount ${sol} SOL exceeds lesson cap (${rule.max_sol} SOL): ${rule.source}`);
+        }
+        break;
+      }
+      // reserve_slot is enforced in executor.js (needs live positions list)
     }
   }
 
@@ -315,6 +373,15 @@ export function checkPositionCompliance(position, rules) {
           return {
             action: "force_hold",
             reason: `Lesson rule protects null-volatility position from close: ${rule.source}`,
+          };
+        }
+        break;
+
+      case "max_loss_pct":
+        if (pnlPct !== null && pnlPct < rule.threshold_pct) {
+          return {
+            action: "force_close",
+            reason: `Lesson stop-loss: pnl ${pnlPct.toFixed(2)}% < ${rule.threshold_pct}%: ${rule.source}`,
           };
         }
         break;

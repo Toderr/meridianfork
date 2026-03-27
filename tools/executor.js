@@ -470,6 +470,41 @@ async function runSafetyChecks(name, args) {
         };
       }
 
+      // reserve_slot: enforce lesson-based slot reservations for specific tokens
+      try {
+        const { screening: slotRules } = extractRules("SCREENER");
+        const reserveRules = slotRules.filter((r) => r.type === "reserve_slot");
+        if (reserveRules.length > 0) {
+          const openPairs = positions.positions.map((p) => (p.pair || p.name || "").toUpperCase());
+          const deployingPair = (args.pair || "").toUpperCase();
+          const deployingMint = (args.base_mint || "").toUpperCase();
+          for (const rule of reserveRules) {
+            const reservedToken = rule.token.toUpperCase();
+            // Skip enforcement if this deploy IS for the reserved token
+            const isForReservedToken =
+              deployingPair.includes(reservedToken) || deployingMint.includes(reservedToken);
+            if (isForReservedToken) continue;
+            // Check if reserved token already has an open position (reservation satisfied)
+            const alreadyOpen = openPairs.some((p) => p.includes(reservedToken));
+            if (alreadyOpen) continue;
+            // Reservation is unfilled — block if at or above the reserved threshold
+            const slotsUsed = positions.total_positions;
+            const slotsMax = config.risk.maxPositions;
+            const slotsReserved = reserveRules
+              .filter((r) => !openPairs.some((p) => p.includes(r.token.toUpperCase())))
+              .reduce((sum, r) => sum + r.count, 0);
+            if (slotsUsed >= slotsMax - slotsReserved) {
+              return {
+                pass: false,
+                reason: `Slot reserved for ${reservedToken} by lesson rule (${rule.source}). Deploy ${reservedToken} first or close an existing position.`,
+              };
+            }
+          }
+        }
+      } catch (slotErr) {
+        log("warn", `reserve_slot check failed (non-fatal): ${slotErr.message}`);
+      }
+
       // Block same base token across different pools
       if (args.base_mint) {
         const alreadyHasMint = positions.positions.some(
