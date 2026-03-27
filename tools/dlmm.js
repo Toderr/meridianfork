@@ -10,6 +10,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import {
   trackPosition,
+  updatePoolName,
   markOutOfRange,
   markInRange,
   recordClaim,
@@ -210,6 +211,29 @@ export async function deployPosition({
   const isWideRange = totalBins > 69;
   const newPosition = Keypair.generate();
 
+  // Compute tracked strategy early so it's available for both wide-range and standard tracking
+  const trackedStrategy =
+    finalAmountX === 0 && finalAmountY > 0 && activeStrategy === "bid_ask" && activeBinsAbove === 0
+      ? "single_sided_reseed"
+      : activeStrategy;
+
+  const trackData = {
+    position: newPosition.publicKey.toString(),
+    pool: pool_address,
+    pool_name,
+    strategy: trackedStrategy,
+    bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
+    bin_step,
+    volatility,
+    fee_tvl_ratio,
+    organic_score,
+    amount_sol: finalAmountY,
+    amount_x: finalAmountX,
+    active_bin: activeBin.binId,
+    initial_value_usd,
+    variant,
+  };
+
   log("deploy", `Pool: ${pool_address}`);
   log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins${isWideRange ? " — WIDE RANGE" : ""})`);
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`);
@@ -239,6 +263,10 @@ export async function deployPosition({
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
+
+      // Track position immediately after create succeeds — if addLiquidity fails,
+      // the position still exists on-chain and must be tracked for management/close
+      trackPosition(trackData);
 
       // Phase 2: Add liquidity (may be multiple txs)
       const addTxs = await pool.addLiquidityByStrategyChunkable({
@@ -272,27 +300,10 @@ export async function deployPosition({
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
 
     _positionsCacheAt = 0;
-    // SOL-only bid_ask (all bins below, no token X) → management strategy is single_sided_reseed
-    const trackedStrategy =
-      finalAmountX === 0 && finalAmountY > 0 && activeStrategy === "bid_ask" && activeBinsAbove === 0
-        ? "single_sided_reseed"
-        : activeStrategy;
-    trackPosition({
-      position: newPosition.publicKey.toString(),
-      pool: pool_address,
-      pool_name,
-      strategy: trackedStrategy,
-      bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
-      bin_step,
-      volatility,
-      fee_tvl_ratio,
-      organic_score,
-      amount_sol: finalAmountY,
-      amount_x: finalAmountX,
-      active_bin: activeBin.binId,
-      initial_value_usd,
-      variant,
-    });
+    // Track for standard path (wide-range already tracked above)
+    if (!isWideRange) {
+      trackPosition(trackData);
+    }
 
     return {
       success: true,
@@ -447,7 +458,16 @@ export async function getMyPositions({ force = false } = {}) {
       const initialValueUsd = totalValue - pnlUsd;
       const pnlPct          = initialValueUsd > 0 ? (pnlUsd + unclaimedFees) / initialValueUsd * 100 : 0;
 
+      // Resolve pair name: tracked state > PnL API > address slice
       const tracked = getTrackedPosition(r.position);
+      const pnlPairName = p?.pairName || (p?.tokenName0 && p?.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null);
+      const resolvedPair = tracked?.pool_name || pnlPairName || r.pair;
+
+      // Backfill state.json with discovered name (one-time)
+      if (pnlPairName && tracked && !tracked.pool_name) {
+        updatePoolName(r.position, pnlPairName);
+      }
+
       const ageFromPnlApi = p?.createdAt
         ? Math.floor((Date.now() - p.createdAt * 1000) / 60000)
         : null;
@@ -459,7 +479,7 @@ export async function getMyPositions({ force = false } = {}) {
       return {
         position: r.position,
         pool: r.pool,
-        pair: r.pair,
+        pair: resolvedPair,
         base_mint: r.base_mint,
         lower_bin: lowerBin,
         upper_bin: upperBin,
@@ -475,6 +495,29 @@ export async function getMyPositions({ force = false } = {}) {
         minutes_out_of_range: minutesOutOfRange(r.position),
       };
     });
+
+    // Fallback: fetch pool names from DLMM API for positions still showing address slices
+    const needsName = positions.filter(p => p.pair && p.pair.length <= 12 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(p.pair));
+    if (needsName.length > 0) {
+      try {
+        const { getPoolDetail } = await import("./screening.js");
+        const poolsToLookup = [...new Set(needsName.map(p => p.pool))];
+        const nameResults = await Promise.all(
+          poolsToLookup.map(pool =>
+            getPoolDetail({ pool_address: pool }).then(d => [pool, d.name]).catch(() => [pool, null])
+          )
+        );
+        const nameMap = Object.fromEntries(nameResults);
+        for (const p of needsName) {
+          if (nameMap[p.pool]) {
+            p.pair = nameMap[p.pool];
+            updatePoolName(p.position, nameMap[p.pool]);
+          }
+        }
+      } catch (e) {
+        log("positions", `Pool name fallback failed (non-fatal): ${e.message}`);
+      }
+    }
 
     const result = { wallet: walletAddress, total_positions: positions.length, positions };
     syncOpenPositions(positions.map((p) => p.position));

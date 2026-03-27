@@ -89,6 +89,18 @@ export function trackPosition({
 }
 
 /**
+ * Backfill pool_name for an existing tracked position (one-time enrichment).
+ */
+export function updatePoolName(position_address, pool_name) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos || pos.pool_name) return; // don't overwrite existing
+  pos.pool_name = pool_name;
+  save(state);
+  log("state", `Backfilled pool_name for ${position_address.slice(0, 8)}: ${pool_name}`);
+}
+
+/**
  * Mark a position as out of range (sets timestamp on first detection).
  */
 export function markOutOfRange(position_address) {

@@ -72,6 +72,11 @@ export const config = {
   // ─── Scheduling ─────────────────────────
   schedule: {
     managementIntervalMin:  u.managementIntervalMin  ?? 10,
+    managementTiers: u.managementTiers ?? {
+      high: { minVol: 5, intervalMin: 3  },   // volatility >= 5
+      med:  { minVol: 2, intervalMin: 5  },   // volatility 2–5 (or null)
+      low:  { minVol: 0, intervalMin: 10 },   // volatility < 2
+    },
     screeningIntervalMin:   u.screeningIntervalMin   ?? 30,
     healthCheckIntervalMin: u.healthCheckIntervalMin ?? 60,
   },
