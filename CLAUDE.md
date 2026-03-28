@@ -106,7 +106,8 @@ The report header includes the tier label: `🔄 MANAGE [HIGH]`, `🔄 MANAGE [M
 
 📍 TOKEN-SOL
 💵 Invested: 0.50 SOL | $85.00
-💰 PnL: +$0.02 | +0.0000 SOL | +0.04%
+💰 PnL: +$0.02 | +0.0000 SOL
+💸 Fees: $0.05 | Total: +0.04%
 ⏱️ Age: 74m | 🎯 bid_ask
 
 📊 Ranges:
@@ -117,7 +118,8 @@ TOKEN-SOL [━━━━━━━━●━━━━━━━] ✅
 
 📍 OTHER-SOL
 💵 Invested: 0.30 SOL | $51.00
-💰 PnL: -$0.10 | -0.0002 SOL | -0.22%
+💰 PnL: -$0.10 | -0.0002 SOL
+📊 -0.22%
 ⏱️ Age: 25m | 🎯 spot
 
 📊 Ranges:
@@ -127,6 +129,8 @@ OTHER-SOL [━━━━━━━━━━━━━━━●] ⚠️
 ———————————
 💰 Balance: 0.32 SOL | ⏰ Next: 5m
 ```
+
+PnL line shows raw price PnL (USD, SOL) without fees. Fees line shown separately when `unclaimed_fee_usd > 0`, with `Total:` showing the fee-inclusive pnl_pct. When no unclaimed fees, just shows the pnl_pct on its own line.
 
 The LLM report format is one line per position: `[PAIR]: STAY/CLOSE — [short reason]`. This is parsed and embedded inline under each position block.
 
@@ -148,7 +152,8 @@ All notifications use plain-text format (no HTML bold). Format:
 | Screening report | `🔍 SCREEN` | |
 | Management report | `🔄 MANAGE` | per-position: PnL, age, strategy, range bar, reasoning |
 
-- **Close format**: `💰 PnL: +$0.02 | +0.0000 SOL | +0.04%` — all three values (USD, SOL, %)
+- **Close format**: `💰 PnL: +$0.02 | +0.0000 SOL | +0.04%` — all three values (USD, SOL, %). Close notifications include fees in all values (fees are claimed at close).
+- **Management report PnL**: price PnL (USD, SOL) on one line, unclaimed fees + total % on a separate line. This avoids confusion where pnl_pct (fee-inclusive) differs in sign from pnl_usd/sol (price-only).
 - **Gas low**: sent once when SOL is insufficient; suppressed until a position closes. Uses `_flags.gasLowNotified` in `stats.js`.
 - **Max positions**: sent once when slot limit is hit; suppressed until a position closes. Uses `_flags.maxPositionsNotified` in `stats.js`.
 

@@ -447,7 +447,12 @@ When calling close_position, set close_reason to the same short reason above.
           const su = pnl.pnl_usd >= 0 ? "+" : "";
           const ss = (pnl.pnl_sol ?? 0) >= 0 ? "+" : "";
           const sp = pnl.pnl_pct >= 0 ? "+" : "";
-          lines.push(`💰 PnL: ${su}$${pnl.pnl_usd.toFixed(2)} | ${ss}${(pnl.pnl_sol ?? 0).toFixed(4)} SOL | ${sp}${pnl.pnl_pct.toFixed(2)}%`);
+          lines.push(`💰 PnL: ${su}$${pnl.pnl_usd.toFixed(2)} | ${ss}${(pnl.pnl_sol ?? 0).toFixed(4)} SOL`);
+          if (pnl.unclaimed_fee_usd > 0) {
+            lines.push(`💸 Fees: $${pnl.unclaimed_fee_usd.toFixed(2)} | Total: ${sp}${pnl.pnl_pct.toFixed(2)}%`);
+          } else {
+            lines.push(`📊 ${sp}${pnl.pnl_pct.toFixed(2)}%`);
+          }
         }
         if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 🎯 ${p.strategy}` : ""}`);
 
