@@ -11,7 +11,7 @@ import { getJournalEntries } from "../journal.js";
 import { getMyPositions } from "../tools/dlmm.js";
 import { getWalletBalances } from "../tools/wallet.js";
 import { getTrackedPositions, getStateSummary } from "../state.js";
-import { getPerformanceSummary, listLessons } from "../lessons.js";
+import { getPerformanceSummary, listLessons, removeLesson } from "../lessons.js";
 import { _stats } from "../stats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -222,6 +222,18 @@ export async function handleLessons(req, res) {
       lessons    = (raw.lessons || []).slice().reverse(); // newest first
     }
     json(res, { total: lessons.length, lessons });
+  } catch (e) {
+    err(res, e.message);
+  }
+}
+
+export async function handleDeleteLesson(req, res, pathname) {
+  try {
+    const id = parseInt(pathname.split("/").pop(), 10);
+    if (!id || isNaN(id)) { err(res, "Invalid lesson ID", 400); return; }
+    const removed = removeLesson(id);
+    if (!removed) { err(res, "Lesson not found", 404); return; }
+    json(res, { ok: true, removed });
   } catch (e) {
     err(res, e.message);
   }

@@ -337,11 +337,8 @@ async function runManagementCycle(tier = null) {
       const oor = p.minutes_out_of_range ?? 0;
       const rules = [];
 
-      if (pnl !== null) {
-        const toSL = pnl - config.management.emergencyPriceDropPct;
-        const toTP = config.management.takeProfitFeePct - pnl;
-        rules.push(`SL: ${pnl.toFixed(1)}% (need ${config.management.emergencyPriceDropPct}%, gap ${toSL.toFixed(1)}%)`);
-        rules.push(`TP: ${pnl.toFixed(1)}% (need ${config.management.takeProfitFeePct}%, gap ${toTP.toFixed(1)}%)`);
+      if (pnl !== null && pnl !== undefined) {
+        // SL/TP handled by pnl_checker — only log yield exit distance here
       }
       if (p.feeTvl24h !== null && (p.age_minutes || 0) >= config.management.minAgeForYieldExit) {
         const toYield = p.feeTvl24h - config.management.minFeeTvl24h;
@@ -365,9 +362,9 @@ async function runManagementCycle(tier = null) {
         p.invested_sol != null ? `  invested: ${p.invested_sol} SOL${p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : ""}` : null,
         pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
         pnl && p.feeTvl24h != null ? `  fee_tvl_24h: ${p.feeTvl24h.toFixed(1)}%${(p.age_minutes||0) < config.management.minAgeForYieldExit ? " (rule inactive — position too young)" : ""}` : null,
-        pnl ? `  to_sl: ${(pnl.pnl_pct - config.management.emergencyPriceDropPct).toFixed(1)}% | to_tp: ${(config.management.takeProfitFeePct - pnl.pnl_pct).toFixed(1)}%` +
-          (p.feeTvl24h != null && (p.age_minutes||0) >= config.management.minAgeForYieldExit ? ` | to_yield: ${(p.feeTvl24h - config.management.minFeeTvl24h).toFixed(1)}%` : "") +
-          (p.binsAbove != null ? ` | to_bin_exit: ${Math.max(0, config.management.outOfRangeBinsToClose - p.binsAbove)}` : "") : null,
+        pnl && (p.feeTvl24h != null || p.binsAbove != null) ? `  ` +
+          (p.feeTvl24h != null && (p.age_minutes||0) >= config.management.minAgeForYieldExit ? `to_yield: ${(p.feeTvl24h - config.management.minFeeTvl24h).toFixed(1)}%` : "") +
+          (p.binsAbove != null ? `${p.feeTvl24h != null && (p.age_minutes||0) >= config.management.minAgeForYieldExit ? " | " : ""}to_bin_exit: ${Math.max(0, config.management.outOfRangeBinsToClose - p.binsAbove)}` : "") : null,
         p.instruction ? `  instruction: "${p.instruction}"` : null,
         p._lesson_force_hold ? `  LESSON_FORCE_HOLD: "${p._lesson_force_hold}" — do NOT close this position` : null,
         p.recall ? `  memory: ${p.recall}` : null,
@@ -384,10 +381,10 @@ ${positionBlocks}
 HARD CLOSE RULES — apply in order, first match wins:
 1. instruction set AND condition met → CLOSE (highest priority)
 2. instruction set AND condition NOT met → HOLD, skip remaining rules
-3. pnl_pct <= ${config.management.emergencyPriceDropPct}% → CLOSE (stop loss)
-4. pnl_pct >= ${config.management.takeProfitFeePct}% → CLOSE (take profit)
-5. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% AND pnl_pct >= 0 → CLOSE (yield too low; skip this rule if position is at any loss)
-6. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range)
+3. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% AND pnl_pct >= 0 → CLOSE (yield too low; skip this rule if position is at any loss)
+4. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range)
+
+NOTE: Stop loss and take profit are handled automatically by the PnL checker — do NOT close positions for SL/TP reasons.
 
 When closing: call close_position only — it handles fee claiming internally, do NOT call claim_fees first.
 
@@ -687,6 +684,9 @@ async function runPnlChecker() {
   const TRAILING_ACTIVATE = config.management.trailingActivate;
   const TRAILING_FLOOR    = config.management.trailingFloor;
 
+  const { management: pnlCheckerRules } = extractRules("MANAGER");
+  const lessonTpRules = pnlCheckerRules.filter(r => r.type === "min_profit_pct");
+
   const openPositions = getTrackedPositions(true);
   if (openPositions.length === 0) {
     _trailingStops.clear();
@@ -713,16 +713,45 @@ async function runPnlChecker() {
       if (!pnl || pnl.error || pnl.pnl_pct == null) continue;
 
       const pct = pnl.pnl_pct;
+      const SL_PCT = config.management.emergencyPriceDropPct;
+      const TP_PCT = config.management.takeProfitFeePct;
 
-      // Rule 1: Hard take-profit
+      // Rule 1: Stop loss
+      if (pct <= SL_PCT) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% <= ${SL_PCT}% — STOP LOSS`);
+        _trailingStops.delete(tracked.position);
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Stop loss: pnl ${pct}%` });
+        continue;
+      }
+
+      // Rule 2: Hard take-profit (fast TP)
       if (pct >= FAST_TP_PCT) {
-        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${FAST_TP_PCT}% — TAKE PROFIT`);
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${FAST_TP_PCT}% — FAST TAKE PROFIT`);
         _trailingStops.delete(tracked.position);
         await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%` });
         continue;
       }
 
-      // Rule 2: Trailing stop — activate above TRAILING_ACTIVATE, close below TRAILING_FLOOR
+      // Rule 3: Regular take-profit
+      if (pct >= TP_PCT) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${TP_PCT}% — TAKE PROFIT`);
+        _trailingStops.delete(tracked.position);
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Take profit: pnl ${pct}%` });
+        continue;
+      }
+
+      // Rule 4: Lesson-based take-profit
+      if (lessonTpRules.length > 0) {
+        const hit = lessonTpRules.find(r => pct >= r.threshold_pct);
+        if (hit) {
+          log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${hit.threshold_pct}% — LESSON TP`);
+          _trailingStops.delete(tracked.position);
+          await executeTool("close_position", { position_address: tracked.position, close_reason: `Lesson TP: pnl ${pct}% >= ${hit.threshold_pct}%` });
+          continue;
+        }
+      }
+
+      // Rule 5: Trailing stop — activate above TRAILING_ACTIVATE, close below TRAILING_FLOOR
       if (pct > TRAILING_ACTIVATE) {
         const entry = _trailingStops.get(tracked.position);
         if (!entry) {

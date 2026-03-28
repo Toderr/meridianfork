@@ -301,22 +301,25 @@ close_position (on-chain claim + remove liquidity)
 Runs alongside the management cycle via `setInterval`. Skips when `_managementBusy`. If a position has an `instruction` set, it is skipped entirely (deferred to management cycle).
 
 ```
-if pnl_pct >= fastTpPct         → CLOSE (hard take-profit)
-if pnl_pct > trailingActivate   → activate trailing stop, track peak
+if pnl_pct <= emergencyPriceDropPct  → CLOSE (stop loss)
+if pnl_pct >= fastTpPct              → CLOSE (hard take-profit)
+if pnl_pct >= takeProfitFeePct       → CLOSE (regular take-profit)
+if lesson min_profit_pct rule hit    → CLOSE (lesson-based TP)
+if pnl_pct > trailingActivate        → activate trailing stop, track peak
 if trailing active AND
-   pnl_pct < trailingFloor      → CLOSE (trailing stop triggered)
+   pnl_pct < trailingFloor           → CLOSE (trailing stop triggered)
 ```
 
-Thresholds (`fastTpPct=15`, `trailingActivate=6`, `trailingFloor=5`) are stored in `config.management` and read each tick — hot-reload and auto-evolution apply immediately. Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
+Thresholds (`fastTpPct=15`, `takeProfitFeePct`, `trailingActivate=6`, `trailingFloor=5`, `emergencyPriceDropPct`) are stored in `config.management` and read each tick — hot-reload and auto-evolution apply immediately. Lesson TP rules (`min_profit_pct`) are also loaded each tick from `extractRules("MANAGER")`. Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
 
 ### Management Decision Rules (in priority order)
 1. instruction set AND condition met → CLOSE
 2. instruction set AND condition NOT met → HOLD (skip remaining)
-3. pnl_pct <= emergencyPriceDropPct → CLOSE (stop loss)
-4. pnl_pct >= takeProfitFeePct → CLOSE (take profit)
-5. age >= minAgeForYieldExit AND fee_tvl_24h < minFeeTvl24h → CLOSE (yield too low)
-6. bins_above_range >= outOfRangeBinsToClose → CLOSE (price pumped above range)
-7. unclaimed_fee_usd >= minClaimAmount → claim_fees
+3. age >= minAgeForYieldExit AND fee_tvl_24h < minFeeTvl24h → CLOSE (yield too low)
+4. bins_above_range >= outOfRangeBinsToClose → CLOSE (price pumped above range)
+5. unclaimed_fee_usd >= minClaimAmount → claim_fees
+
+NOTE: Stop loss and take profit are handled by the PnL checker (every 30s), not the LLM management cycle.
 
 ## Hive Mind
 
@@ -351,6 +354,8 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
   - Sizing: `positionSizePct` (based on rolling win rate over last 10 positions)
 - All evolved values written to `user-config.json` and applied live; each change triggers a `🧠 THRESHOLD EVOLVED` Telegram notification
 - **Lesson injection**: ALL lessons injected — no caps. Pinned → Role-matched → Recent. Priority: good > bad > manual > neutral
+- **Pinned lesson cap**: Max 10 pinned lessons. `pinLesson()` returns `{ error }` if cap is reached without saving.
+- **Dashboard lesson delete**: Dashboard lessons grid has a per-card delete button (✕, appears on hover). Calls `DELETE /api/lessons/:id`.
 - **Lesson enforcement (3-layer)**:
   1. **Prompt** — HARD RULES (AVOID/NEVER/SKIP/FAILED keywords) shown in numbered checklist with `❌ VIOLATION = ACTION BLOCKED` warning. GUIDANCE (PREFER/WORKED/CONSIDER) shown separately as secondary.
   2. **Pre-agent** — Before agent loop: screening cycle filters candidates violating lesson rules; management cycle force-closes/force-holds positions matching lesson conditions. Logged as `[lesson_enforce]`.
@@ -361,6 +366,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
   - `oor_grace_period`, `force_close_aged_losing`, `protect_null_volatility`
   - `max_deploy_sol` — "NEVER deploy more than X SOL per position" → blocks deploy if `amount_y > X`
   - `max_loss_pct` — "NEVER hold a position below -X% pnl" → force-closes in management pre-enforcement
+  - `min_profit_pct` — "TAKE PROFIT at X%" / "TP at X%" / "close at X% profit" → enforced in pnl_checker (30s) AND management pre-enforcement
   - `reserve_slot` — "spare N slot for TOKEN-SOL" → blocks other deploys when slot is needed (parsed from ALL lessons, no HARD keyword required)
   Unmatched rules remain prompt-only.
 - **Constraint persistence (GENERAL role)**: When user gives verbal constraints (sizing cap, stop loss, slot reservation), the GENERAL agent is instructed to call `add_lesson` with exact parseable phrasing AND update config values (e.g. `emergencyPriceDropPct`, `maxDeployAmount`). Verbal-only instructions are NOT persisted across sessions.

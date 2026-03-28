@@ -71,8 +71,8 @@ export function extractRules(agentType = "GENERAL") {
     // ── Screening rules ──────────────────────────────────────
 
     // AVOID strategy="X" — block specific strategy (only known strategy names)
-    const KNOWN_STRATEGIES = ["spot", "bid_ask", "single_sided_reseed", "fee_compounding", "multi_layer", "partial_harvest", "custom_ratio_spot"];
-    const strategyMatch = rule.match(/strategy[=:"'\s]+(spot|bid_ask|single_sided_reseed|fee_compounding|multi_layer|partial_harvest|custom_ratio_spot)/i);
+    const KNOWN_STRATEGIES = ["spot", "bid_ask", "fee_compounding", "multi_layer", "partial_harvest", "custom_ratio_spot"];
+    const strategyMatch = rule.match(/strategy[=:"'\s]+(spot|bid_ask|fee_compounding|multi_layer|partial_harvest|custom_ratio_spot)/i);
     if (strategyMatch && (upper.includes("AVOID") || upper.includes("NEVER") || upper.includes("FAILED"))) {
       const strategy = strategyMatch[1].toLowerCase().trim();
       // Extract volatility condition if present
@@ -197,6 +197,22 @@ export function extractRules(agentType = "GENERAL") {
       if (!isNaN(threshold)) {
         management.push({
           type: "max_loss_pct",
+          threshold_pct: threshold,
+          source: rule,
+          lesson_id: lesson.id,
+        });
+        matched = true;
+      }
+    }
+
+    // TAKE PROFIT at X% / TP at X% / close at X% profit
+    const takeProfitMatch = rule.match(/(?:take[\s-]*profit|tp)\s+(?:at\s+|when\s+pnl[_\s]*[>≥]=?\s*)?[+]?(\d+(?:\.\d+)?)\s*%/i)
+      || rule.match(/(?:close|exit)\s+(?:at\s+)?[+]?(\d+(?:\.\d+)?)\s*%\s*profit/i);
+    if (takeProfitMatch) {
+      const threshold = parseFloat(takeProfitMatch[1]);
+      if (!isNaN(threshold) && threshold > 0) {
+        management.push({
+          type: "min_profit_pct",
           threshold_pct: threshold,
           source: rule,
           lesson_id: lesson.id,
@@ -382,6 +398,15 @@ export function checkPositionCompliance(position, rules) {
           return {
             action: "force_close",
             reason: `Lesson stop-loss: pnl ${pnlPct.toFixed(2)}% < ${rule.threshold_pct}%: ${rule.source}`,
+          };
+        }
+        break;
+
+      case "min_profit_pct":
+        if (pnlPct !== null && pnlPct >= rule.threshold_pct) {
+          return {
+            action: "force_close",
+            reason: `Lesson take-profit: pnl ${pnlPct.toFixed(2)}% >= ${rule.threshold_pct}%: ${rule.source}`,
           };
         }
         break;

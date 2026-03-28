@@ -17,6 +17,7 @@ import {
   handleHistory,
   handleJournal,
   handleLessons,
+  handleDeleteLesson,
   handleLogs,
 } from "./api.js";
 
@@ -52,6 +53,13 @@ export function startDashboard(port = 3000, password = null) {
       return;
     }
 
+    // CORS preflight
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" });
+      res.end();
+      return;
+    }
+
     // API routing
     if (pathname.startsWith("/api/")) {
       try {
@@ -62,6 +70,7 @@ export function startDashboard(port = 3000, password = null) {
         if (pathname === "/api/history")   return await handleHistory(req, res);
         if (pathname === "/api/journal")   return await handleJournal(req, res, url);
         if (pathname === "/api/lessons")   return await handleLessons(req, res);
+        if (req.method === "DELETE" && pathname.startsWith("/api/lessons/")) return await handleDeleteLesson(req, res, pathname);
         if (pathname === "/api/logs")      return await handleLogs(req, res, url);
       } catch (e) {
         res.writeHead(500, { "Content-Type": "application/json" });

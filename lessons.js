@@ -676,6 +676,8 @@ export function pinLesson(id) {
   const data = load();
   const lesson = data.lessons.find((l) => l.id === id);
   if (!lesson) return { found: false };
+  const pinnedCount = data.lessons.filter((l) => l.pinned && l.id !== id).length;
+  if (pinnedCount >= 10) return { found: true, pinned: false, id, rule: lesson.rule, error: "Max 10 pinned lessons reached" };
   lesson.pinned = true;
   save(data);
   log("lessons", `Pinned lesson ${id}: ${lesson.rule.slice(0, 60)}`);
