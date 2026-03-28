@@ -1129,4 +1129,142 @@ Optionally specify a number of days after which the entry auto-expires.`,
       },
     },
   },
+
+  // ═══════════════════════════════════════════
+  //  EXPERIMENT TOOLS
+  // ═══════════════════════════════════════════
+  {
+    type: "function",
+    function: {
+      name: "start_experiment",
+      description: `Start a strategy optimization experiment on a pool.
+Deploys a position with initial parameters, then automatically iterates (redeploy after each close)
+using a hill-climbing optimizer until the best strategy/bin configuration is found.
+Experiment positions participate in normal management cycles but have their own TP/SL thresholds
+(lower, so they close faster and iterate more).
+
+Use this to systematically find the best parameters for a specific pool without manual tuning.`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: { type: "string", description: "Pool address to experiment on" },
+          pool_name:    { type: "string", description: "Human-readable pool name (e.g. TOKEN-SOL)" },
+          base_mint:    { type: "string", description: "Base token mint address" },
+          bin_step:     { type: "number", description: "Pool bin step" },
+          deploy_amount_sol: {
+            type: "number",
+            description: "SOL to deploy per iteration. Default 0.3. Keep small — this will deploy multiple times."
+          },
+          max_iterations: {
+            type: "number",
+            description: "Hard cap on iterations. Default 20."
+          },
+          convergence_window: {
+            type: "number",
+            description: "Stop after N iterations without improvement. Default 3."
+          },
+          rules: {
+            type: "object",
+            description: "Override experiment-specific TP/SL thresholds. Optional.",
+            properties: {
+              takeProfitFeePct:      { type: "number" },
+              fastTpPct:             { type: "number" },
+              emergencyPriceDropPct: { type: "number" },
+              maxMinutesHeld:        { type: "number" },
+              trailingActivate:      { type: "number" },
+              trailingFloor:         { type: "number" },
+            }
+          },
+          parameter_space: {
+            type: "object",
+            description: "Override the parameter search space. Optional.",
+            properties: {
+              strategy:   { type: "array", items: { type: "string" } },
+              bins_below: { type: "array", items: { type: "number" } },
+              bins_above: { type: "array", items: { type: "number" } },
+            }
+          },
+        },
+        required: ["pool_address"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_experiment",
+      description: "Get the full details and iteration history of an experiment.",
+      parameters: {
+        type: "object",
+        properties: {
+          experiment_id: { type: "string", description: "Experiment ID (e.g. exp_1711234567890)" },
+        },
+        required: ["experiment_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "list_experiments",
+      description: "List all experiments with their current status and progress.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["running", "converged", "paused", "cancelled", "failed"],
+            description: "Filter by status. Omit to list all."
+          },
+        },
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "pause_experiment",
+      description: "Pause a running experiment. The active position stays open; auto-redeploy is suspended until resumed.",
+      parameters: {
+        type: "object",
+        properties: {
+          experiment_id: { type: "string" },
+        },
+        required: ["experiment_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "resume_experiment",
+      description: "Resume a paused experiment. Redeploys the next iteration immediately.",
+      parameters: {
+        type: "object",
+        properties: {
+          experiment_id: { type: "string" },
+        },
+        required: ["experiment_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "cancel_experiment",
+      description: "Cancel an experiment permanently. The active position (if any) is NOT closed automatically — manage it normally.",
+      parameters: {
+        type: "object",
+        properties: {
+          experiment_id: { type: "string" },
+        },
+        required: ["experiment_id"],
+      },
+    },
+  },
 ];

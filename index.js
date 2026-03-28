@@ -709,12 +709,44 @@ async function runPnlChecker() {
         continue;
       }
 
+      // Resolve thresholds — experiment positions use their own rules
+      let SL_PCT           = config.management.emergencyPriceDropPct;
+      let TP_PCT           = config.management.takeProfitFeePct;
+      let expFastTp        = FAST_TP_PCT;
+      let expTrailActivate = TRAILING_ACTIVATE;
+      let expTrailFloor    = TRAILING_FLOOR;
+      let maxMinutesHeld   = null;
+
+      if (tracked.variant?.startsWith("exp_")) {
+        try {
+          const { getExperimentByPosition } = await import("./experiment.js");
+          const expRules = getExperimentByPosition(tracked.position)?.rules;
+          if (expRules) {
+            SL_PCT           = expRules.emergencyPriceDropPct ?? SL_PCT;
+            TP_PCT           = expRules.takeProfitFeePct      ?? TP_PCT;
+            expFastTp        = expRules.fastTpPct             ?? expFastTp;
+            expTrailActivate = expRules.trailingActivate      ?? expTrailActivate;
+            expTrailFloor    = expRules.trailingFloor         ?? expTrailFloor;
+            maxMinutesHeld   = expRules.maxMinutesHeld        ?? null;
+          }
+        } catch {}
+      }
+
+      // Experiment time-limit: force-close to keep the iteration loop moving
+      if (maxMinutesHeld != null && tracked.deployed_at) {
+        const minutesHeld = Math.floor((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000);
+        if (minutesHeld >= maxMinutesHeld) {
+          log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: experiment time limit ${minutesHeld}m >= ${maxMinutesHeld}m — closing`);
+          _trailingStops.delete(tracked.position);
+          await executeTool("close_position", { position_address: tracked.position, close_reason: `Experiment time limit: ${minutesHeld}m` });
+          continue;
+        }
+      }
+
       const pnl = await getPositionPnl({ pool_address: tracked.pool, position_address: tracked.position }).catch(() => null);
       if (!pnl || pnl.error || pnl.pnl_pct == null) continue;
 
       const pct = pnl.pnl_pct;
-      const SL_PCT = config.management.emergencyPriceDropPct;
-      const TP_PCT = config.management.takeProfitFeePct;
 
       // Rule 1: Stop loss
       if (pct <= SL_PCT) {
@@ -725,8 +757,8 @@ async function runPnlChecker() {
       }
 
       // Rule 2: Hard take-profit (fast TP)
-      if (pct >= FAST_TP_PCT) {
-        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${FAST_TP_PCT}% — FAST TAKE PROFIT`);
+      if (pct >= expFastTp) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${expFastTp}% — FAST TAKE PROFIT`);
         _trailingStops.delete(tracked.position);
         await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%` });
         continue;
@@ -740,8 +772,8 @@ async function runPnlChecker() {
         continue;
       }
 
-      // Rule 4: Lesson-based take-profit
-      if (lessonTpRules.length > 0) {
+      // Rule 4: Lesson-based take-profit (skip for experiment positions — they use experiment rules)
+      if (lessonTpRules.length > 0 && !tracked.variant?.startsWith("exp_")) {
         const hit = lessonTpRules.find(r => pct >= r.threshold_pct);
         if (hit) {
           log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${hit.threshold_pct}% — LESSON TP`);
@@ -751,8 +783,8 @@ async function runPnlChecker() {
         }
       }
 
-      // Rule 5: Trailing stop — activate above TRAILING_ACTIVATE, close below TRAILING_FLOOR
-      if (pct > TRAILING_ACTIVATE) {
+      // Rule 5: Trailing stop — activate above expTrailActivate, close below expTrailFloor
+      if (pct > expTrailActivate) {
         const entry = _trailingStops.get(tracked.position);
         if (!entry) {
           _trailingStops.set(tracked.position, { peak: pct });
@@ -763,8 +795,8 @@ async function runPnlChecker() {
       }
 
       const stop = _trailingStops.get(tracked.position);
-      if (stop && pct < TRAILING_FLOOR) {
-        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${TRAILING_FLOOR}% — CLOSE`);
+      if (stop && pct < expTrailFloor) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${expTrailFloor}% — CLOSE`);
         _trailingStops.delete(tracked.position);
         await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%` });
       }

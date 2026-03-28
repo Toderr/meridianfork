@@ -226,6 +226,34 @@ export async function notifyInstructionClose({ pair, instruction, pnlPct }) {
   );
 }
 
+export async function notifyExperimentIteration({ experimentId, poolName, iteration, prevResult, params, analysis, deploySuccess }) {
+  const pnl = prevResult?.pnl_pct ?? null;
+  const sp  = pnl != null ? (pnl >= 0 ? "+" : "") : "";
+  const eff = prevResult?.range_efficiency != null ? `${prevResult.range_efficiency.toFixed(0)}%` : "?";
+  await sendMessage(
+    `🧪 EXPERIMENT #${iteration - 1} → #${iteration}\n\n` +
+    `📍 ${poolName}\n` +
+    (pnl != null ? `💰 Last: ${sp}${pnl.toFixed(1)}% | range_eff ${eff}\n` : "") +
+    `📊 Next: ${params.strategy} bins_below=${params.bins_below} bins_above=${params.bins_above}\n` +
+    `💡 ${analysis}\n` +
+    (deploySuccess ? `✅ Iteration ${iteration} deployed` : `⚠️ Deploy failed — experiment paused`)
+  );
+}
+
+export async function notifyExperimentConverged({ experimentId, poolName, bestParams, bestPnlPct, bestRangeEff, totalIterations, convergenceReason, report }) {
+  const sp = (bestPnlPct ?? 0) >= 0 ? "+" : "";
+  await sendMessage(
+    `🧪 EXPERIMENT CONVERGED\n\n` +
+    `📍 ${poolName}\n` +
+    `✅ ${convergenceReason}\n` +
+    `📊 ${totalIterations} iterations\n\n` +
+    (bestParams ? `Best: ${bestParams.strategy} bins_below=${bestParams.bins_below} bins_above=${bestParams.bins_above}\n` : "") +
+    (bestPnlPct != null ? `💰 Best pnl: ${sp}${bestPnlPct.toFixed(1)}%` : "") +
+    (bestRangeEff != null ? ` | range_eff: ${bestRangeEff.toFixed(0)}%` : "") +
+    `\n\n${report}`
+  );
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }

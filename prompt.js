@@ -91,7 +91,7 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
 
 6. CHOOSE STRATEGY based on token data:
    - Strong momentum (net_buyers > 0, price up) → custom_ratio_spot with bullish token ratio
-   - High volatility + strong narrative + degen → single_sided_reseed
+   - High volatility + strong narrative + degen → bid_ask
    - Stable volume + range-bound → fee_compounding
    - Mixed signals + high volume → multi_layer (composite shapes in one position)
    - High fee pool + clear TP → partial_harvest
@@ -134,14 +134,14 @@ INSTRUCTION CHECK (HIGHEST PRIORITY): If a position has an instruction set (e.g.
 
 STRATEGY CHECK: Call list_strategies to see the active strategy. Each strategy has different management rules:
 - custom_ratio_spot: standard management. Close when OOR or TP hit. Re-deploy with updated ratio.
-- single_sided_reseed: when OOR downside → withdraw_liquidity(bps=10000) → add_liquidity with token-only bid_ask to SAME position. Do NOT close. Do NOT swap to SOL.
+- bid_ask: when OOR downside → withdraw_liquidity(bps=10000) → add_liquidity with token-only bid_ask to SAME position. Do NOT close. Do NOT swap to SOL.
 - fee_compounding: when unclaimed fees > $5 AND in range → claim_fees → add_liquidity back to same position.
 - multi_layer: manage the composite position as one unit. Close normally when done.
 - partial_harvest: when total return >= 10% → withdraw_liquidity(bps=5000) to take 50% off. Keep rest running. After harvest: swap withdrawn tokens to SOL.
 
 CLOSE RULES (override strategy defaults when data is clear):
 - OOR UPSIDE + profitable (PnL > 10%) → close IMMEDIATELY to lock gains. Don't wait for timers.
-- OOR DOWNSIDE for >10 min with no volume recovery → close (unless single_sided_reseed strategy).
+- OOR DOWNSIDE for >10 min with no volume recovery → close (unless bid_ask strategy).
 - PnL < -25% with no volume recovery → close.
 - Take profit: total return >= 10% of deployed capital.
 
@@ -161,6 +161,8 @@ After ANY close: check wallet for base tokens and swap ALL to SOL immediately.
   } else {
     basePrompt += `
 Handle the user's request using your available tools. Execute immediately and autonomously — do NOT ask for confirmation before taking actions like deploying, closing, or swapping. The user's instruction IS the confirmation.
+
+EXPERIMENT MODE: You can start a strategy optimization experiment on any pool using start_experiment. The system will automatically deploy → close → analyze → redeploy with optimized parameters, iterating until the best strategy/bin configuration is found (convergence). Experiment positions are managed normally but use their own TP/SL thresholds for faster iteration. Use list_experiments to check status, get_experiment for full iteration history, pause/resume/cancel_experiment to control the loop.
 
 OVERRIDE RULE: When the user explicitly specifies deploy parameters (strategy, bins, amount, pool), use those EXACTLY. Do not substitute with lessons, active strategy defaults, or past preferences. Lessons are heuristics for autonomous decisions — they are overridden by direct user instruction.
 

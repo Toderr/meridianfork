@@ -232,6 +232,14 @@ const toolMap = {
     log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
     return { success: true, applied, unknown, reason };
   },
+
+  // ─── Experiment Tools ─────────────────────────────────────────
+  start_experiment:  (args) => import("../experiment.js").then(m => m.startExperiment(args)),
+  get_experiment:    (args) => import("../experiment.js").then(m => m.getExperiment(args.experiment_id)),
+  list_experiments:  (args) => import("../experiment.js").then(m => m.listExperiments(args)),
+  pause_experiment:  (args) => import("../experiment.js").then(m => m.pauseExperiment(args.experiment_id)),
+  resume_experiment: (args) => import("../experiment.js").then(m => m.resumeExperiment(args.experiment_id)),
+  cancel_experiment: (args) => import("../experiment.js").then(m => m.cancelExperiment(args.experiment_id)),
 };
 
 // Tools that modify on-chain state (need extra safety checks)
@@ -242,6 +250,8 @@ const WRITE_TOOLS = new Set([
   "swap_token",
   "withdraw_liquidity",
   "add_liquidity",
+  "start_experiment",
+  "resume_experiment",
 ]);
 
 /**
@@ -366,6 +376,19 @@ export async function executeTool(name, args) {
         _flags.gasLowNotified = false;       // position closed — SOL may have returned, allow fresh gas warning
         _flags.maxPositionsNotified = false; // slot freed — allow next max-positions warning
         if (hiveEnabled()) syncToHive().catch(() => {});
+        // Experiment iteration hook — fire-and-forget
+        if (_tracked?.variant?.startsWith("exp_")) {
+          import("../experiment.js").then(({ onExperimentPositionClosed }) => {
+            onExperimentPositionClosed(args.position_address, {
+              pnl_pct:          result.pnl_pct          ?? 0,
+              pnl_usd:          result.pnl_usd          ?? 0,
+              fees_earned_usd:  result.fees_earned_usd  ?? 0,
+              range_efficiency: result.range_efficiency ?? 0,
+              minutes_held:     result.minutes_held     ?? 0,
+              close_reason:     args.close_reason       || "agent decision",
+            });
+          }).catch(e => log("experiment_error", `Experiment hook failed: ${e.message}`));
+        }
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
           try {
@@ -411,8 +434,11 @@ export async function executeTool(name, args) {
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
-      // Block low-confidence deploys
-      if (args.confidence_level != null && args.confidence_level <= 7) {
+      // Experiment deploys bypass confidence gate, max-positions, duplicate pool/mint guards
+      const isExperiment = typeof args.variant === "string" && args.variant.startsWith("exp_");
+
+      // Block low-confidence deploys (experiments always pass confidence=10)
+      if (!isExperiment && args.confidence_level != null && args.confidence_level <= 7) {
         return {
           pass: false,
           reason: `Confidence ${args.confidence_level}/10 is too low (must be > 7). Do not deploy.`,
@@ -454,20 +480,23 @@ async function runSafetyChecks(name, args) {
 
       // Check position count limit + duplicate pool guard
       const positions = await getMyPositions();
-      if (positions.total_positions >= config.risk.maxPositions) {
-        return {
-          pass: false,
-          reason: `Max positions (${config.risk.maxPositions}) reached. Close a position first.`,
-        };
-      }
-      const alreadyInPool = positions.positions.some(
-        (p) => p.pool === args.pool_address
-      );
-      if (alreadyInPool && !args.allow_duplicate_pool) {
-        return {
-          pass: false,
-          reason: `Already have an open position in pool ${args.pool_address}. Cannot open duplicate. Pass allow_duplicate_pool: true for multi-layer strategy.`,
-        };
+      // Experiments bypass max-positions and duplicate checks (they intentionally redeploy the same pool)
+      if (!isExperiment) {
+        if (positions.total_positions >= config.risk.maxPositions) {
+          return {
+            pass: false,
+            reason: `Max positions (${config.risk.maxPositions}) reached. Close a position first.`,
+          };
+        }
+        const alreadyInPool = positions.positions.some(
+          (p) => p.pool === args.pool_address
+        );
+        if (alreadyInPool && !args.allow_duplicate_pool) {
+          return {
+            pass: false,
+            reason: `Already have an open position in pool ${args.pool_address}. Cannot open duplicate. Pass allow_duplicate_pool: true for multi-layer strategy.`,
+          };
+        }
       }
 
       // reserve_slot: enforce lesson-based slot reservations for specific tokens
@@ -505,8 +534,8 @@ async function runSafetyChecks(name, args) {
         log("warn", `reserve_slot check failed (non-fatal): ${slotErr.message}`);
       }
 
-      // Block same base token across different pools
-      if (args.base_mint) {
+      // Block same base token across different pools (experiments exempt — same pool, iterating)
+      if (!isExperiment && args.base_mint) {
         const alreadyHasMint = positions.positions.some(
           (p) => p.base_mint === args.base_mint
         );

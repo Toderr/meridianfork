@@ -120,6 +120,37 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_s
   );
 }
 
+export async function notifyJournalExperimentIteration({ poolName, experimentId, iteration, prevResult, params, analysis, deploySuccess }) {
+  if (!TOKEN || !chatId) return;
+  const pnl = prevResult?.pnl_pct ?? null;
+  const sp  = pnl != null ? (pnl >= 0 ? "+" : "") : "";
+  const eff = prevResult?.range_efficiency != null ? `${prevResult.range_efficiency.toFixed(0)}%` : "?";
+  await sendMessage(
+    `🧪 EXPERIMENT #${iteration - 1} → #${iteration}\n\n` +
+    `📍 ${poolName}\n` +
+    (pnl != null ? `💰 Last: ${sp}${pnl.toFixed(1)}% | range_eff ${eff}\n` : ``) +
+    `📊 Next: ${params.strategy} bins↓${params.bins_below} bins↑${params.bins_above}\n` +
+    `💡 ${analysis}\n` +
+    (deploySuccess ? `✅ Iteration ${iteration} deployed` : `⚠️ Deploy failed — experiment paused`) +
+    `\n\n🔖 ${experimentId}`
+  );
+}
+
+export async function notifyJournalExperimentConverged({ poolName, experimentId, bestParams, bestPnlPct, bestRangeEff, totalIterations, convergenceReason, report }) {
+  if (!TOKEN || !chatId) return;
+  const sp = (bestPnlPct ?? 0) >= 0 ? "+" : "";
+  await sendMessage(
+    `🧪 EXPERIMENT CONVERGED\n\n` +
+    `📍 ${poolName}\n` +
+    `✅ ${convergenceReason}\n` +
+    `📊 ${totalIterations} iterations\n\n` +
+    (bestParams ? `Best: ${bestParams.strategy} bins↓${bestParams.bins_below} bins↑${bestParams.bins_above}\n` : ``) +
+    (bestPnlPct != null ? `💰 Best pnl: ${sp}${bestPnlPct.toFixed(1)}%` : ``) +
+    (bestRangeEff != null ? ` | range_eff: ${bestRangeEff.toFixed(0)}%` : ``) +
+    `\n\n${report}\n\n🔖 ${experimentId}`
+  );
+}
+
 export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, rationale = "" }) {
   if (!TOKEN || !chatId) return;
   const parts = ["🧠 CLAUDE REVIEW"];

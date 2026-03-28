@@ -22,6 +22,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `tools/screening.js` | Pool discovery and candidate scoring |
 | `tools/executor.js` | Tool dispatch, post-tool hooks (notify, journal, sync) |
 | `tools/definitions.js` | LLM tool schemas for all agent roles |
+| `experiment.js` | Experiment tier — strategy optimization loop (deploy→close→iterate until convergence) |
 | `lessons.js` | Performance recording and learning system |
 | `lesson-rules.js` | Lesson rule extractor + compliance checkers (hard enforcement) |
 | `journal.js` | Append-only trade journal (open/close/claim events) |
@@ -46,6 +47,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 - `lessons.json` — performance records and derived lessons
 - `strategy-library.json` — saved LP strategy templates
 - `pool-memory.json` — per-pool deploy history and notes
+- `experiments.json` — active and completed experiment state
 - `.env` — environment variables
 - `.agent.pid` — PID lock file (prevents duplicate instances)
 
@@ -374,6 +376,83 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
 - **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made.
 - **Claude Ask** (`scripts/claude-ask.js`): General-purpose Q&A agent triggered by Telegram `/claude <question>`. Loads runtime context (open positions from `state.json`, last 15 journal entries, last 20 lessons, last 10 performance records, strategy config subset) and spawns `claude --print` with a 3-minute timeout. Special output prefixes: `LESSON: <text>` → caller can extract and save lesson; `CONFIG: key=value` → caller can apply config change. Standalone test: `node scripts/claude-ask.js "your question"`.
+
+## Experiment Tier
+
+A self-contained strategy optimization loop (`experiment.js`). Iterates on a single pool: deploy → wait for close → analyze result → redeploy with optimized params → repeat until convergence.
+
+### How It Works
+
+- **Start**: Agent calls `start_experiment({ pool_address, pool_name, ... })` → deploys iteration 1 immediately
+- **Iterate**: When a position with `variant` starting with `"exp_"` closes, `onExperimentPositionClosed()` fires (from executor.js post-close hook), records the result, runs the hill-climbing optimizer, and deploys the next iteration
+- **Convergence**: Stops when N consecutive iterations don't improve the score (default 3), max iterations reached (default 20), or all parameter combinations exhausted
+- **Rules**: Each experiment has its own TP/SL/trailing thresholds (`rules` object in `experiments.json`) — the PnL checker uses these instead of global config for experiment positions
+- **Management**: Experiment positions appear normally in management cycles — the LLM manages them like any other position
+
+### Optimization Algorithm
+
+Deterministic hill-climbing (no LLM per iteration):
+1. Score each closed iteration: `0.6 × pnl_pct_normalized + 0.4 × range_efficiency_normalized`
+2. Start from best iteration's params, mutate one parameter at a time (round-robin: strategy → bins_below → bins_above)
+3. Track all tried combinations — never repeat
+4. If all single-param neighbors tried, cross best values from top-2 iterations
+5. If all combinations exhausted → converge
+
+### Default Experiment Rules (faster closes = faster iteration)
+```
+takeProfitFeePct:      3%     (vs global ~5%)
+fastTpPct:             8%     (vs global ~15%)
+emergencyPriceDropPct: -30%   (vs global -50%)
+maxMinutesHeld:        120m   (force-close after 2h to keep loop moving)
+trailingActivate:      4%
+trailingFloor:         3%
+```
+
+### Default Parameter Space
+```
+strategy:   ["bid_ask", "spot"]
+bins_below: [30, 50, 69, 100]
+bins_above: [0, 10, 20, 30]
+```
+
+### State File: `experiments.json`
+```json
+{
+  "experiments": {
+    "exp_<timestamp>": {
+      "id", "pool", "pool_name", "status",         // "running"|"converged"|"paused"|"cancelled"|"failed"
+      "deploy_amount_sol", "max_iterations", "convergence_window",
+      "best_pnl_pct", "best_iteration", "iterations_without_improvement",
+      "active_position",
+      "rules": { TP/SL thresholds },
+      "parameter_space": { strategy, bins_below, bins_above },
+      "iterations": [{ iteration, position, params, deployed_at, closed_at, result, analysis, status }]
+    }
+  }
+}
+```
+
+### Agent Tools
+| Tool | Action |
+|------|--------|
+| `start_experiment` | Start optimization loop on a pool |
+| `get_experiment` | Full details + iteration history |
+| `list_experiments` | List all experiments (filter by status) |
+| `pause_experiment` | Pause — stops auto-redeploy after next close |
+| `resume_experiment` | Resume paused — deploys next iteration now |
+| `cancel_experiment` | Cancel — active position stays open (manage normally) |
+
+### Notifications
+Both the main Telegram bot and the journal bot receive:
+- `🧪 EXPERIMENT #N → #N+1` — after each iteration closes (prev result + next params)
+- `🧪 EXPERIMENT CONVERGED` — full progression report with best parameters found
+
+### Safety Bypasses (executor.js)
+Experiment deploys (variant starts with `"exp_"`) bypass:
+- `maxPositions` check (experiment has its own 1-active-position limit)
+- `alreadyInPool` duplicate guard (intentionally redeploying same pool)
+- `base_mint` duplicate guard (same token, iterating)
+- Confidence gate (experiments always use `confidence_level: 10`)
 
 ## Roadmap / Improvement Ideas
 

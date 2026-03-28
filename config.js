@@ -107,6 +107,22 @@ export const config = {
     enabled:  u.dashboardEnabled  !== false, // default: true
     password: u.dashboardPassword ?? null,   // null = no auth
   },
+
+  // ─── Experiment Settings ────────────────
+  experiment: {
+    defaultDeployAmount:      u.experimentDeployAmount      ?? 0.3,
+    defaultMaxIterations:     u.experimentMaxIterations     ?? 20,
+    convergenceWindow:        u.experimentConvergenceWindow ?? 3,
+    maxConcurrentExperiments: u.maxConcurrentExperiments    ?? 2,
+    defaultRules: {
+      takeProfitFeePct:      3,
+      fastTpPct:             8,
+      emergencyPriceDropPct: -30,
+      maxMinutesHeld:        120,
+      trailingActivate:      4,
+      trailingFloor:         3,
+    },
+  },
 };
 
 /**
