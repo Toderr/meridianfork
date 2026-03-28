@@ -247,8 +247,8 @@ async function runManagementCycle(tier = null) {
         ? Math.max(0, pnl.active_bin - pnl.upper_bin)
         : null;
       const strategy = p.strategy || tracked?.strategy || null;
-      const invested_sol = tracked?.amount_sol ?? null;
-      const initial_value_usd = tracked?.initial_value_usd ?? null;
+      const invested_sol = tracked?.amount_sol ?? p.amount_sol_api ?? null;
+      const initial_value_usd = tracked?.initial_value_usd ?? pnl?.initial_value_usd ?? p.initial_value_usd_api ?? null;
       const volatility = tracked?.volatility ?? null;
       const variant = tracked?.variant ?? null;
       return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd, volatility, variant };
@@ -361,7 +361,8 @@ async function runManagementCycle(tier = null) {
         `  pool: ${p.pool}`,
         `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}` +
           (p.binsAbove != null ? ` | bins_above_range: ${p.binsAbove}` : ""),
-        p.invested_sol != null ? `  invested: ${p.invested_sol} SOL${p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : ""}` : null,
+        p.invested_sol != null ? `  invested: ${p.invested_sol} SOL${p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : ""}`
+          : p.initial_value_usd != null && p.initial_value_usd > 0 ? `  invested: ~$${p.initial_value_usd.toFixed(2)}` : null,
         pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
         pnl && p.feeTvl24h != null ? `  fee_tvl_24h: ${p.feeTvl24h.toFixed(1)}%${(p.age_minutes||0) < config.management.minAgeForYieldExit ? " (rule inactive — position too young)" : ""}` : null,
         pnl && (p.feeTvl24h != null || p.binsAbove != null) ? `  ` +
@@ -444,6 +445,8 @@ When calling close_position, set close_reason to the same short reason above.
         if (p.invested_sol != null) {
           const ivUsd = p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : "";
           lines.push(`💵 Invested: ${p.invested_sol} SOL${ivUsd}`);
+        } else if (p.initial_value_usd != null && p.initial_value_usd > 0) {
+          lines.push(`💵 Invested: ~$${p.initial_value_usd.toFixed(2)}`);
         }
         if (pnl?.pnl_usd != null) {
           const su = pnl.pnl_usd >= 0 ? "+" : "";

@@ -212,10 +212,7 @@ export async function deployPosition({
   const newPosition = Keypair.generate();
 
   // Compute tracked strategy early so it's available for both wide-range and standard tracking
-  const trackedStrategy =
-    finalAmountX === 0 && finalAmountY > 0 && activeStrategy === "bid_ask" && activeBinsAbove === 0
-      ? "single_sided_reseed"
-      : activeStrategy;
+  const trackedStrategy = activeStrategy;
 
   const trackData = {
     position: newPosition.publicKey.toString(),
@@ -377,6 +374,7 @@ export async function getPositionPnl({ pool_address, position_address }) {
       current_value_usd: Math.round(currentValueUsd * 100) / 100,
       unclaimed_fee_usd: Math.round(unclaimedUsd * 100) / 100,
       all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
+      initial_value_usd: Math.round(initialValueUsd * 100) / 100,
       in_range:    !p.isOutOfRange,
       lower_bin:   p.lowerBinId      ?? null,
       upper_bin:   p.upperBinId      ?? null,
@@ -491,6 +489,8 @@ export async function getMyPositions({ force = false } = {}) {
         pnl_usd: Math.round(pnlUsd * 100) / 100,
         pnl_pct: Math.round(pnlPct * 100) / 100,
         pnl_sol: Math.round((parseFloat(p?.pnlSol ?? 0)) * 10000) / 10000,
+        initial_value_usd_api: Math.round(initialValueUsd * 100) / 100,
+        amount_sol_api: p?.amountSol != null ? Math.round(parseFloat(p.amountSol) * 10000) / 10000 : null,
         age_minutes: ageMinutes,
         minutes_out_of_range: minutesOutOfRange(r.position),
       };

@@ -131,6 +131,8 @@ OTHER-SOL [━━━━━━━━━━━━━━━●] ⚠️
 💰 Balance: 0.32 SOL | ⏰ Next: 5m
 ```
 
+**Invested amount fallback**: `invested_sol` and `initial_value_usd` are sourced from state.json first. If a position is untracked (no state.json entry), fallbacks from the Meteora PnL API are used: `amountSol` for SOL amount, `balances - pnlUsd` for USD initial value. When only USD is available, the report shows `💵 Invested: ~$X.XX` (tilde signals API-derived estimate). Fields: `getMyPositions()` returns `amount_sol_api` and `initial_value_usd_api`; `getPositionPnl()` returns `initial_value_usd`.
+
 PnL line shows raw price PnL (USD, SOL) without fees. Fees line shown separately when `unclaimed_fee_usd > 0`, with `Total:` showing the fee-inclusive pnl_pct. When no unclaimed fees, just shows the pnl_pct on its own line.
 
 The LLM report format is one line per position: `[PAIR]: STAY/CLOSE — [short reason]`. This is parsed and embedded inline under each position block.
