@@ -44,7 +44,8 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 - `user-config.json` — RPC URL, wallet key, API keys, LLM models
 - `state.json` — active position tracking
 - `journal.json` — trade history
-- `lessons.json` — performance records and derived lessons
+- `lessons.json` — performance records and regular (non-experiment) lessons
+- `experiment-lessons.json` — experiment-sourced lessons (auto-migrated from lessons.json)
 - `strategy-library.json` — saved LP strategy templates
 - `pool-memory.json` — per-pool deploy history and notes
 - `experiments.json` — active and completed experiment state
@@ -353,8 +354,9 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 
 ## Learning System
 
-- **Lesson derivation**: Auto after each close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0%), bad (<-5%)
-- **Threshold evolution**: Every 5 closes, `evolveThresholds()` in `lessons.js` auto-adjusts 7 dimensions:
+- **Lesson derivation**: Auto after each close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0%), bad (<-5%). Each lesson gets `source: "regular"` or `"experiment"` based on the position's variant.
+- **Experiment lesson separation**: Regular and experiment lessons are stored in separate files (`lessons.json` and `experiment-lessons.json`). On first load, existing experiment lessons are auto-migrated from `lessons.json` to `experiment-lessons.json`. Experiment lessons are excluded from prompt injection, threshold evolution, and rule extraction. Use `getExperimentLessons(experimentId?)` to query them. `list_lessons` accepts a `source` filter ("regular" or "experiment").
+- **Threshold evolution**: Every 5 closes, `evolveThresholds()` in `lessons.js` auto-adjusts 7 dimensions (experiment positions excluded):
   - Screening: `maxVolatility`, `minFeeTvlRatio`, `minOrganic`
   - Strategy: `strategyRules` (spot vs bid_ask per volatility bucket), `binsBelow` (bin width via range_efficiency)
   - TP/SL: `takeProfitFeePct`, `fastTpPct`, `trailingFloor`, `emergencyPriceDropPct`
@@ -363,6 +365,8 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Lesson injection**: ALL lessons injected — no caps. Pinned → Role-matched → Recent. Priority: good > bad > manual > neutral
 - **Pinned lesson cap**: Max 10 pinned lessons. `pinLesson()` returns `{ error }` if cap is reached without saving.
 - **Dashboard lesson delete**: Dashboard lessons grid has a per-card delete button (✕, appears on hover). Calls `DELETE /api/lessons/:id`.
+- **Dashboard lessons filter**: `GET /api/lessons?source=regular|experiment` filters by lesson source. Without param, returns all.
+- **Dashboard position tiers**: Active positions are grouped by volatility tier (High ≥ 5, Medium 2–5, Low < 2, null → Medium). Each tier has a color-coded header (red/yellow/green) with position count. Empty tiers are hidden.
 - **Lesson enforcement (3-layer)**:
   1. **Prompt** — HARD RULES (AVOID/NEVER/SKIP/FAILED keywords) shown in numbered checklist with `❌ VIOLATION = ACTION BLOCKED` warning. GUIDANCE (PREFER/WORKED/CONSIDER) shown separately as secondary.
   2. **Pre-agent** — Before agent loop: screening cycle filters candidates violating lesson rules; management cycle force-closes/force-holds positions matching lesson conditions. Logged as `[lesson_enforce]`.

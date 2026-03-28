@@ -302,6 +302,24 @@ html, body {
   font-size: 11px; color: var(--yellow); display: flex; align-items: flex-start; gap: 6px;
 }
 
+/* Volatility tier headers */
+.vol-tier { margin-bottom: 14px; }
+.vol-tier:last-child { margin-bottom: 0; }
+.vol-tier-hdr {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+}
+.vol-tier-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 3px;
+  font-size: 8px; font-weight: 600; letter-spacing: 0.1em;
+}
+.vol-tier-badge.vt-high { color: var(--red);    border: 1px solid rgba(255,69,96,0.28);  background: rgba(255,69,96,0.07); }
+.vol-tier-badge.vt-med  { color: var(--yellow); border: 1px solid rgba(245,158,11,0.28); background: rgba(245,158,11,0.07); }
+.vol-tier-badge.vt-low  { color: var(--green);  border: 1px solid rgba(0,217,126,0.28);  background: rgba(0,217,126,0.07); }
+.vol-tier-line { flex: 1; height: 1px; background: var(--border); }
+
 /* ── Tables ─────────────────────────────────────────────── */
 .tbl-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -580,7 +598,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
         </div>
 
         <div class="sh"><div class="sh-title">Active Positions</div><div class="sh-line"></div></div>
-        <div class="pos-grid" id="pos-grid">
+        <div id="pos-grid">
           <div class="empty">Loading positions...</div>
         </div>
 
@@ -876,68 +894,99 @@ function renderOverview() {
 }
 
 // ── Position cards ─────────────────────────────────────
+function volTier(v) { if (v == null) return "med"; if (v >= 5) return "high"; if (v >= 2) return "med"; return "low"; }
+const TIER_META = {
+  high: { label: "High Volatility", css: "vt-high" },
+  med:  { label: "Medium Volatility", css: "vt-med" },
+  low:  { label: "Low Volatility",  css: "vt-low" },
+};
+
+function renderPosCard(p, i, sol, solPrice) {
+  const lower  = p.lower_bin  ?? p.bin_range?.[0] ?? 0;
+  const upper  = p.upper_bin  ?? p.bin_range?.[1] ?? 0;
+  const active = p.active_bin ?? 0;
+  const pct    = lower < upper ? Math.max(0, Math.min(100, ((active-lower)/(upper-lower))*100)) : 50;
+  const pu     = p.pnl_usd ?? 0;
+  const ps     = p.pnl_sol ?? (solPrice > 0 ? pu / solPrice : null);
+  const status = p.in_range
+    ? '<span class="badge b-in">In Range</span>'
+    : '<span class="badge b-out">Out of Range</span>';
+  const instr = p.instruction
+    ? `<div class="pc-instr"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>${p.instruction}</div>`
+    : "";
+
+  const amtSol = p.amount_sol ?? 0;
+  const amtUsd = p.initial_value_usd ?? (amtSol * solPrice);
+  const investedStr = sol
+    ? f(amtSol,4)+" SOL"
+    : (amtUsd > 0 ? "$"+f(amtUsd,2) : f(amtSol,4)+" SOL");
+
+  const pnlVal = sol ? ps : pu;
+  const pnlStr = sol
+    ? (ps != null ? (ps>=0?"+":"")+f(ps,4)+" SOL" : "—")
+    : (pu>=0?"+":"")+  "$"+f(pu,2);
+
+  const feesUsd = p.unclaimed_fees_usd ?? p.total_fees_claimed_usd ?? 0;
+  const feesSol = p.unclaimed_fees_sol ?? (solPrice > 0 ? feesUsd / solPrice : null);
+  const feesStr = sol
+    ? (feesSol != null ? f(feesSol,4)+" SOL" : "—")
+    : "$"+f(feesUsd,2);
+
+  return `<div class="card pos-card" style="animation-delay:${i*0.07}s">
+    <div class="pc-header">
+      <div class="pc-name">${p.pair||p.pool_name||"—"}</div>
+      <div class="pc-strat">${p.strategy||"—"}</div>
+    </div>
+    ${status}
+    <div class="range-wrap">
+      <div class="range-labels"><span>Bin ${lower}</span><span>Active ${active}</span><span>Bin ${upper}</span></div>
+      <div class="range-track">
+        <div class="range-fill" style="width:${pct}%"></div>
+        <div class="range-thumb" style="left:${pct}%"></div>
+      </div>
+    </div>
+    <div class="pc-metrics">
+      <div class="pc-metric">Invested<span class="pc-metric-val g">${investedStr}</span></div>
+      <div class="pc-metric">PnL<span class="pc-metric-val ${pc(pnlVal)}">${pnlStr}</span></div>
+      <div class="pc-metric">PnL %<span class="pc-metric-val ${pc(p.pnl_pct)}">${f(p.pnl_pct,2)}%</span></div>
+      <div class="pc-metric">Fees<span class="pc-metric-val">${feesStr}</span></div>
+      <div class="pc-metric">Age<span class="pc-metric-val">${fmtHold(p.age_minutes)}</span></div>
+    </div>
+    ${instr}
+  </div>`;
+}
+
 function renderPosCards(id) {
   const grid = $(id); if (!grid) return;
   if (!_positions?.positions?.length) { grid.innerHTML = '<div class="empty">No open positions</div>'; return; }
 
-  const sorted   = [..._positions.positions].sort((a, b) => (b.age_minutes ?? 0) - (a.age_minutes ?? 0));
   const sol      = _unit === "sol";
   const solPrice = _wallet?.sol_price ?? 0;
 
-  grid.innerHTML = sorted.map((p, i) => {
-    const lower  = p.lower_bin  ?? p.bin_range?.[0] ?? 0;
-    const upper  = p.upper_bin  ?? p.bin_range?.[1] ?? 0;
-    const active = p.active_bin ?? 0;
-    const pct    = lower < upper ? Math.max(0, Math.min(100, ((active-lower)/(upper-lower))*100)) : 50;
-    const pu     = p.pnl_usd ?? 0;
-    const ps     = p.pnl_sol ?? (solPrice > 0 ? pu / solPrice : null);
-    const status = p.in_range
-      ? '<span class="badge b-in">In Range</span>'
-      : '<span class="badge b-out">Out of Range</span>';
-    const instr = p.instruction
-      ? `<div class="pc-instr"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>${p.instruction}</div>`
-      : "";
+  // Group by volatility tier
+  const tiers = { high: [], med: [], low: [] };
+  for (const p of _positions.positions) tiers[volTier(p.volatility)].push(p);
 
-    const amtSol = p.amount_sol ?? 0;
-    const amtUsd = p.initial_value_usd ?? (amtSol * solPrice);
-    const investedStr = sol
-      ? f(amtSol,4)+" SOL"
-      : (amtUsd > 0 ? "$"+f(amtUsd,2) : f(amtSol,4)+" SOL");
+  // Sort each tier by age (oldest first)
+  for (const t of Object.values(tiers)) t.sort((a, b) => (b.age_minutes ?? 0) - (a.age_minutes ?? 0));
 
-    const pnlVal = sol ? ps : pu;
-    const pnlStr = sol
-      ? (ps != null ? (ps>=0?"+":"")+f(ps,4)+" SOL" : "—")
-      : (pu>=0?"+":"")+  "$"+f(pu,2);
-
-    const feesUsd = p.unclaimed_fees_usd ?? p.total_fees_claimed_usd ?? 0;
-    const feesSol = p.unclaimed_fees_sol ?? (solPrice > 0 ? feesUsd / solPrice : null);
-    const feesStr = sol
-      ? (feesSol != null ? f(feesSol,4)+" SOL" : "—")
-      : "$"+f(feesUsd,2);
-
-    return `<div class="card pos-card" style="animation-delay:${i*0.07}s">
-      <div class="pc-header">
-        <div class="pc-name">${p.pair||p.pool_name||"—"}</div>
-        <div class="pc-strat">${p.strategy||"—"}</div>
+  let cardIdx = 0;
+  const sections = [];
+  for (const tier of ["high", "med", "low"]) {
+    const positions = tiers[tier];
+    if (!positions.length) continue;
+    const meta = TIER_META[tier];
+    const cards = positions.map(p => renderPosCard(p, cardIdx++, sol, solPrice)).join("");
+    sections.push(`<div class="vol-tier">
+      <div class="vol-tier-hdr">
+        <span class="vol-tier-badge ${meta.css}">${meta.label}</span>
+        <span style="color:var(--muted2)">${positions.length}</span>
+        <div class="vol-tier-line"></div>
       </div>
-      ${status}
-      <div class="range-wrap">
-        <div class="range-labels"><span>Bin ${lower}</span><span>Active ${active}</span><span>Bin ${upper}</span></div>
-        <div class="range-track">
-          <div class="range-fill" style="width:${pct}%"></div>
-          <div class="range-thumb" style="left:${pct}%"></div>
-        </div>
-      </div>
-      <div class="pc-metrics">
-        <div class="pc-metric">Invested<span class="pc-metric-val g">${investedStr}</span></div>
-        <div class="pc-metric">PnL<span class="pc-metric-val ${pc(pnlVal)}">${pnlStr}</span></div>
-        <div class="pc-metric">PnL %<span class="pc-metric-val ${pc(p.pnl_pct)}">${f(p.pnl_pct,2)}%</span></div>
-        <div class="pc-metric">Fees<span class="pc-metric-val">${feesStr}</span></div>
-        <div class="pc-metric">Age<span class="pc-metric-val">${fmtHold(p.age_minutes)}</span></div>
-      </div>
-      ${instr}
-    </div>`;
-  }).join("");
+      <div class="pos-grid">${cards}</div>
+    </div>`);
+  }
+  grid.innerHTML = sections.join("");
 }
 
 // ── Mini chart ─────────────────────────────────────────
