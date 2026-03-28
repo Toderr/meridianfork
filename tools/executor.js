@@ -448,7 +448,7 @@ async function runSafetyChecks(name, args) {
       // Lesson-based compliance check — enforce HARD RULES derived from past trade outcomes
       try {
         const { screening: screeningRules } = extractRules("SCREENER");
-        if (screeningRules.length > 0) {
+        if (screeningRules.length > 0 && !isExperiment) {
           const poolData = {
             volatility: args.volatility,
             global_fees_sol: args.global_fees_sol,

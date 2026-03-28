@@ -250,7 +250,8 @@ async function runManagementCycle(tier = null) {
       const invested_sol = tracked?.amount_sol ?? null;
       const initial_value_usd = tracked?.initial_value_usd ?? null;
       const volatility = tracked?.volatility ?? null;
-      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd, volatility };
+      const variant = tracked?.variant ?? null;
+      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd, volatility, variant };
     }));
 
     // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
@@ -300,6 +301,7 @@ async function runManagementCycle(tier = null) {
       if (mgmtRules.length > 0) {
         for (const p of positionData) {
           if (skippedByInstruction.has(p.position)) continue;
+          if (p.variant?.startsWith("exp_")) continue;  // experiments use own rules
           const { action, reason } = checkPositionCompliance(p, mgmtRules);
           if (action === "force_close") {
             log("lesson_enforce", `Force-closing ${p.pair} (${p.position}) — ${reason}`);

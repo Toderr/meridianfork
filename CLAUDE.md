@@ -456,12 +456,14 @@ Both the main Telegram bot and the journal bot receive:
 - `🧪 EXPERIMENT #N → #N+1` — after each iteration closes (prev result + next params)
 - `🧪 EXPERIMENT CONVERGED` — full progression report with best parameters found
 
-### Safety Bypasses (executor.js)
-Experiment deploys (variant starts with `"exp_"`) bypass:
+### Safety Bypasses
+Experiment positions (variant starts with `"exp_"`) bypass:
 - `maxPositions` check (experiment has its own 1-active-position limit)
 - `alreadyInPool` duplicate guard (intentionally redeploying same pool)
 - `base_mint` duplicate guard (same token, iterating)
 - Confidence gate (experiments always use `confidence_level: 10`)
+- Lesson deploy compliance (`checkDeployCompliance`) — experiments iterate params freely
+- Management pre-enforcement (`checkPositionCompliance`) — experiments are not force-closed/held by regular lesson rules
 
 ## Roadmap / Improvement Ideas
 
