@@ -37,9 +37,9 @@ const DEFAULT_STRATEGIES = {
     exit: { take_profit_pct: 10, notes: "Close when OOR or TP hit. Re-deploy with updated ratio based on new momentum signals." },
     best_for: "Expressing directional bias while earning fees both ways",
   },
-  single_sided_reseed: {
-    id: "single_sided_reseed",
-    name: "Single-Sided Bid-Ask + Re-seed",
+  bid_ask: {
+    id: "bid_ask",
+    name: "Bid-Ask",
     author: "meridian",
     lp_strategy: "bid_ask",
     token_criteria: { notes: "Volatile tokens with strong narrative. Must have active volume." },

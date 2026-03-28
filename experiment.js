@@ -516,6 +516,12 @@ async function finalizeExperiment(id) {
 
   // Send Telegram convergence report (main bot + journal bot)
   const report = generateExperimentReport(exp);
+  let experimentLessons = [];
+  try {
+    const { getExperimentLessons } = await import("./lessons.js");
+    experimentLessons = getExperimentLessons(id);
+  } catch {}
+
   const convPayload = {
     experimentId: id,
     poolName: exp.pool_name,
@@ -525,6 +531,7 @@ async function finalizeExperiment(id) {
     totalIterations: exp.iterations.length,
     convergenceReason,
     report,
+    experimentLessons,
   };
   try {
     const { notifyExperimentConverged } = await import("./telegram.js");
