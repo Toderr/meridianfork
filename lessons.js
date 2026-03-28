@@ -17,23 +17,54 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 
 const LESSONS_FILE = "./lessons.json";
+const EXPERIMENT_LESSONS_FILE = "./experiment-lessons.json";
 const MIN_EVOLVE_POSITIONS = 5;   // don't evolve until we have real data
 const MAX_CHANGE_PER_STEP  = 0.20; // never shift a threshold more than 20% at once
 
-function load() {
-  if (!fs.existsSync(LESSONS_FILE)) {
-    return { lessons: [], performance: [] };
-  }
-  try {
-    return JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
-  } catch {
-    return { lessons: [], performance: [] };
-  }
+// ─── Dual-file I/O ───────────────────────────────────────────
+
+function loadRegular() {
+  if (!fs.existsSync(LESSONS_FILE)) return { lessons: [], performance: [] };
+  try { return JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8")); }
+  catch { return { lessons: [], performance: [] }; }
 }
 
-function save(data) {
+function saveRegular(data) {
   fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
 }
+
+function loadExperiment() {
+  if (!fs.existsSync(EXPERIMENT_LESSONS_FILE)) return { lessons: [] };
+  try { return JSON.parse(fs.readFileSync(EXPERIMENT_LESSONS_FILE, "utf8")); }
+  catch { return { lessons: [] }; }
+}
+
+function saveExperiment(data) {
+  fs.writeFileSync(EXPERIMENT_LESSONS_FILE, JSON.stringify(data, null, 2));
+}
+
+/** Merge both stores — lessons combined, performance from regular only. */
+function loadAll() {
+  const reg = loadRegular();
+  const exp = loadExperiment();
+  return { lessons: [...reg.lessons, ...exp.lessons], performance: reg.performance };
+}
+
+// Back-compat aliases used by a handful of call-sites that don't care about source
+function load() { return loadRegular(); }
+function save(data) { saveRegular(data); }
+
+// ─── One-time migration: split experiment lessons into own file ──
+(function migrateExperimentLessons() {
+  if (fs.existsSync(EXPERIMENT_LESSONS_FILE)) return;
+  const reg = loadRegular();
+  const expLessons = reg.lessons.filter(l => l.source === "experiment");
+  if (expLessons.length === 0) return;
+  saveExperiment({ lessons: expLessons });
+  reg.lessons = reg.lessons.filter(l => l.source !== "experiment");
+  saveRegular(reg);
+  log("lessons", `Migrated ${expLessons.length} experiment lessons → ${EXPERIMENT_LESSONS_FILE}`);
+})();
 
 // ─── Record Position Performance ──────────────────────────────
 
@@ -60,7 +91,7 @@ function save(data) {
  * @param {string} perf.close_reason   - Why it was closed
  */
 export async function recordPerformance(perf) {
-  const data = load();
+  const data = loadRegular();
 
   const pnl_usd = perf.pnl_usd != null
     ? perf.pnl_usd
@@ -109,13 +140,14 @@ export async function recordPerformance(perf) {
 
   data.performance.push(entry);
 
-  // Derive and store a lesson
+  // Derive and store a lesson — route to correct file by source
   const lesson = derivLesson(entry);
   if (lesson) {
-    // Improvement 6: Deduplication — skip if a similar lesson exists within 7 days
+    const isExp = lesson.source === "experiment";
+    const targetData = isExp ? loadExperiment() : data;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const duplicate = lesson.pool
-      ? data.lessons.find(
+      ? targetData.lessons.find(
           (l) =>
             l.outcome === lesson.outcome &&
             l.pool === lesson.pool &&
@@ -124,16 +156,16 @@ export async function recordPerformance(perf) {
       : null;
 
     if (duplicate) {
-      // Update existing lesson's rule with the newer, more specific one
       duplicate.rule = lesson.rule;
       log("lessons", `Updated existing lesson (dedup): ${lesson.rule}`);
     } else {
-      data.lessons.push(lesson);
-      log("lessons", `New lesson: ${lesson.rule}`);
+      targetData.lessons.push(lesson);
+      log("lessons", `New lesson [${lesson.source}]: ${lesson.rule}`);
     }
+    if (isExp) saveExperiment(targetData);
   }
 
-  save(data);
+  saveRegular(data);
 
   // Update pool-level memory
   if (perf.pool) {
@@ -233,6 +265,7 @@ function derivLesson(perf) {
     tags.push("screener");
   }
 
+  const isExperiment = perf.variant?.startsWith("exp_");
   return {
     id: Date.now(),
     rule,
@@ -243,6 +276,8 @@ function derivLesson(perf) {
     pnl_pct: perf.pnl_pct,
     range_efficiency: perf.range_efficiency,
     pool: perf.pool,
+    source: isExperiment ? "experiment" : "regular",
+    experiment_id: isExperiment ? perf.variant : null,
     created_at: new Date().toISOString(),
   };
 }
@@ -284,6 +319,8 @@ function inferCategory({ rule = "", tags, perf = {} } = {}) {
  * @returns {{ changes: Object, rationale: Object } | null}
  */
 export function evolveThresholds(perfData, config) {
+  // Exclude experiment positions — they use different TP/SL rules and would skew evolution
+  if (perfData) perfData = perfData.filter(p => !p.variant?.startsWith("exp_"));
   if (!perfData || perfData.length < MIN_EVOLVE_POSITIONS) return null;
 
   const winners = perfData.filter((p) => p.pnl_pct > 0);
@@ -653,9 +690,9 @@ function nudge(current, target, maxChange) {
  * @param {boolean}  opts.pinned - Always inject regardless of cap
  * @param {string}   opts.role   - "SCREENER" | "MANAGER" | "GENERAL" | null (all roles)
  */
-export function addLesson(rule, tags = [], { pinned = false, role = null, category = null } = {}) {
-  const data = load();
-  data.lessons.push({
+export function addLesson(rule, tags = [], { pinned = false, role = null, category = null, source = "regular" } = {}) {
+  const src = source || "regular";
+  const lesson = {
     id: Date.now(),
     rule,
     tags,
@@ -663,44 +700,78 @@ export function addLesson(rule, tags = [], { pinned = false, role = null, catego
     pinned: !!pinned,
     role: role || null,
     category: category || inferCategory({ rule, tags }),
+    source: src,
     created_at: new Date().toISOString(),
-  });
-  save(data);
-  log("lessons", `Manual lesson added${pinned ? " [PINNED]" : ""}${role ? ` [${role}]` : ""}: ${rule}`);
+  };
+  if (src === "experiment") {
+    const data = loadExperiment();
+    data.lessons.push(lesson);
+    saveExperiment(data);
+  } else {
+    const data = loadRegular();
+    data.lessons.push(lesson);
+    saveRegular(data);
+  }
+  log("lessons", `Manual lesson added [${src}]${pinned ? " [PINNED]" : ""}${role ? ` [${role}]` : ""}: ${rule}`);
+}
+
+/**
+ * Get lessons derived from experiment positions.
+ * @param {string} [experimentId] - Filter to a specific experiment (e.g. "exp_12345")
+ * @returns {Object[]}
+ */
+export function getExperimentLessons(experimentId = null) {
+  let lessons = loadExperiment().lessons;
+  if (experimentId) lessons = lessons.filter(l => l.experiment_id === experimentId);
+  return lessons;
 }
 
 /**
  * Pin a lesson by ID — pinned lessons are always injected regardless of cap.
  */
 export function pinLesson(id) {
-  const data = load();
-  const lesson = data.lessons.find((l) => l.id === id);
-  if (!lesson) return { found: false };
-  const pinnedCount = data.lessons.filter((l) => l.pinned && l.id !== id).length;
-  if (pinnedCount >= 10) return { found: true, pinned: false, id, rule: lesson.rule, error: "Max 10 pinned lessons reached" };
-  lesson.pinned = true;
-  save(data);
-  log("lessons", `Pinned lesson ${id}: ${lesson.rule.slice(0, 60)}`);
-  return { found: true, pinned: true, id, rule: lesson.rule };
+  // Search both files
+  const reg = loadRegular();
+  let lesson = reg.lessons.find((l) => l.id === id);
+  if (lesson) {
+    const pinnedCount = reg.lessons.filter((l) => l.pinned && l.id !== id).length;
+    if (pinnedCount >= 10) return { found: true, pinned: false, id, rule: lesson.rule, error: "Max 10 pinned lessons reached" };
+    lesson.pinned = true;
+    saveRegular(reg);
+    log("lessons", `Pinned lesson ${id}: ${lesson.rule.slice(0, 60)}`);
+    return { found: true, pinned: true, id, rule: lesson.rule };
+  }
+  const exp = loadExperiment();
+  lesson = exp.lessons.find((l) => l.id === id);
+  if (lesson) {
+    lesson.pinned = true;
+    saveExperiment(exp);
+    log("lessons", `Pinned experiment lesson ${id}: ${lesson.rule.slice(0, 60)}`);
+    return { found: true, pinned: true, id, rule: lesson.rule };
+  }
+  return { found: false };
 }
 
 /**
  * Unpin a lesson by ID.
  */
 export function unpinLesson(id) {
-  const data = load();
-  const lesson = data.lessons.find((l) => l.id === id);
-  if (!lesson) return { found: false };
-  lesson.pinned = false;
-  save(data);
-  return { found: true, pinned: false, id, rule: lesson.rule };
+  const reg = loadRegular();
+  let lesson = reg.lessons.find((l) => l.id === id);
+  if (lesson) { lesson.pinned = false; saveRegular(reg); return { found: true, pinned: false, id, rule: lesson.rule }; }
+  const exp = loadExperiment();
+  lesson = exp.lessons.find((l) => l.id === id);
+  if (lesson) { lesson.pinned = false; saveExperiment(exp); return { found: true, pinned: false, id, rule: lesson.rule }; }
+  return { found: false };
 }
 
 /**
  * List lessons with optional filters — for agent browsing via Telegram.
  */
-export function listLessons({ role = null, pinned = null, tag = null, limit = 30 } = {}) {
-  const data = load();
+export function listLessons({ role = null, pinned = null, tag = null, source = null, limit = 30 } = {}) {
+  const data = source === "experiment" ? loadExperiment()
+             : source === "regular"   ? loadRegular()
+             : loadAll();
   let lessons = [...data.lessons];
 
   if (pinned !== null) lessons = lessons.filter((l) => !!l.pinned === pinned);
@@ -725,33 +796,44 @@ export function listLessons({ role = null, pinned = null, tag = null, limit = 30
  * Remove a lesson by ID.
  */
 export function removeLesson(id) {
-  const data = load();
-  const before = data.lessons.length;
-  data.lessons = data.lessons.filter((l) => l.id !== id);
-  save(data);
-  return before - data.lessons.length;
+  const reg = loadRegular();
+  const regBefore = reg.lessons.length;
+  reg.lessons = reg.lessons.filter((l) => l.id !== id);
+  if (reg.lessons.length < regBefore) { saveRegular(reg); return regBefore - reg.lessons.length; }
+  const exp = loadExperiment();
+  const expBefore = exp.lessons.length;
+  exp.lessons = exp.lessons.filter((l) => l.id !== id);
+  if (exp.lessons.length < expBefore) { saveExperiment(exp); return expBefore - exp.lessons.length; }
+  return 0;
 }
 
 /**
  * Remove lessons matching a keyword in their rule text (case-insensitive).
  */
 export function removeLessonsByKeyword(keyword) {
-  const data = load();
-  const before = data.lessons.length;
   const kw = keyword.toLowerCase();
-  data.lessons = data.lessons.filter((l) => !l.rule.toLowerCase().includes(kw));
-  save(data);
-  return before - data.lessons.length;
+  const reg = loadRegular();
+  const exp = loadExperiment();
+  const regBefore = reg.lessons.length;
+  const expBefore = exp.lessons.length;
+  reg.lessons = reg.lessons.filter((l) => !l.rule.toLowerCase().includes(kw));
+  exp.lessons = exp.lessons.filter((l) => !l.rule.toLowerCase().includes(kw));
+  saveRegular(reg);
+  saveExperiment(exp);
+  return (regBefore - reg.lessons.length) + (expBefore - exp.lessons.length);
 }
 
 /**
  * Clear ALL lessons (keeps performance data).
  */
 export function clearAllLessons() {
-  const data = load();
-  const count = data.lessons.length;
-  data.lessons = [];
-  save(data);
+  const reg = loadRegular();
+  const exp = loadExperiment();
+  const count = reg.lessons.length + exp.lessons.length;
+  reg.lessons = [];
+  exp.lessons = [];
+  saveRegular(reg);
+  saveExperiment(exp);
   return count;
 }
 
@@ -759,10 +841,10 @@ export function clearAllLessons() {
  * Clear ALL performance records.
  */
 export function clearPerformance() {
-  const data = load();
+  const data = loadRegular();
   const count = data.performance.length;
   data.performance = [];
-  save(data);
+  saveRegular(data);
   return count;
 }
 
@@ -792,8 +874,9 @@ export function getLessonsForPrompt(opts = {}) {
 
   const { agentType = "GENERAL", maxLessons } = opts;
 
-  const data = load();
-  if (data.lessons.length === 0) return null;
+  const data = loadRegular();
+  const allLessons = data.lessons;
+  if (allLessons.length === 0) return null;
 
   // No caps — inject all lessons so the agent always applies everything it has learned
   const PINNED_CAP  = Infinity;
@@ -805,7 +888,7 @@ export function getLessonsForPrompt(opts = {}) {
 
   // ── Tier 1: Pinned ──────────────────────────────────────────────
   // Respect role even for pinned lessons — a pinned SCREENER lesson shouldn't pollute MANAGER
-  const pinned = data.lessons
+  const pinned = allLessons
     .filter((l) => l.pinned && (!l.role || l.role === agentType || agentType === "GENERAL"))
     .sort(byPriority)
     .slice(0, PINNED_CAP);
@@ -814,7 +897,7 @@ export function getLessonsForPrompt(opts = {}) {
 
   // ── Tier 2: Role-matched ────────────────────────────────────────
   const roleTags = ROLE_TAGS[agentType] || [];
-  const roleMatched = data.lessons
+  const roleMatched = allLessons
     .filter((l) => {
       if (usedIds.has(l.id)) return false;
       // Include if: lesson has no role restriction OR matches this role
@@ -831,7 +914,7 @@ export function getLessonsForPrompt(opts = {}) {
   // ── Tier 3: Recent fill ─────────────────────────────────────────
   const remainingBudget = RECENT_CAP - pinned.length - roleMatched.length;
   const recent = remainingBudget > 0
-    ? data.lessons
+    ? allLessons
         .filter((l) => !usedIds.has(l.id))
         .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
         .slice(0, remainingBudget)

@@ -13,6 +13,7 @@ import { log } from "./logger.js";
 
 const LESSONS_FILE = "./lessons.json";
 
+/** Load regular lessons only — experiment lessons use different TP/SL context. */
 function loadLessons() {
   if (!fs.existsSync(LESSONS_FILE)) return [];
   try {
@@ -56,7 +57,7 @@ export function isHardRule(rule) {
  * @returns {{ screening: Rule[], management: Rule[], unmatched: string[] }}
  */
 export function extractRules(agentType = "GENERAL") {
-  const lessons = loadLessons();
+  const lessons = loadLessons(); // regular file only — experiments already separated
   const hardLessons = lessons.filter((l) => isHardRule(l.rule));
 
   const screening = [];

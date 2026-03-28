@@ -10,6 +10,7 @@ import { log } from "./logger.js";
 import { getJournalEntries } from "./journal.js";
 
 const LESSONS_FILE = "./lessons.json";
+const EXP_LESSONS_FILE = "./experiment-lessons.json";
 const STATE_FILE = "./state.json";
 
 function loadJson(file) {
@@ -81,9 +82,10 @@ export async function generateReport(period = "daily") {
     ? losses.reduce((s, e) => s + (e.pnl_pct || 0), 0) / losses.length
     : null;
 
-  // Lessons from lessons.json filtered by created_at
-  const lessonsData = loadJson(LESSONS_FILE) || { lessons: [] };
-  const lessonsInPeriod = (lessonsData.lessons || [])
+  // Lessons from both regular + experiment files, filtered by created_at
+  const regLessons = (loadJson(LESSONS_FILE) || { lessons: [] }).lessons || [];
+  const expLessons = (loadJson(EXP_LESSONS_FILE) || { lessons: [] }).lessons || [];
+  const lessonsInPeriod = [...regLessons, ...expLessons]
     .filter(l => l.created_at && l.created_at >= fromISO && l.created_at <= toISO)
     .slice(-5); // cap to last 5 for space
 

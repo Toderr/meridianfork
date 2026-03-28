@@ -21,6 +21,7 @@ const CLAUDE_BIN = "/home/ubuntu/.local/bin/claude";
 const STATE_FILE       = path.join(ROOT, "state.json");
 const JOURNAL_FILE     = path.join(ROOT, "journal.json");
 const LESSONS_FILE     = path.join(ROOT, "lessons.json");
+const EXP_LESSONS_FILE = path.join(ROOT, "experiment-lessons.json");
 const USER_CONFIG_FILE = path.join(ROOT, "user-config.json");
 
 const TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
@@ -33,7 +34,9 @@ function loadJson(file) {
 function buildContext() {
   const state   = loadJson(STATE_FILE)   || {};
   const journal = loadJson(JOURNAL_FILE) || {};
-  const lessons = loadJson(LESSONS_FILE) || {};
+  const regLessons = loadJson(LESSONS_FILE) || {};
+  const expLessons = loadJson(EXP_LESSONS_FILE) || {};
+  const lessons = { lessons: [...(regLessons.lessons || []), ...(expLessons.lessons || [])] };
   const config  = loadJson(USER_CONFIG_FILE) || {};
 
   // Open positions

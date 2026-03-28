@@ -21,6 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
 const CLAUDE_BIN = "/home/ubuntu/.local/bin/claude";
 const LESSONS_FILE = path.join(ROOT, "lessons.json");
+const EXP_LESSONS_FILE = path.join(ROOT, "experiment-lessons.json");
 const USER_CONFIG_FILE = path.join(ROOT, "user-config.json");
 const SKILL_MD_PATH = path.join(
   process.env.HOME || "/home/ubuntu",
@@ -165,8 +166,10 @@ export async function claudeUpdateLessons() {
   try {
     // Load data
     const data = loadJson(LESSONS_FILE) || { lessons: [], performance: [] };
+    const expData = loadJson(EXP_LESSONS_FILE) || { lessons: [] };
     const recentPerf = (data.performance || []).slice(-20);
-    const existingLessons = (data.lessons || []).slice(-15);
+    const allLessons = [...(data.lessons || []), ...(expData.lessons || [])];
+    const existingLessons = allLessons.slice(-15);
     const currentConfig = loadJson(USER_CONFIG_FILE) || {};
 
     if (recentPerf.length < 5) {

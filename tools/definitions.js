@@ -860,6 +860,7 @@ Use to find a lesson ID before pinning/unpinning, or to audit what the agent cur
           role:   { type: "string", enum: ["SCREENER", "MANAGER", "GENERAL"], description: "Filter by role" },
           pinned: { type: "boolean", description: "Filter to only pinned (true) or unpinned (false) lessons" },
           tag:    { type: "string", description: "Filter by a specific tag" },
+          source: { type: "string", enum: ["regular", "experiment"], description: "Filter by lesson source (default: all)" },
           limit:  { type: "number", description: "Max lessons to return (default 30)" }
         }
       }

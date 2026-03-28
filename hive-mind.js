@@ -27,6 +27,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 const LESSONS_FILE = path.join(__dirname, "lessons.json");
+const EXP_LESSONS_FILE = path.join(__dirname, "experiment-lessons.json");
 const POOL_MEMORY_FILE = path.join(__dirname, "pool-memory.json");
 
 const SYNC_DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
@@ -141,8 +142,9 @@ export async function syncToHive() {
     // ── Collect local data ──────────────────────────
 
     // Lessons
-    const lessonsData = readJsonFile(LESSONS_FILE) || { lessons: [], performance: [] };
-    const lessons = lessonsData.lessons || [];
+    const regData = readJsonFile(LESSONS_FILE) || { lessons: [], performance: [] };
+    const expData = readJsonFile(EXP_LESSONS_FILE) || { lessons: [] };
+    const lessons = [...(regData.lessons || []), ...(expData.lessons || [])];
 
     // Pool deploys — flatten all pools' deploy arrays
     const poolMemory = readJsonFile(POOL_MEMORY_FILE) || {};

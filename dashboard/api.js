@@ -16,6 +16,7 @@ import { _stats } from "../stats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LESSONS_PATH = path.join(__dirname, "../lessons.json");
+const EXP_LESSONS_PATH = path.join(__dirname, "../experiment-lessons.json");
 const LOGS_DIR = path.join(__dirname, "../logs");
 
 // ─── Simple TTL cache ──────────────────────────────────────────────────────
@@ -213,14 +214,19 @@ export async function handleJournal(req, res, url) {
   }
 }
 
-export async function handleLessons(req, res) {
+export async function handleLessons(req, res, url) {
   try {
-    // Read full lesson data from lessons.json (listLessons truncates to 120 chars)
+    const source = url?.searchParams?.get("source"); // "regular", "experiment", or null (all)
     let lessons = [];
-    if (fs.existsSync(LESSONS_PATH)) {
-      const raw  = JSON.parse(fs.readFileSync(LESSONS_PATH, "utf8"));
-      lessons    = (raw.lessons || []).slice().reverse(); // newest first
+    if (source !== "experiment" && fs.existsSync(LESSONS_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(LESSONS_PATH, "utf8"));
+      lessons.push(...(raw.lessons || []));
     }
+    if (source !== "regular" && fs.existsSync(EXP_LESSONS_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(EXP_LESSONS_PATH, "utf8"));
+      lessons.push(...(raw.lessons || []));
+    }
+    lessons.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")); // newest first
     json(res, { total: lessons.length, lessons });
   } catch (e) {
     err(res, e.message);

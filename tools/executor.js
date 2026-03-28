@@ -110,7 +110,7 @@ const toolMap = {
   },
   pin_lesson:   ({ id }) => pinLesson(id),
   unpin_lesson: ({ id }) => unpinLesson(id),
-  list_lessons: ({ role, pinned, tag, limit } = {}) => listLessons({ role, pinned, tag, limit }),
+  list_lessons: ({ role, pinned, tag, source, limit } = {}) => listLessons({ role, pinned, tag, source, limit }),
   clear_lessons: ({ mode, keyword }) => {
     if (mode === "all") {
       const n = clearAllLessons();

@@ -69,7 +69,7 @@ export function startDashboard(port = 3000, password = null) {
         if (pathname === "/api/portfolio") return await handlePortfolio(req, res);
         if (pathname === "/api/history")   return await handleHistory(req, res);
         if (pathname === "/api/journal")   return await handleJournal(req, res, url);
-        if (pathname === "/api/lessons")   return await handleLessons(req, res);
+        if (pathname === "/api/lessons")   return await handleLessons(req, res, url);
         if (req.method === "DELETE" && pathname.startsWith("/api/lessons/")) return await handleDeleteLesson(req, res, pathname);
         if (pathname === "/api/logs")      return await handleLogs(req, res, url);
       } catch (e) {
