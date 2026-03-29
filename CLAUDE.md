@@ -96,6 +96,8 @@ Chain: `getMyPositions()` returns `pnl_sol` from Meteora API `pnlSol` → cached
 
 **PnL passthrough**: `closePosition` passes `pnl_usd` from Meteora's API to `recordPerformance`. `lessons.js` uses `perf.pnl_usd` directly when provided, avoiding formula recalculation errors caused by missing `initial_value_usd`.
 
+**On-chain PnL fallback**: Meteora datapi sometimes returns `balances: 0` for tokens it can't price, causing false `-100%` PnL. When detected (`balances=0 && pnlUsd<0`), `getOnChainPositionValue()` in `tools/dlmm.js` fetches the real position value: token amounts from DLMM SDK (`pool.getPosition()`) + USD prices from Jupiter Price API. Used in `getPositionPnl()`, `getMyPositions()`, and `closePosition()`. The fallback returns `{ current_value_usd, unclaimed_fee_usd, fallback: true }` — callers compute PnL from `tracked.initial_value_usd` in state.json.
+
 ## Management Cycle — Report
 
 The `finally` block in the management cycle (`index.js`) sends the Telegram report. It reuses the pre-loaded PnL from the start of the cycle (no re-fetch) so the PnL shown matches what the agent saw. Positions closed during the agent loop are filtered out. Each open position gets its own block with inline reasoning.

@@ -103,6 +103,48 @@ async function getPool(poolAddress) {
 
 setInterval(() => poolCache.clear(), 5 * 60 * 1000);
 
+// ─── On-chain position value fallback (SDK + Jupiter) ──────────
+const JUPITER_PRICE_API = "https://api.jup.ag/price/v3";
+const JUPITER_API_KEY   = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
+
+async function getOnChainPositionValue(poolAddress, positionAddress) {
+  const pool = await getPool(poolAddress);
+  const positionInfo = await pool.getPosition(new PublicKey(positionAddress));
+  const pd = positionInfo.positionData;
+
+  const mintX = pool.lbPair.tokenXMint.toString();
+  const mintY = pool.lbPair.tokenYMint.toString();
+
+  // Token X decimals from on-chain; token Y assumed SOL (9)
+  const mintXInfo = await getConnection().getParsedAccountInfo(new PublicKey(mintX));
+  const decimalsX = mintXInfo.value?.data?.parsed?.info?.decimals ?? 9;
+  const decimalsY = 9;
+
+  // Position amounts + unclaimed fees (in lamports)
+  const totalX = parseFloat(pd.totalXAmount) + parseFloat(pd.feeX.toString());
+  const totalY = parseFloat(pd.totalYAmount) + parseFloat(pd.feeY.toString());
+  const amountX = totalX / Math.pow(10, decimalsX);
+  const amountY = totalY / Math.pow(10, decimalsY);
+
+  // Fee-only amounts
+  const feeAmtX = parseFloat(pd.feeX.toString()) / Math.pow(10, decimalsX);
+  const feeAmtY = parseFloat(pd.feeY.toString()) / Math.pow(10, decimalsY);
+
+  // Fetch USD prices from Jupiter
+  const priceRes = await fetch(`${JUPITER_PRICE_API}?ids=${mintX},${mintY}`, {
+    headers: { "x-api-key": JUPITER_API_KEY },
+  });
+  const priceData = await priceRes.json();
+  const priceX = parseFloat(priceData.data?.[mintX]?.price || 0);
+  const priceY = parseFloat(priceData.data?.[mintY]?.price || 0);
+
+  return {
+    current_value_usd: Math.round((amountX * priceX + amountY * priceY) * 100) / 100,
+    unclaimed_fee_usd: Math.round((feeAmtX * priceX + feeAmtY * priceY) * 100) / 100,
+    fallback: true,
+  };
+}
+
 // ─── Transaction retry wrapper ─────────────────────────────────
 async function sendWithRetry(connection, tx, signers, label = "tx", maxAttempts = 5) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -367,6 +409,32 @@ export async function getPositionPnl({ pool_address, position_address }) {
     const pnlUsdRaw       = parseFloat(p.pnlUsd ?? 0);
     const initialValueUsd = currentValueUsd - pnlUsdRaw;
     const computedPnlPct  = initialValueUsd > 0 ? (pnlUsdRaw + unclaimedUsd) / initialValueUsd * 100 : 0;
+
+    // On-chain fallback: datapi returned balances=0 (pricing failure)
+    if (currentValueUsd === 0 && pnlUsdRaw < 0) {
+      log("pnl_fallback", `datapi balances=0 for ${position_address.slice(0,8)}, trying on-chain fallback`);
+      try {
+        const onchain = await getOnChainPositionValue(pool_address, position_address);
+        return {
+          pnl_usd:           null,
+          pnl_sol:           null,
+          pnl_pct:           null,
+          current_value_usd: onchain.current_value_usd,
+          unclaimed_fee_usd: onchain.unclaimed_fee_usd,
+          all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
+          initial_value_usd: null,
+          in_range:    !p.isOutOfRange,
+          lower_bin:   p.lowerBinId      ?? null,
+          upper_bin:   p.upperBinId      ?? null,
+          active_bin:  p.poolActiveBinId ?? null,
+          age_minutes: p.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
+          fallback:    true,
+        };
+      } catch (e) {
+        log("pnl_fallback", `On-chain fallback failed: ${e.message}`);
+      }
+    }
+
     return {
       pnl_usd:           Math.round(pnlUsdRaw * 100) / 100,
       pnl_sol:           Math.round((parseFloat(p.pnlSol ?? 0)) * 10000) / 10000,
@@ -438,7 +506,7 @@ export async function getMyPositions({ force = false } = {}) {
     const pnlByPool = {};
     uniquePools.forEach((pool, i) => { pnlByPool[pool] = pnlMaps[i]; });
 
-    const positions = raw.map((r) => {
+    const positions = await Promise.all(raw.map(async (r) => {
       const p = pnlByPool[r.pool]?.[r.position] || null;
 
       const inRange = p ? !p.isOutOfRange : true;
@@ -449,15 +517,30 @@ export async function getMyPositions({ force = false } = {}) {
       const upperBin  = p?.upperBinId      ?? r.upper_bin;
       const activeBin = p?.poolActiveBinId ?? null;
 
-      const unclaimedFees = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0;
-      const totalValue    = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0;
+      let unclaimedFees = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0;
+      let totalValue    = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0;
       const collectedFees = p ? parseFloat(p.allTimeFees?.total?.usd || 0) : 0;
-      const pnlUsd          = p?.pnlUsd ?? 0;
-      const initialValueUsd = totalValue - pnlUsd;
-      const pnlPct          = initialValueUsd > 0 ? (pnlUsd + unclaimedFees) / initialValueUsd * 100 : 0;
+      let pnlUsd          = p?.pnlUsd ?? 0;
 
-      // Resolve pair name: tracked state > PnL API > address slice
+      // Resolve pair name: tracked state > PnL API > address slice (moved up for fallback access)
       const tracked = getTrackedPosition(r.position);
+
+      // On-chain fallback: datapi returned balances=0 (pricing failure)
+      if (p && totalValue === 0 && pnlUsd < 0) {
+        try {
+          const onchain = await getOnChainPositionValue(r.pool, r.position);
+          totalValue    = onchain.current_value_usd;
+          unclaimedFees = onchain.unclaimed_fee_usd;
+          const initUsd = tracked?.initial_value_usd || 0;
+          pnlUsd = initUsd > 0 ? (totalValue - initUsd) : 0;
+          log("pnl_fallback", `On-chain fallback for ${r.position.slice(0,8)}: value=$${totalValue}`);
+        } catch (e) {
+          log("pnl_fallback", `On-chain fallback failed for ${r.position.slice(0,8)}: ${e.message}`);
+        }
+      }
+
+      let initialValueUsd = totalValue - pnlUsd;
+      const pnlPct          = initialValueUsd > 0 ? (pnlUsd + unclaimedFees) / initialValueUsd * 100 : 0;
       const pnlPairName = p?.pairName || (p?.tokenName0 && p?.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null);
       const resolvedPair = tracked?.pool_name || pnlPairName || r.pair;
 
@@ -494,7 +577,7 @@ export async function getMyPositions({ force = false } = {}) {
         age_minutes: ageMinutes,
         minutes_out_of_range: minutesOutOfRange(r.position),
       };
-    });
+    }));
 
     // Fallback: fetch pool names from DLMM API for positions still showing address slices
     const needsName = positions.filter(p => p.pair && p.pair.length <= 12 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(p.pair));
@@ -717,7 +800,14 @@ export async function closePosition({ position_address, close_reason }) {
       let finalValueUsd = 0;
       let pnlSolNative = null;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
-      if (freshPnl && !freshPnl.error) {
+      if (freshPnl && !freshPnl.error && freshPnl.fallback) {
+        // On-chain fallback: compute PnL from tracked initial value
+        finalValueUsd = freshPnl.current_value_usd ?? 0;
+        feesUsd       = freshPnl.unclaimed_fee_usd ?? feesUsd;
+        const initUsd = tracked.initial_value_usd || 0;
+        pnlUsd  = initUsd > 0 ? finalValueUsd - initUsd : 0;
+        pnlPct  = initUsd > 0 ? (pnlUsd + feesUsd) / initUsd * 100 : 0;
+      } else if (freshPnl && !freshPnl.error) {
         pnlUsd        = freshPnl.pnl_usd          ?? 0;
         pnlPct        = freshPnl.pnl_pct          ?? 0;
         pnlSolNative  = freshPnl.pnl_sol          ?? null;
