@@ -7,7 +7,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { getJournalEntries } from "../journal.js";
+import { getJournalEntries, removeJournalEntry, updateJournalEntry } from "../journal.js";
 import { getMyPositions } from "../tools/dlmm.js";
 import { getWalletBalances } from "../tools/wallet.js";
 import { getTrackedPositions, getStateSummary } from "../state.js";
@@ -243,6 +243,43 @@ export async function handleDeleteLesson(req, res, pathname) {
   } catch (e) {
     err(res, e.message);
   }
+}
+
+export async function handleDeleteJournal(req, res, pathname) {
+  try {
+    const id = parseInt(pathname.split("/").pop(), 10);
+    if (!id || isNaN(id)) { err(res, "Invalid journal entry ID", 400); return; }
+    const removed = removeJournalEntry(id);
+    if (!removed) { err(res, "Journal entry not found", 404); return; }
+    portfolioCache.invalidate();
+    json(res, { ok: true, removed });
+  } catch (e) {
+    err(res, e.message);
+  }
+}
+
+export async function handleUpdateJournal(req, res, pathname) {
+  try {
+    const id = parseInt(pathname.split("/").pop(), 10);
+    if (!id || isNaN(id)) { err(res, "Invalid journal entry ID", 400); return; }
+    const body = await readBody(req);
+    const fields = JSON.parse(body);
+    const updated = updateJournalEntry(id, fields);
+    if (!updated) { err(res, "Journal entry not found", 404); return; }
+    portfolioCache.invalidate();
+    json(res, { ok: true, entry: updated });
+  } catch (e) {
+    err(res, e.message);
+  }
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", c => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
+    req.on("error", reject);
+  });
 }
 
 export async function handleLogs(req, res, url) {

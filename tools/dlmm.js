@@ -108,41 +108,49 @@ const JUPITER_PRICE_API = "https://api.jup.ag/price/v3";
 const JUPITER_API_KEY   = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
 async function getOnChainPositionValue(poolAddress, positionAddress) {
-  const pool = await getPool(poolAddress);
-  const positionInfo = await pool.getPosition(new PublicKey(positionAddress));
-  const pd = positionInfo.positionData;
+  // 15s timeout — prevents hanging RPC/Jupiter calls from blocking getMyPositions
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const pool = await getPool(poolAddress);
+    const positionInfo = await pool.getPosition(new PublicKey(positionAddress));
+    const pd = positionInfo.positionData;
 
-  const mintX = pool.lbPair.tokenXMint.toString();
-  const mintY = pool.lbPair.tokenYMint.toString();
+    const mintX = pool.lbPair.tokenXMint.toString();
+    const mintY = pool.lbPair.tokenYMint.toString();
 
-  // Token X decimals from on-chain; token Y assumed SOL (9)
-  const mintXInfo = await getConnection().getParsedAccountInfo(new PublicKey(mintX));
-  const decimalsX = mintXInfo.value?.data?.parsed?.info?.decimals ?? 9;
-  const decimalsY = 9;
+    // Token X decimals from on-chain; token Y assumed SOL (9)
+    const mintXInfo = await getConnection().getParsedAccountInfo(new PublicKey(mintX));
+    const decimalsX = mintXInfo.value?.data?.parsed?.info?.decimals ?? 9;
+    const decimalsY = 9;
 
-  // Position amounts + unclaimed fees (in lamports)
-  const totalX = parseFloat(pd.totalXAmount) + parseFloat(pd.feeX.toString());
-  const totalY = parseFloat(pd.totalYAmount) + parseFloat(pd.feeY.toString());
-  const amountX = totalX / Math.pow(10, decimalsX);
-  const amountY = totalY / Math.pow(10, decimalsY);
+    // Position amounts + unclaimed fees (in lamports)
+    const totalX = parseFloat(pd.totalXAmount) + parseFloat(pd.feeX.toString());
+    const totalY = parseFloat(pd.totalYAmount) + parseFloat(pd.feeY.toString());
+    const amountX = totalX / Math.pow(10, decimalsX);
+    const amountY = totalY / Math.pow(10, decimalsY);
 
-  // Fee-only amounts
-  const feeAmtX = parseFloat(pd.feeX.toString()) / Math.pow(10, decimalsX);
-  const feeAmtY = parseFloat(pd.feeY.toString()) / Math.pow(10, decimalsY);
+    // Fee-only amounts
+    const feeAmtX = parseFloat(pd.feeX.toString()) / Math.pow(10, decimalsX);
+    const feeAmtY = parseFloat(pd.feeY.toString()) / Math.pow(10, decimalsY);
 
-  // Fetch USD prices from Jupiter
-  const priceRes = await fetch(`${JUPITER_PRICE_API}?ids=${mintX},${mintY}`, {
-    headers: { "x-api-key": JUPITER_API_KEY },
-  });
-  const priceData = await priceRes.json();
-  const priceX = parseFloat(priceData.data?.[mintX]?.price || 0);
-  const priceY = parseFloat(priceData.data?.[mintY]?.price || 0);
+    // Fetch USD prices from Jupiter
+    const priceRes = await fetch(`${JUPITER_PRICE_API}?ids=${mintX},${mintY}`, {
+      headers: { "x-api-key": JUPITER_API_KEY },
+      signal: controller.signal,
+    });
+    const priceData = await priceRes.json();
+    const priceX = parseFloat(priceData.data?.[mintX]?.price || 0);
+    const priceY = parseFloat(priceData.data?.[mintY]?.price || 0);
 
-  return {
-    current_value_usd: Math.round((amountX * priceX + amountY * priceY) * 100) / 100,
-    unclaimed_fee_usd: Math.round((feeAmtX * priceX + feeAmtY * priceY) * 100) / 100,
-    fallback: true,
-  };
+    return {
+      current_value_usd: Math.round((amountX * priceX + amountY * priceY) * 100) / 100,
+      unclaimed_fee_usd: Math.round((feeAmtX * priceX + feeAmtY * priceY) * 100) / 100,
+      fallback: true,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ─── Transaction retry wrapper ─────────────────────────────────
@@ -414,7 +422,10 @@ export async function getPositionPnl({ pool_address, position_address }) {
     if (currentValueUsd === 0 && pnlUsdRaw < 0) {
       log("pnl_fallback", `datapi balances=0 for ${position_address.slice(0,8)}, trying on-chain fallback`);
       try {
-        const onchain = await getOnChainPositionValue(pool_address, position_address);
+        const onchain = await Promise.race([
+          getOnChainPositionValue(pool_address, position_address),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("on-chain fallback timeout")), 20_000)),
+        ]);
         return {
           pnl_usd:           null,
           pnl_sol:           null,
@@ -428,6 +439,7 @@ export async function getPositionPnl({ pool_address, position_address }) {
           upper_bin:   p.upperBinId      ?? null,
           active_bin:  p.poolActiveBinId ?? null,
           age_minutes: p.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
+          pair_name: p.pairName || (p.tokenName0 && p.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null),
           fallback:    true,
         };
       } catch (e) {
@@ -448,6 +460,7 @@ export async function getPositionPnl({ pool_address, position_address }) {
       upper_bin:   p.upperBinId      ?? null,
       active_bin:  p.poolActiveBinId ?? null,
       age_minutes: p.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
+      pair_name: p.pairName || (p.tokenName0 && p.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null),
     };
   } catch (error) {
     log("pnl_error", error.message);
@@ -520,7 +533,7 @@ export async function getMyPositions({ force = false } = {}) {
       let unclaimedFees = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0;
       let totalValue    = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0;
       const collectedFees = p ? parseFloat(p.allTimeFees?.total?.usd || 0) : 0;
-      let pnlUsd          = p?.pnlUsd ?? 0;
+      let pnlUsd          = parseFloat(p?.pnlUsd ?? 0);
 
       // Resolve pair name: tracked state > PnL API > address slice (moved up for fallback access)
       const tracked = getTrackedPosition(r.position);
@@ -528,7 +541,10 @@ export async function getMyPositions({ force = false } = {}) {
       // On-chain fallback: datapi returned balances=0 (pricing failure)
       if (p && totalValue === 0 && pnlUsd < 0) {
         try {
-          const onchain = await getOnChainPositionValue(r.pool, r.position);
+          const onchain = await Promise.race([
+            getOnChainPositionValue(r.pool, r.position),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("on-chain fallback timeout")), 20_000)),
+          ]);
           totalValue    = onchain.current_value_usd;
           unclaimedFees = onchain.unclaimed_fee_usd;
           const initUsd = tracked?.initial_value_usd || 0;
@@ -781,6 +797,23 @@ export async function closePosition({ position_address, close_reason }) {
     // Wait for RPC to reflect withdrawn balances before returning — prevents
     // agent from seeing zero balance when attempting post-close swap
     await new Promise(r => setTimeout(r, 5000));
+
+    // Resolve pool name — prefer state, then PnL API, then Meteora pool API
+    const trackedPre = getTrackedPosition(position_address);
+    let poolName = trackedPre?.pool_name || freshPnl?.pair_name || null;
+    if (!poolName) {
+      try {
+        const { getPoolDetail } = await import("./screening.js");
+        const detail = await getPoolDetail({ pool_address: poolAddress.toString() });
+        poolName = detail?.name || null;
+      } catch (_) {}
+    }
+    poolName = poolName || poolAddress.toString().slice(0, 8);
+    // Backfill state.json so future lookups succeed immediately
+    if (poolName && trackedPre && !trackedPre.pool_name) {
+      updatePoolName(position_address, poolName);
+    }
+
     recordClose(position_address, close_reason || "agent decision");
 
     // Record performance for learning
@@ -833,7 +866,7 @@ export async function closePosition({ position_address, close_reason }) {
       await recordPerformance({
         position: position_address,
         pool: poolAddress,
-        pool_name: tracked.pool_name || poolAddress.slice(0, 8),
+        pool_name: poolName,
         strategy: tracked.strategy,
         bin_range: tracked.bin_range,
         bin_step: tracked.bin_step || null,
@@ -853,10 +886,10 @@ export async function closePosition({ position_address, close_reason }) {
         variant: tracked.variant || null,
       });
 
-      return { success: true, position: position_address, pool: poolAddress, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, base_mint: pool.lbPair.tokenXMint.toString() };
+      return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, base_mint: pool.lbPair.tokenXMint.toString() };
     }
 
-    return { success: true, position: position_address, pool: poolAddress, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };
+    return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };
   } catch (error) {
     log("close_error", error.message);
     return { success: false, error: error.message };

@@ -162,6 +162,14 @@ export async function getWalletBalances() {
     return res.json();
   }
 
+  // Fallback: get SOL balance directly from RPC when Helius is unavailable
+  async function fetchSolBalanceViaRpc() {
+    const lamports = await getConnection().getBalance(new PublicKey(walletAddress));
+    const sol = lamports / LAMPORTS_PER_SOL;
+    log("wallet", `RPC fallback SOL balance: ${sol.toFixed(4)}`);
+    return sol;
+  }
+
   try {
     let data;
     try {
@@ -171,6 +179,25 @@ export async function getWalletBalances() {
         log("wallet", `Connection error fetching balances, checking RPC health...`);
         await _checkRpcHealth();
         data = await fetchBalances();
+      } else if (e.message.includes("429")) {
+        // Rate limited — retry once after 2s, then fall back to RPC for SOL balance
+        log("wallet", `Helius rate limited (429), retrying in 2s...`);
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          data = await fetchBalances();
+        } catch {
+          const solViaRpc = await fetchSolBalanceViaRpc();
+          return {
+            wallet: walletAddress,
+            sol: Math.round(solViaRpc * 1e6) / 1e6,
+            sol_price: 0,
+            sol_usd: 0,
+            usdc: 0,
+            tokens: [],
+            total_usd: 0,
+            rpc_fallback: true,
+          };
+        }
       } else {
         throw e;
       }
@@ -205,16 +232,31 @@ export async function getWalletBalances() {
     };
   } catch (error) {
     log("wallet_error", error.message);
-    return {
-      wallet: walletAddress,
-      sol: 0,
-      sol_price: 0,
-      sol_usd: 0,
-      usdc: 0,
-      tokens: [],
-      total_usd: 0,
-      error: error.message,
-    };
+    // Last resort: get SOL balance from RPC so screening isn't blocked by Helius outages
+    try {
+      const solViaRpc = await fetchSolBalanceViaRpc();
+      return {
+        wallet: walletAddress,
+        sol: Math.round(solViaRpc * 1e6) / 1e6,
+        sol_price: 0,
+        sol_usd: 0,
+        usdc: 0,
+        tokens: [],
+        total_usd: 0,
+        rpc_fallback: true,
+      };
+    } catch {
+      return {
+        wallet: walletAddress,
+        sol: 0,
+        sol_price: 0,
+        sol_usd: 0,
+        usdc: 0,
+        tokens: [],
+        total_usd: 0,
+        error: error.message,
+      };
+    }
   }
 }
 
@@ -326,6 +368,72 @@ export async function sweepDustTokens() {
     }
   }
   return results;
+}
+
+/**
+ * Sweep ALL non-SOL tokens (any USD value > 0) back to SOL via swap.
+ * Used by /withdraw to convert everything to SOL after closing all positions.
+ */
+export async function sweepAllTokensToSol() {
+  const balances = await getWalletBalances({});
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  const tokens = (balances.tokens || []).filter(t => t.usd > 0 && t.mint !== SOL_MINT);
+  const results = [];
+  for (const token of tokens) {
+    try {
+      const result = await swapToken({ input_mint: token.mint, output_mint: "SOL", amount: token.balance });
+      results.push({ mint: token.mint, symbol: token.symbol, usd_value: token.usd, success: result?.success !== false });
+      log("sweep_all", `Swapped ${token.symbol || token.mint.slice(0, 8)} ($${token.usd.toFixed(2)}) → SOL`);
+    } catch (e) {
+      results.push({ mint: token.mint, symbol: token.symbol, usd_value: token.usd, success: false, error: e.message });
+      log("sweep_all_error", `Failed to sweep ${token.symbol || token.mint.slice(0, 8)}: ${e.message}`);
+    }
+  }
+  return results;
+}
+
+/**
+ * Swap all non-SOL tokens to SOL after a position close.
+ * Attempts to swap all tokens with balance >= $0.10, then re-checks and retries
+ * up to maxRounds times until no swappable tokens remain.
+ */
+export async function swapAllTokensAfterClose({ maxRounds = 3 } = {}) {
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  const allResults = [];
+
+  for (let round = 1; round <= maxRounds; round++) {
+    // Wait for RPC to reflect balances (first round waits longer)
+    await new Promise(r => setTimeout(r, round === 1 ? 3000 : 5000));
+
+    const balances = await getWalletBalances({});
+    const tokens = (balances.tokens || []).filter(t => t.usd >= 0.10 && t.mint !== SOL_MINT);
+
+    if (tokens.length === 0) {
+      log("post_close_swap", `Round ${round}: no tokens to swap — all clear`);
+      break;
+    }
+
+    log("post_close_swap", `Round ${round}: found ${tokens.length} token(s) to swap → SOL`);
+
+    for (const token of tokens) {
+      // Skip if already successfully swapped in a previous round
+      if (allResults.some(r => r.mint === token.mint && r.success)) continue;
+
+      try {
+        const result = await swapToken({ input_mint: token.mint, output_mint: "SOL", amount: token.balance });
+        const success = result?.success !== false && !result?.skipped;
+        allResults.push({ mint: token.mint, symbol: token.symbol, usd: token.usd, success, round });
+        if (success) {
+          log("post_close_swap", `Swapped ${token.symbol || token.mint.slice(0, 8)} ($${token.usd.toFixed(2)}) → SOL`);
+        }
+      } catch (e) {
+        allResults.push({ mint: token.mint, symbol: token.symbol, usd: token.usd, success: false, error: e.message, round });
+        log("post_close_swap_error", `Failed to swap ${token.symbol || token.mint.slice(0, 8)}: ${e.message}`);
+      }
+    }
+  }
+
+  return allResults;
 }
 
 async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps = 300 }) {

@@ -186,6 +186,43 @@ export function getJournalEntries({ from, to, type } = {}) {
   return entries;
 }
 
+// ─── Mutations ────────────────────────────────────────────────
+
+/**
+ * Remove a journal entry by ID.
+ * @param {number} id
+ * @returns {number|undefined} Number of entries removed, or undefined if not found.
+ */
+export function removeJournalEntry(id) {
+  const data = load();
+  const before = data.entries.length;
+  data.entries = data.entries.filter(e => e.id !== id);
+  if (data.entries.length < before) {
+    save(data);
+    return before - data.entries.length;
+  }
+  return undefined;
+}
+
+/**
+ * Update editable fields on a journal entry by ID.
+ * Only allows editing: pool_name, strategy, close_reason, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, amount_sol.
+ * @param {number} id
+ * @param {Object} fields — key/value pairs to update
+ * @returns {Object|undefined} Updated entry, or undefined if not found.
+ */
+export function updateJournalEntry(id, fields) {
+  const EDITABLE = ["pool_name", "strategy", "close_reason", "pnl_usd", "pnl_sol", "pnl_pct", "fees_earned_usd", "amount_sol"];
+  const data = load();
+  const entry = data.entries.find(e => e.id === id);
+  if (!entry) return undefined;
+  for (const key of EDITABLE) {
+    if (key in fields) entry[key] = fields[key];
+  }
+  save(data);
+  return entry;
+}
+
 // ─── Backfill ──────────────────────────────────────────────────
 
 /**

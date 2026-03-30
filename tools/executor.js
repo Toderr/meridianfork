@@ -11,7 +11,7 @@ import {
   withdrawLiquidity,
   addLiquidity,
 } from "./dlmm.js";
-import { getWalletBalances, swapToken } from "./wallet.js";
+import { getWalletBalances, swapToken, swapAllTokensAfterClose } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
 import { setPositionInstruction, getTrackedPosition } from "../state.js";
@@ -371,7 +371,7 @@ export async function executeTool(name, args) {
       } else if (name === "close_position") {
         _stats.positionsClosed++;
         const _tracked = getTrackedPosition(args.position_address);
-        const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
+        const _pair = _tracked?.pool_name || result.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
         _flags.gasLowNotified = false;       // position closed — SOL may have returned, allow fresh gas warning
         _flags.maxPositionsNotified = false; // slot freed — allow next max-positions warning
@@ -389,20 +389,20 @@ export async function executeTool(name, args) {
             });
           }).catch(e => log("experiment_error", `Experiment hook failed: ${e.message}`));
         }
-        // Auto-swap base token back to SOL unless user said to hold
-        if (!args.skip_swap && result.base_mint) {
+        // Auto-swap ALL non-SOL tokens back to SOL unless user said to hold
+        if (!args.skip_swap) {
           try {
-            const balances = await getWalletBalances({});
-            const token = balances.tokens?.find(t => t.mint === result.base_mint);
-            if (token && token.usd >= 0.10) {
-              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-              const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
-              if (swapResult?.success !== false) {
-                notifySwap({ pair: _pair, tokenSymbol: token.symbol || result.base_mint.slice(0, 8), usdValue: token.usd }).catch(() => {});
-              }
+            const swapResults = await swapAllTokensAfterClose({ maxRounds: 3 });
+            const swapped = swapResults.filter(r => r.success);
+            for (const s of swapped) {
+              notifySwap({ pair: _pair, tokenSymbol: s.symbol || s.mint.slice(0, 8), usdValue: s.usd }).catch(() => {});
+            }
+            const failed = swapResults.filter(r => !r.success);
+            if (failed.length > 0) {
+              log("executor_warn", `Post-close swap: ${failed.length} token(s) could not be swapped: ${failed.map(f => f.symbol || f.mint.slice(0, 8)).join(", ")}`);
             }
           } catch (e) {
-            log("executor_warn", `Auto-swap after close failed: ${e.message}`);
+            log("executor_warn", `Post-close swap failed: ${e.message}`);
           }
         }
       }

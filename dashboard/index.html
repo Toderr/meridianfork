@@ -336,6 +336,23 @@ tbody td { padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.022); 
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: rgba(255,255,255,0.016); }
 td.nm { font-size: 12px; font-weight: 600; }
+.jour-actions { white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
+.jour-row:hover .jour-actions { opacity: 1; }
+.jour-btn { background: none; border: none; cursor: pointer; font-size: 13px; padding: 2px 5px; border-radius: 4px; transition: background 0.15s; }
+.jour-edit { color: var(--accent); }
+.jour-edit:hover { background: rgba(99,102,241,0.15); }
+.jour-del { color: var(--cn); }
+.jour-del:hover { background: rgba(255,80,80,0.15); }
+.jour-modal-overlay { position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000; }
+.jour-modal { background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;min-width:340px;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,0.4); }
+.jour-modal h3 { margin:0 0 16px;font-size:15px;color:var(--text); }
+.jour-modal label { display:block;font-size:11px;color:var(--muted);margin:8px 0 3px;text-transform:uppercase;letter-spacing:0.5px; }
+.jour-modal input,.jour-modal textarea { width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;box-sizing:border-box; }
+.jour-modal textarea { resize:vertical;min-height:50px; }
+.jour-modal-btns { display:flex;gap:8px;justify-content:flex-end;margin-top:16px; }
+.jour-modal-btns button { padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:12px; }
+.jour-modal-btns .jour-save { background:var(--accent);color:#fff; }
+.jour-modal-btns .jour-cancel { background:var(--border);color:var(--text); }
 td.pv { color: var(--green); }
 td.nv { color: var(--red); }
 
@@ -692,9 +709,10 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
                   <th data-col="pnl_usd" style="cursor:pointer" id="jour-th-pnl">PnL</th>
                   <th>Fees $</th><th>Reason</th>
                   <th data-col="timestamp" style="cursor:pointer">Date</th>
+                  <th style="width:56px"></th>
                 </tr>
               </thead>
-              <tbody id="journal-tbody"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+              <tbody id="journal-tbody"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -1233,7 +1251,7 @@ function renderJournal() {
   const sol = _unit === "sol";
   if ($("jour-th-amount")) $("jour-th-amount").textContent = "Amount";
   if ($("jour-th-pnl"))    $("jour-th-pnl").textContent    = sol ? "PnL SOL" : "PnL";
-  if (!data.length) { tbody.innerHTML='<tr><td colspan="8" class="empty">No journal entries yet</td></tr>'; return; }
+  if (!data.length) { tbody.innerHTML='<tr><td colspan="9" class="empty">No journal entries yet</td></tr>'; return; }
 
   tbody.innerHTML = data.map(r => {
     let badge="";
@@ -1251,10 +1269,11 @@ function renderJournal() {
     }
     const fees = r.fees_earned_usd!=null?"$"+f(r.fees_earned_usd,2):r.fees_usd!=null?"$"+f(r.fees_usd,2):"—";
     const jIdx = data.indexOf(r);
-    return `<tr style="animation-delay:${Math.min(jIdx,14)*0.03}s">
+    return `<tr style="animation-delay:${Math.min(jIdx,14)*0.03}s" class="jour-row">
       <td>${badge}</td><td class="nm">${r.pool_name||"—"}</td><td>${r.strategy||"—"}${fmtRange(r.bin_range,r.bin_step) ? `<br><span style="font-size:9px;color:var(--muted)">${fmtRange(r.bin_range,r.bin_step)}</span>` : ""}</td>
       <td>${amountCell}</td><td>${pnlCell}</td><td>${fees}</td>
       <td>${r.close_reason||"—"}</td><td>${fmtDate(r.timestamp)}</td>
+      <td class="jour-actions"><button class="jour-btn jour-edit" title="Edit" onclick="editJournal(${r.id})">&#9998;</button><button class="jour-btn jour-del" title="Delete" onclick="deleteJournal(${r.id})">&#10005;</button></td>
     </tr>`;
   }).join("");
 }
@@ -1273,6 +1292,70 @@ document.getElementById("journal-thead").addEventListener("click", e => {
     : {col:th.dataset.col, dir:"desc"};
   renderJournal();
 });
+
+async function deleteJournal(id) {
+  if (!confirm("Delete this journal entry?")) return;
+  try {
+    await fetch(`/api/journal/${id}`, { method: "DELETE" });
+    await fetchJournal();
+  } catch { alert("Failed to delete journal entry."); }
+}
+
+function editJournal(id) {
+  const entry = _journal.find(e => e.id === id);
+  if (!entry) return;
+  const overlay = document.createElement("div");
+  overlay.className = "jour-modal-overlay";
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+
+  const fields = [
+    { key: "pool_name", label: "Pool Name", type: "text" },
+    { key: "strategy", label: "Strategy", type: "text" },
+    { key: "amount_sol", label: "Amount SOL", type: "number" },
+    { key: "pnl_usd", label: "PnL USD", type: "number" },
+    { key: "pnl_sol", label: "PnL SOL", type: "number" },
+    { key: "pnl_pct", label: "PnL %", type: "number" },
+    { key: "fees_earned_usd", label: "Fees USD", type: "number" },
+    { key: "close_reason", label: "Close Reason", type: "textarea" },
+  ];
+
+  overlay.innerHTML = `<div class="jour-modal">
+    <h3>Edit Journal Entry</h3>
+    ${fields.map(f => {
+      const val = entry[f.key] ?? "";
+      if (f.type === "textarea") return `<label>${f.label}</label><textarea id="je-${f.key}">${val}</textarea>`;
+      return `<label>${f.label}</label><input type="${f.type}" id="je-${f.key}" value="${val}" ${f.type==="number"?"step=any":""}/>`;
+    }).join("")}
+    <div class="jour-modal-btns">
+      <button class="jour-cancel" onclick="this.closest('.jour-modal-overlay').remove()">Cancel</button>
+      <button class="jour-save" id="je-save">Save</button>
+    </div>
+  </div>`;
+
+  document.body.appendChild(overlay);
+  overlay.querySelector("#je-save").onclick = async () => {
+    const updates = {};
+    for (const f of fields) {
+      const el = document.getElementById(`je-${f.key}`);
+      if (!el) continue;
+      const raw = el.value;
+      if (f.type === "number") {
+        if (raw !== "" && raw !== "null") updates[f.key] = parseFloat(raw);
+      } else {
+        updates[f.key] = raw;
+      }
+    }
+    try {
+      await fetch(`/api/journal/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      overlay.remove();
+      await fetchJournal();
+    } catch { alert("Failed to update journal entry."); }
+  };
+}
 
 $("hist-search").addEventListener("input", renderHistory);
 

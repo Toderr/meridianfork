@@ -18,7 +18,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `agent.js` | Core ReAct agent loop (OpenRouter API) |
 | `config.js` | Config loader with hot-reload for `user-config.json` |
 | `tools/dlmm.js` | Meteora DLMM SDK — deploy/close/PnL/positions |
-| `tools/wallet.js` | Wallet balance + SOL price |
+| `tools/wallet.js` | Wallet balance, SOL price, Jupiter swaps (`swapAllTokensAfterClose`) |
 | `tools/screening.js` | Pool discovery and candidate scoring |
 | `tools/executor.js` | Tool dispatch, post-tool hooks (notify, journal, sync) |
 | `tools/definitions.js` | LLM tool schemas for all agent roles |
@@ -94,6 +94,8 @@ Chain: `getMyPositions()` returns `pnl_sol` from Meteora API `pnlSol` → cached
 
 **Pair name resolution** in `getMyPositions()`: tracked state `pool_name` → PnL API `pairName` (or `tokenName0-tokenName1`) → `getPoolDetail()` fallback → address slice. Discovered names are backfilled into state.json via `updatePoolName()` so they persist for future calls.
 
+**Pair name resolution at close time**: `closePosition()` also resolves `pool_name` before `recordClose` using the same chain: state.json → `freshPnl.pair_name` (from PnL API, already fetched) → `getPoolDetail()` → address slice. The resolved name is backfilled into state.json and included in the return value as `pool_name`. `executor.js` uses `result.pool_name` as a fallback when `_tracked?.pool_name` is missing, so close notifications and journal entries always show the real pair name. `getPositionPnl()` now includes `pair_name` in its return value.
+
 **PnL passthrough**: `closePosition` passes `pnl_usd` from Meteora's API to `recordPerformance`. `lessons.js` uses `perf.pnl_usd` directly when provided, avoiding formula recalculation errors caused by missing `initial_value_usd`.
 
 **On-chain PnL fallback**: Meteora datapi sometimes returns `balances: 0` for tokens it can't price, causing false `-100%` PnL. When detected (`balances=0 && pnlUsd<0`), `getOnChainPositionValue()` in `tools/dlmm.js` fetches the real position value: token amounts from DLMM SDK (`pool.getPosition()`) + USD prices from Jupiter Price API. Used in `getPositionPnl()`, `getMyPositions()`, and `closePosition()`. The fallback returns `{ current_value_usd, unclaimed_fee_usd, fallback: true }` — callers compute PnL from `tracked.initial_value_usd` in state.json.
@@ -159,7 +161,7 @@ All notifications use plain-text format (no HTML bold). Format:
 
 - **Close format**: `💰 PnL: +$0.02 | +0.0000 SOL | +0.04%` — all three values (USD, SOL, %). Close notifications include fees in all values (fees are claimed at close).
 - **Management report PnL**: price PnL (USD, SOL) on one line, unclaimed fees + total % on a separate line. This avoids confusion where pnl_pct (fee-inclusive) differs in sign from pnl_usd/sol (price-only).
-- **Gas low**: sent once when SOL is insufficient; suppressed until a position closes. Uses `_flags.gasLowNotified` in `stats.js`.
+- **Gas low**: sent when SOL is insufficient; re-sent every 30 minutes while balance remains low. Uses `_flags.gasLowNotified` + `_flags.gasLowNotifiedAt` in `stats.js`. Reset when a position closes or balance recovers.
 - **Max positions**: sent once when slot limit is hit; suppressed until a position closes. Uses `_flags.maxPositionsNotified` in `stats.js`.
 
 ## Journal Bot (telegram-journal.js)
@@ -250,6 +252,7 @@ On failure, each attempt logs `[retry] <label> attempt N/5 failed (...), retryin
 | `/report [daily\|weekly\|monthly]` | Trading report |
 | `/claude <question>` | Ask Claude anything — loads runtime context (positions, journal, lessons, config), answers via `claude --print`. Supports "take lesson" → outputs `LESSON: ...` and "update config" → outputs `CONFIG: key=value` |
 | `/review` | Manually trigger Claude lesson updater |
+| `/withdraw` | Zap out all — close every open position, swap all tokens to SOL, report final balance |
 
 ## VPS Deployment
 
@@ -303,7 +306,7 @@ close_position (on-chain claim + remove liquidity)
 → recordClose (state.json) → recordPerformance (lessons.json + derivLesson)
 → every 5 positions: evolveThresholds (auto-tune config)
 → recordJournalClose (journal.json with native pnl_sol)
-→ auto-swap base token to SOL (if >= $0.10) → notifyClose (Telegram)
+→ auto-swap ALL non-SOL tokens to SOL (up to 3 rounds with re-check) → notifyClose (Telegram)
 → syncToHive() (upload deploy history + lessons to hive network)
 → _flags.gasLowNotified = false (reset gas warning)
 ```
@@ -370,6 +373,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Pinned lesson cap**: Max 10 pinned lessons. `pinLesson()` returns `{ error }` if cap is reached without saving.
 - **Dashboard lesson delete**: Dashboard lessons grid has a per-card delete button (✕, appears on hover). Calls `DELETE /api/lessons/:id`.
 - **Dashboard lessons filter**: `GET /api/lessons?source=regular|experiment` filters by lesson source. Without param, returns all.
+- **Dashboard journal edit/delete**: Journal table has per-row action buttons (✎ edit, ✕ delete) visible on row hover. Delete calls `DELETE /api/journal/:id`. Edit opens a modal to update: pool_name, strategy, amount_sol, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, close_reason — calls `PUT /api/journal/:id`. Both mutations invalidate the portfolio cache. Backend: `removeJournalEntry(id)` and `updateJournalEntry(id, fields)` in `journal.js`.
 - **Dashboard position tiers**: Active positions are grouped by volatility tier (High ≥ 5, Medium 2–5, Low < 2, null → Medium). Each tier has a color-coded header (red/yellow/green) with position count. Empty tiers are hidden.
 - **Lesson enforcement (3-layer)**:
   1. **Prompt** — HARD RULES (AVOID/NEVER/SKIP/FAILED keywords) shown in numbered checklist with `❌ VIOLATION = ACTION BLOCKED` warning. GUIDANCE (PREFER/WORKED/CONSIDER) shown separately as secondary.
