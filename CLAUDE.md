@@ -86,6 +86,13 @@ If the primary model fails 3 times (empty response, provider error, or timeout),
 ### Hot-reload
 `user-config.json` is watched via `fs.watchFile` (2s interval). Changes to screening thresholds, management settings, risk limits, strategy, and LLM models apply without restart. `rpcUrl`, `walletKey`, `dryRun`, and schedule intervals require restart.
 
+### Helius API Key Rotation
+`getWalletBalances()` in `tools/wallet.js` uses the Helius wallet balance API. Supports two keys: `HELIUS_API_KEY` and `HELIUS_API_KEY_2` (both in `.env`). On 429, rotates to the other key and retries immediately. If both keys are exhausted, falls back to RPC for SOL-only balance (`rpc_fallback: true`, empty `tokens[]`). A `⚠️ HELIUS RATE LIMIT` notice is sent to the journal bot (throttled to once per hour).
+
+**Post-close swap RPC fallback**: When Helius is unavailable, `swapAllTokensAfterClose` queries the target token balance directly from RPC via `getParsedTokenAccountsByOwner`, bypassing Helius entirely. This ensures the base token from a closed position is always swapped to SOL even during Helius outages.
+
+**Report footers** do not fetch wallet balance — only show `⏰ Next: Xm` to avoid unnecessary Helius calls.
+
 ## SOL PnL — Important
 
 **Never compute `pnl_sol` via USD conversion.** The Meteora DLMM API returns native SOL fields: `pnlSol`, `balancesSol`, `amountSol`. Use these directly.
@@ -132,7 +139,7 @@ OTHER-SOL [━━━━━━━━━━━━━━━●] ⚠️
 💡 STAY — OOR 2 bins, below 5-bin threshold
 
 ———————————
-💰 Balance: 0.32 SOL | ⏰ Next: 5m
+⏰ Next: 5m
 ```
 
 **Invested amount fallback**: `invested_sol` and `initial_value_usd` are sourced from state.json first. If a position is untracked (no state.json entry), fallbacks from the Meteora PnL API are used: `amountSol` for SOL amount, `balances - pnlUsd` for USD initial value. When only USD is available, the report shows `💵 Invested: ~$X.XX` (tilde signals API-derived estimate). Fields: `getMyPositions()` returns `amount_sol_api` and `initial_value_usd_api`; `getPositionPnl()` returns `initial_value_usd`.
@@ -156,6 +163,7 @@ All notifications use plain-text format (no HTML bold). Format:
 | Gas low | `⛽ LOW GAS` | |
 | Max positions | `📵 MAX POSITIONS` | |
 | Threshold evolved | `🧠 THRESHOLD EVOLVED` | field, old→new value, reason |
+| Helius rate limit | `⚠️ HELIUS RATE LIMIT` | journal bot, throttled 1x/hour |
 | Screening report | `🔍 SCREEN` | |
 | Management report | `🔄 MANAGE` | per-position: PnL, age, strategy, range bar, reasoning |
 
@@ -201,7 +209,7 @@ The `finally` block sends the screening report to Telegram. LLM output is format
 💡 WIZARD-SOL: DEPLOY (9/10) — high fees, smart wallets present
 
 ———————————
-💰 Balance: 0.47 SOL | ⏰ Next: 29m
+⏰ Next: 29m
 ```
 
 No deploy:
@@ -212,7 +220,7 @@ No deploy:
 Best candidate: CHIBI-SOL — narrative pending
 
 ———————————
-💰 Balance: 0.97 SOL | ⏰ Next: 29m
+⏰ Next: 29m
 ```
 
 The LLM prompt enforces: no markdown, no tables, no headers, no next-steps — just the result line(s).
@@ -306,7 +314,7 @@ close_position (on-chain claim + remove liquidity)
 → recordClose (state.json) → recordPerformance (lessons.json + derivLesson)
 → every 5 positions: evolveThresholds (auto-tune config)
 → recordJournalClose (journal.json with native pnl_sol)
-→ auto-swap ALL non-SOL tokens to SOL (up to 3 rounds with re-check) → notifyClose (Telegram)
+→ auto-swap ALL non-SOL tokens to SOL (up to 3 rounds; RPC fallback for target mint if Helius unavailable) → notifyClose (Telegram)
 → syncToHive() (upload deploy history + lessons to hive network)
 → _flags.gasLowNotified = false (reset gas warning)
 ```

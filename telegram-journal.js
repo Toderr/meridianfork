@@ -174,6 +174,21 @@ export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, 
   await sendMessage(parts.join("\n"));
 }
 
+// ─── RPC limit notice (throttled: once per hour) ─────────────────
+let _rpcLimitNotifiedAt = 0;
+
+export async function notifyRpcLimit() {
+  if (!TOKEN || !chatId) return;
+  if (Date.now() - _rpcLimitNotifiedAt < 60 * 60_000) return; // 1h throttle
+  _rpcLimitNotifiedAt = Date.now();
+  await sendMessage(
+    `⚠️ HELIUS RATE LIMIT\n\n` +
+    `Wallet balance API returning 429.\n` +
+    `Token balances unavailable — using RPC fallback (SOL only).\n` +
+    `Post-close swaps may use direct RPC token lookup.`
+  );
+}
+
 // ─── Shared report builder ───────────────────────────────────────
 function buildSummaryReport(closes, header) {
   if (!closes.length) return `${header}\n\nNo closed positions.`;

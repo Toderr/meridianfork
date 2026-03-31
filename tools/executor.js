@@ -392,7 +392,7 @@ export async function executeTool(name, args) {
         // Auto-swap ALL non-SOL tokens back to SOL unless user said to hold
         if (!args.skip_swap) {
           try {
-            const swapResults = await swapAllTokensAfterClose({ maxRounds: 3 });
+            const swapResults = await swapAllTokensAfterClose({ maxRounds: 3, targetMint: result.base_mint });
             const swapped = swapResults.filter(r => r.success);
             for (const s of swapped) {
               notifySwap({ pair: _pair, tokenSymbol: s.symbol || s.mint.slice(0, 8), usdValue: s.usd }).catch(() => {});

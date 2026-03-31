@@ -66,6 +66,7 @@ npm install
 OPENROUTER_API_KEY=sk-or-...
 WALLET_PRIVATE_KEY=your_base58_private_key
 HELIUS_API_KEY=your_helius_key         # for wallet balance lookups
+HELIUS_API_KEY_2=your_second_key       # optional, auto-rotates on 429
 TELEGRAM_BOT_TOKEN=123456:ABC...       # optional
 LPAGENT_API_KEY=lpagent_...            # optional, for study_top_lpers / get_top_lpers
 DRY_RUN=true                           # set false for live trading

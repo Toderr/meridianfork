@@ -4,7 +4,7 @@ import readline from "readline";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, getPositionPnl } from "./tools/dlmm.js";
-import { getWalletBalances, sweepDustTokens } from "./tools/wallet.js";
+import { getWalletBalances, sweepDustTokens, sweepAllTokensToSol } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
@@ -185,6 +185,13 @@ async function runManagementCycle(tier = null) {
   timers.managementLastRun[tierName] = Date.now();
   const tierLabel = tier ? ` [${tier.name.toUpperCase()}]` : "";
   log("cron", `Starting management cycle${tierLabel} [model: ${config.llm.managementModel}]`);
+  // Hard 10-minute cap — prevents a stuck cycle from blocking all future management + screening
+  const _mgmtTimeout = setTimeout(() => {
+    if (_managementBusy) {
+      log("cron_error", `Management cycle${tierLabel} exceeded 10-minute timeout — force-releasing lock`);
+      _managementBusy = false;
+    }
+  }, 10 * 60_000);
   let mgmtReport = null;
   let positions = [];
   let positionData = [];
@@ -411,6 +418,7 @@ When calling close_position, set close_reason to the same short reason above.
     log("cron_error", `Management cycle failed: ${error.message}`);
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
+    clearTimeout(_mgmtTimeout);
     // If tier filter left no matching positions, skip report and screening — just release lock
     if (tierFilteredToEmpty) {
       _managementBusy = false;
@@ -477,14 +485,9 @@ When calling close_position, set close_reason to the same short reason above.
         ? instructionClosePrefix.join("\n") + "\n\n———————————\n\n"
         : "";
 
-      // Balance + next management run
+      // Next management run
       const nextMgmt = formatCountdown(nextManagementCountdown());
-      let walletSol = "";
-      try {
-        const wb = await import("./tools/wallet.js").then(m => m.getWalletBalances({})).catch(() => null);
-        if (wb?.sol != null) walletSol = `💰 Balance: ${wb.sol.toFixed(2)} SOL | `;
-      } catch { /* non-fatal */ }
-      const footer = `\n———————————\n${walletSol}⏰ Next: ${nextMgmt}`;
+      const footer = `\n———————————\n⏰ Next: ${nextMgmt}`;
 
       const body = posBlocks.length > 0
         ? prefixBlock + posBlocks.join("\n\n———————————\n\n") + footer
@@ -529,7 +532,10 @@ async function runScreeningCycle() {
   // Hard guards — don't even run the agent if preconditions aren't met
   let prePositions, preBalance;
   try {
-    [prePositions, preBalance] = await Promise.all([getMyPositions(), getWalletBalances()]);
+    [prePositions, preBalance] = await Promise.race([
+      Promise.all([getMyPositions(), getWalletBalances()]),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("pre-check timeout (30s)")), 30_000)),
+    ]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
       if (telegramEnabled() && !_flags.maxPositionsNotified) {
@@ -541,13 +547,17 @@ async function runScreeningCycle() {
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
     if (preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      if (telegramEnabled() && !_flags.gasLowNotified) {
+      // Re-send gas-low notification every 30 min so the user doesn't miss it
+      const gasLowStale = !_flags.gasLowNotifiedAt || (Date.now() - _flags.gasLowNotifiedAt > 30 * 60_000);
+      if (telegramEnabled() && (!_flags.gasLowNotified || gasLowStale)) {
         notifyGasLow({ solBalance: preBalance.sol, needed: minRequired }).catch(() => {});
         _flags.gasLowNotified = true;
+        _flags.gasLowNotifiedAt = Date.now();
       }
       return;
     }
     _flags.gasLowNotified = false; // SOL is sufficient — reset so next low triggers a fresh warning
+    _flags.gasLowNotifiedAt = null;
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
     return;
@@ -558,6 +568,13 @@ async function runScreeningCycle() {
   timers.screeningLastRun = Date.now();
   log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
   let screenReport = null;
+  // Hard 5-minute cap — prevents a single screening cycle from blocking all future cycles
+  const _screeningTimeout = setTimeout(() => {
+    if (_screeningBusy) {
+      log("cron_error", "Screening cycle exceeded 5-minute timeout — force-releasing lock");
+      _screeningBusy = false;
+    }
+  }, 5 * 60_000);
   try {
       // Reuse pre-fetched balance — no extra RPC call needed
       const currentBalance = preBalance;
@@ -673,15 +690,11 @@ Do NOT write next steps, lessons, observations, or anything else.
       log("cron_error", `Screening cycle failed: ${error.message}`);
       screenReport = `Screening cycle failed: ${error.message}`;
     } finally {
+      clearTimeout(_screeningTimeout);
       _screeningBusy = false;
       if (telegramEnabled() && screenReport) {
         const nextScreen = formatCountdown(nextRunIn(timers.screeningLastRun, config.schedule.screeningIntervalMin));
-        let screenWalletSol = "";
-        try {
-          const wb = await import("./tools/wallet.js").then(m => m.getWalletBalances({})).catch(() => null);
-          if (wb?.sol != null) screenWalletSol = `💰 Balance: ${wb.sol.toFixed(2)} SOL | `;
-        } catch { /* non-fatal */ }
-        const screenFooter = `\n———————————\n${screenWalletSol}⏰ Next: ${nextScreen}`;
+        const screenFooter = `\n———————————\n⏰ Next: ${nextScreen}`;
         sendMessage(`🔍 SCREEN\n\n💡 ${screenReport.trim()}${screenFooter}`).catch(() => {});
       }
     }
@@ -1167,6 +1180,108 @@ if (isTTY) {
       return;
     }
 
+    if (text === "/withdraw") {
+      busy = true;
+      sendMessage("🏧 WITHDRAW — closing all positions and converting to SOL...").catch(() => {});
+      (async () => {
+        try {
+          // Stop cron cycles so management doesn't interfere
+          if (_cronRunning) {
+            stopCronJobs();
+            sendMessage("⏹️ Cron paused for withdrawal.").catch(() => {});
+          }
+
+          const positions = getTrackedPositions(true);
+          if (positions.length === 0) {
+            await sendMessage("No open positions. Sweeping remaining tokens...");
+          } else {
+            await sendMessage(`Closing ${positions.length} position(s)...`);
+          }
+
+          const closeResults = [];
+          for (const pos of positions) {
+            try {
+              const result = await executeTool("close_position", {
+                position_address: pos.position,
+                close_reason: "withdraw — zap out all to SOL",
+              });
+              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: result?.success, pnl_pct: result?.pnl_pct });
+              if (result?.success) {
+                log("withdraw", `Closed ${pos.pool_name || pos.position.slice(0, 8)}`);
+              } else {
+                log("withdraw_warn", `Failed to close ${pos.pool_name}: ${result?.error}`);
+              }
+            } catch (e) {
+              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: false, error: e.message });
+              log("withdraw_error", `Error closing ${pos.pool_name}: ${e.message}`);
+            }
+            // Brief pause between closes to let RPC settle
+            await new Promise(r => setTimeout(r, 2000));
+          }
+
+          // Sweep ALL remaining non-SOL tokens to SOL
+          await new Promise(r => setTimeout(r, 3000)); // let balances settle
+          const sweepResults = await sweepAllTokensToSol();
+
+          // Build summary
+          const closedOk = closeResults.filter(r => r.success).length;
+          const closedFail = closeResults.filter(r => !r.success).length;
+          const swappedOk = sweepResults.filter(r => r.success).length;
+          const swappedFail = sweepResults.filter(r => !r.success).length;
+
+          const bal = await getWalletBalances({});
+          let msg = `🏧 WITHDRAW COMPLETE
+
+`;
+          msg += `📍 Positions: ${closedOk} closed`;
+          if (closedFail > 0) msg += `, ${closedFail} failed`;
+          msg += `
+`;
+          if (sweepResults.length > 0) {
+            msg += `💱 Swaps: ${swappedOk} tokens → SOL`;
+            if (swappedFail > 0) msg += `, ${swappedFail} failed`;
+            msg += `
+`;
+          }
+          msg += `
+💰 Final balance: ${bal.sol?.toFixed(4) || "?"} SOL`;
+          if (bal.sol_usd) msg += ` ($${bal.sol_usd.toFixed(2)})`;
+
+          // List any failed closes
+          const failures = closeResults.filter(r => !r.success);
+          if (failures.length > 0) {
+            msg += `
+
+⚠️ Failed closes:`;
+            for (const f of failures) {
+              msg += `
+- ${f.pair}: ${f.error || "unknown error"}`;
+            }
+          }
+
+          // List any failed swaps
+          const swapFails = sweepResults.filter(r => !r.success);
+          if (swapFails.length > 0) {
+            msg += `
+
+⚠️ Failed swaps:`;
+            for (const f of swapFails) {
+              msg += `
+- ${f.symbol || f.mint?.slice(0, 8)}: ${f.error || "unknown error"}`;
+            }
+          }
+
+          await sendMessage(msg);
+        } catch (e) {
+          await sendMessage(`❌ Withdraw error: ${e.message}`).catch(() => {});
+        } finally {
+          busy = false;
+        }
+      })();
+      return;
+    }
+
+
     busy = true;
     try {
       log("telegram", `Incoming: ${text}`);
@@ -1503,6 +1618,79 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       import("./scripts/claude-lesson-updater.js")
         .then(m => m.claudeUpdateLessons())
         .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
+      return;
+    }
+
+    if (text === "/withdraw") {
+      busy = true;
+      sendMessage("🏧 WITHDRAW — closing all positions and converting to SOL...").catch(() => {});
+      (async () => {
+        try {
+          if (_cronRunning) {
+            stopCronJobs();
+            sendMessage("⏹️ Cron paused for withdrawal.").catch(() => {});
+          }
+
+          const positions = getTrackedPositions(true);
+          if (positions.length === 0) {
+            await sendMessage("No open positions. Sweeping remaining tokens...");
+          } else {
+            await sendMessage(`Closing ${positions.length} position(s)...`);
+          }
+
+          const closeResults = [];
+          for (const pos of positions) {
+            try {
+              const result = await executeTool("close_position", {
+                position_address: pos.position,
+                close_reason: "withdraw — zap out all to SOL",
+              });
+              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: result?.success, pnl_pct: result?.pnl_pct });
+            } catch (e) {
+              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: false, error: e.message });
+            }
+            await new Promise(r => setTimeout(r, 2000));
+          }
+
+          await new Promise(r => setTimeout(r, 3000));
+          const sweepResults = await sweepAllTokensToSol();
+
+          const closedOk = closeResults.filter(r => r.success).length;
+          const closedFail = closeResults.filter(r => !r.success).length;
+          const swappedOk = sweepResults.filter(r => r.success).length;
+          const swappedFail = sweepResults.filter(r => !r.success).length;
+
+          const bal = await getWalletBalances({});
+          let msg = `🏧 WITHDRAW COMPLETE\n\n`;
+          msg += `📍 Positions: ${closedOk} closed`;
+          if (closedFail > 0) msg += `, ${closedFail} failed`;
+          msg += `\n`;
+          if (sweepResults.length > 0) {
+            msg += `💱 Swaps: ${swappedOk} tokens → SOL`;
+            if (swappedFail > 0) msg += `, ${swappedFail} failed`;
+            msg += `\n`;
+          }
+          msg += `\n💰 Final balance: ${bal.sol?.toFixed(4) || "?"} SOL`;
+          if (bal.sol_usd) msg += ` ($${bal.sol_usd.toFixed(2)})`;
+
+          const failures = closeResults.filter(r => !r.success);
+          if (failures.length > 0) {
+            msg += `\n\n⚠️ Failed closes:`;
+            for (const f of failures) msg += `\n- ${f.pair}: ${f.error || "unknown error"}`;
+          }
+          const swapFails = sweepResults.filter(r => !r.success);
+          if (swapFails.length > 0) {
+            msg += `\n\n⚠️ Failed swaps:`;
+            for (const f of swapFails) msg += `\n- ${f.symbol || f.mint?.slice(0, 8)}: ${f.error || "unknown error"}`;
+          }
+
+          await sendMessage(msg);
+        } catch (e) {
+          await sendMessage(`❌ Withdraw error: ${e.message}`).catch(() => {});
+        } finally {
+          busy = false;
+        }
+      })();
       return;
     }
 

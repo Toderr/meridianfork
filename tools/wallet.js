@@ -35,6 +35,24 @@ const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
 const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1";
 const JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
+// ─── Helius API Key Rotation ───────────────────────────────────
+// Supports HELIUS_API_KEY and HELIUS_API_KEY_2 — switches on 429.
+const _heliusKeys = [process.env.HELIUS_API_KEY, process.env.HELIUS_API_KEY_2].filter(Boolean);
+let _heliusKeyIndex = 0;
+
+function getHeliusKey() {
+  if (_heliusKeys.length === 0) return null;
+  return _heliusKeys[_heliusKeyIndex % _heliusKeys.length];
+}
+
+function rotateHeliusKey() {
+  if (_heliusKeys.length <= 1) return false;
+  const prev = _heliusKeyIndex;
+  _heliusKeyIndex = (_heliusKeyIndex + 1) % _heliusKeys.length;
+  log("wallet", `Helius key rotated: key ${prev + 1} → key ${_heliusKeyIndex + 1}`);
+  return true;
+}
+
 // ─── Swap Failure Tracking ─────────────────────────────────────
 // Tracks tokens that repeatedly fail swaps to skip them temporarily.
 const _swapFailures = new Map(); // mint → { count, lastFailedAt }
@@ -147,14 +165,14 @@ export async function getWalletBalances() {
     return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
   }
 
-  const HELIUS_KEY = process.env.HELIUS_API_KEY;
-  if (!HELIUS_KEY) {
+  const heliusKey = getHeliusKey();
+  if (!heliusKey) {
     log("wallet_error", "HELIUS_API_KEY not set in .env");
     return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
   }
 
-  async function fetchBalances() {
-    const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
+  async function fetchBalances(key) {
+    const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${key || getHeliusKey()}`;
     const res = await fetch(url);
     if (!res.ok) {
       throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
@@ -180,23 +198,47 @@ export async function getWalletBalances() {
         await _checkRpcHealth();
         data = await fetchBalances();
       } else if (e.message.includes("429")) {
-        // Rate limited — retry once after 2s, then fall back to RPC for SOL balance
-        log("wallet", `Helius rate limited (429), retrying in 2s...`);
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-          data = await fetchBalances();
-        } catch {
-          const solViaRpc = await fetchSolBalanceViaRpc();
-          return {
-            wallet: walletAddress,
-            sol: Math.round(solViaRpc * 1e6) / 1e6,
-            sol_price: 0,
-            sol_usd: 0,
-            usdc: 0,
-            tokens: [],
-            total_usd: 0,
-            rpc_fallback: true,
-          };
+        // Rate limited — rotate key and retry, then fall back to RPC
+        const rotated = rotateHeliusKey();
+        if (rotated) {
+          log("wallet", `Helius rate limited (429) on key ${((_heliusKeyIndex + _heliusKeys.length - 1) % _heliusKeys.length) + 1}, trying key ${_heliusKeyIndex + 1}...`);
+          try {
+            data = await fetchBalances();
+          } catch (e2) {
+            log("wallet", `Key ${_heliusKeyIndex + 1} also failed: ${e2.message}`);
+            import("../telegram-journal.js").then(m => m.notifyRpcLimit()).catch(() => {});
+            const solViaRpc = await fetchSolBalanceViaRpc();
+            return {
+              wallet: walletAddress,
+              sol: Math.round(solViaRpc * 1e6) / 1e6,
+              sol_price: 0,
+              sol_usd: 0,
+              usdc: 0,
+              tokens: [],
+              total_usd: 0,
+              rpc_fallback: true,
+            };
+          }
+        } else {
+          // Only one key — retry after 2s
+          log("wallet", `Helius rate limited (429), retrying in 2s...`);
+          import("../telegram-journal.js").then(m => m.notifyRpcLimit()).catch(() => {});
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            data = await fetchBalances();
+          } catch {
+            const solViaRpc = await fetchSolBalanceViaRpc();
+            return {
+              wallet: walletAddress,
+              sol: Math.round(solViaRpc * 1e6) / 1e6,
+              sol_price: 0,
+              sol_usd: 0,
+              usdc: 0,
+              tokens: [],
+              total_usd: 0,
+              rpc_fallback: true,
+            };
+          }
         }
       } else {
         throw e;
@@ -393,20 +435,65 @@ export async function sweepAllTokensToSol() {
 }
 
 /**
+ * Fetch a specific token's balance directly from RPC (bypasses Helius).
+ * Returns { mint, symbol, balance, usd: null } or null if no balance.
+ */
+async function getTokenBalanceViaRpc(mint) {
+  try {
+    const wallet = getWallet();
+    const connection = getConnection();
+    const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { mint: new PublicKey(mint) });
+    let totalBalance = 0;
+    for (const { account } of accounts.value) {
+      const info = account.data?.parsed?.info;
+      if (info) totalBalance += parseFloat(info.tokenAmount?.uiAmountString || "0");
+    }
+    if (totalBalance <= 0) return null;
+    log("post_close_swap", `RPC balance for ${mint.slice(0, 8)}: ${totalBalance}`);
+    return { mint, symbol: mint.slice(0, 8), balance: totalBalance, usd: null };
+  } catch (e) {
+    log("post_close_swap", `RPC token balance fetch failed for ${mint.slice(0, 8)}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Swap all non-SOL tokens to SOL after a position close.
  * Attempts to swap all tokens with balance >= $0.10, then re-checks and retries
  * up to maxRounds times until no swappable tokens remain.
  */
-export async function swapAllTokensAfterClose({ maxRounds = 3 } = {}) {
+export async function swapAllTokensAfterClose({ maxRounds = 3, targetMint = null } = {}) {
   const SOL_MINT = "So11111111111111111111111111111111111111112";
   const allResults = [];
+
+  // Clear failure history for the target token so it gets a fresh chance
+  if (targetMint) {
+    _swapFailures.delete(targetMint);
+  }
 
   for (let round = 1; round <= maxRounds; round++) {
     // Wait for RPC to reflect balances (first round waits longer)
     await new Promise(r => setTimeout(r, round === 1 ? 3000 : 5000));
 
     const balances = await getWalletBalances({});
-    const tokens = (balances.tokens || []).filter(t => t.usd >= 0.10 && t.mint !== SOL_MINT);
+    const allTokens = balances.tokens || [];
+
+    // Always include the target mint if it has any balance, even if Helius didn't price it
+    let tokens = allTokens.filter(t => {
+      if (t.mint === SOL_MINT) return false;
+      if (targetMint && t.mint === targetMint && t.balance > 0) return true;
+      return t.usd >= 0.10;
+    });
+
+    // If Helius returned no tokens (rate-limited / RPC fallback) but we have a targetMint,
+    // fetch the target token balance directly from RPC so we don't silently skip the swap
+    if (tokens.length === 0 && targetMint && targetMint !== SOL_MINT) {
+      const alreadySwapped = allResults.some(r => r.mint === targetMint && r.success);
+      if (!alreadySwapped) {
+        const rpcToken = await getTokenBalanceViaRpc(targetMint);
+        if (rpcToken) tokens = [rpcToken];
+      }
+    }
 
     if (tokens.length === 0) {
       log("post_close_swap", `Round ${round}: no tokens to swap — all clear`);
@@ -424,7 +511,7 @@ export async function swapAllTokensAfterClose({ maxRounds = 3 } = {}) {
         const success = result?.success !== false && !result?.skipped;
         allResults.push({ mint: token.mint, symbol: token.symbol, usd: token.usd, success, round });
         if (success) {
-          log("post_close_swap", `Swapped ${token.symbol || token.mint.slice(0, 8)} ($${token.usd.toFixed(2)}) → SOL`);
+          log("post_close_swap", `Swapped ${token.symbol || token.mint.slice(0, 8)} ($${token.usd?.toFixed(2) ?? "?"}) → SOL`);
         }
       } catch (e) {
         allResults.push({ mint: token.mint, symbol: token.symbol, usd: token.usd, success: false, error: e.message, round });
