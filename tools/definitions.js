@@ -278,10 +278,10 @@ WARNING: This executes a real on-chain transaction. Cannot be undone.`,
           },
           close_reason: {
             type: "string",
-            description: "One-sentence reason for closing (e.g. 'Take-profit at 6.18%' or 'OOR for 45m'). Stored in journal and used for learning."
+            description: "Descriptive exit condition (e.g. 'Yield-exit: fee_tvl 2.1% < 7% min', 'OOR 12 bins above range', 'Take-profit at 6.18%'). Stored in journal and used for learning. MUST describe the specific rule/threshold that triggered the close."
           }
         },
-        required: ["position_address"]
+        required: ["position_address", "close_reason"]
       }
     }
   },

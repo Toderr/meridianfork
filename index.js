@@ -284,7 +284,7 @@ async function runManagementCycle(tier = null) {
         const reason = `Instruction: "${p.instruction}" (pnl_pct=${pnlPct}%)`;
         log("cron", `Instruction pre-check: closing ${p.pair} (${p.position}) — ${reason}`);
         try {
-          await executeTool("close_position", { position_address: p.position });
+          await executeTool("close_position", { position_address: p.position, close_reason: reason });
           skippedByInstruction.add(p.position);
           instructionClosePrefix.push(`Auto-closed by instruction: ${p.pair} — ${reason}`);
           if (telegramEnabled()) notifyInstructionClose({ pair: p.pair, instruction: p.instruction, pnlPct: p.pnl?.pnl_pct ?? 0 }).catch(() => {});
@@ -313,7 +313,7 @@ async function runManagementCycle(tier = null) {
           if (action === "force_close") {
             log("lesson_enforce", `Force-closing ${p.pair} (${p.position}) — ${reason}`);
             try {
-              await executeTool("close_position", { position_address: p.position });
+              await executeTool("close_position", { position_address: p.position, close_reason: `Lesson rule: ${reason}` });
               skippedByInstruction.add(p.position);
               instructionClosePrefix.push(`Lesson-enforced close: ${p.pair} — ${reason}`);
             } catch (err) {
@@ -410,7 +410,7 @@ REPORT FORMAT (one line per position, no markdown):
 [PAIR]: STAY — [reason, max 10 words]
 [PAIR]: CLOSE — [reason, max 10 words]
 
-When calling close_position, set close_reason to the same short reason above.
+CRITICAL: When calling close_position, you MUST set close_reason to a descriptive exit condition (e.g. "Yield-exit: fee_tvl 2.1% < 7% min", "OOR 12 bins above range", "Instruction: hold until 5% met"). NEVER leave close_reason empty or generic.
     `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
     mgmtReport = content;
   } catch (error) {

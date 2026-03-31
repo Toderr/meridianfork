@@ -87,7 +87,7 @@ If the primary model fails 3 times (empty response, provider error, or timeout),
 `user-config.json` is watched via `fs.watchFile` (2s interval). Changes to screening thresholds, management settings, risk limits, strategy, and LLM models apply without restart. `rpcUrl`, `walletKey`, `dryRun`, and schedule intervals require restart.
 
 ### Helius API Key Rotation
-`getWalletBalances()` in `tools/wallet.js` uses the Helius wallet balance API. Supports two keys: `HELIUS_API_KEY` and `HELIUS_API_KEY_2` (both in `.env`). On 429, rotates to the other key and retries immediately. If both keys are exhausted, falls back to RPC for SOL-only balance (`rpc_fallback: true`, empty `tokens[]`). A `⚠️ HELIUS RATE LIMIT` notice is sent to the journal bot (throttled to once per hour).
+`getWalletBalances()` in `tools/wallet.js` uses the Helius wallet balance API. Supports two keys: `HELIUS_API_KEY` and `HELIUS_API_KEY_2` (both in `.env`). Starts on key 2 (index 1) to spread load across keys. On 429, rotates to the other key and retries immediately. If both keys are exhausted, falls back to RPC for SOL-only balance (`rpc_fallback: true`, empty `tokens[]`). A `⚠️ HELIUS RATE LIMIT` notice is sent to the journal bot (throttled to once per hour).
 
 **Post-close swap RPC fallback**: When Helius is unavailable, `swapAllTokensAfterClose` queries the target token balance directly from RPC via `getParsedTokenAccountsByOwner`, bypassing Helius entirely. This ensures the base token from a closed position is always swapped to SOL even during Helius outages.
 
@@ -343,6 +343,16 @@ Thresholds (`fastTpPct=15`, `takeProfitFeePct`, `trailingActivate=6`, `trailingF
 5. unclaimed_fee_usd >= minClaimAmount → claim_fees
 
 NOTE: Stop loss and take profit are handled by the PnL checker (every 30s), not the LLM management cycle.
+
+### Close Reason Enforcement
+
+`close_reason` is a **required** parameter on the `close_position` tool. Every close path must provide a descriptive exit condition:
+
+- **PnL checker**: Already passes specific reasons (e.g. `Stop loss: pnl -10.2%`, `Trailing stop: peak 8%, dropped to 4.5%`)
+- **Instruction pre-check**: Passes `Instruction: "<instruction>" (pnl_pct=X%)`
+- **Lesson pre-enforcement**: Passes `Lesson rule: <reason>`
+- **LLM management agent**: Prompt enforces descriptive reasons (e.g. `Yield-exit: fee_tvl 2.1% < 7% min`, `OOR 12 bins above range`)
+- **Fallback**: `closePosition()` in `dlmm.js` defaults to `"agent decision"` only if somehow omitted — but the required schema should prevent this from the LLM
 
 ## Hive Mind
 

@@ -38,7 +38,7 @@ const JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 // ─── Helius API Key Rotation ───────────────────────────────────
 // Supports HELIUS_API_KEY and HELIUS_API_KEY_2 — switches on 429.
 const _heliusKeys = [process.env.HELIUS_API_KEY, process.env.HELIUS_API_KEY_2].filter(Boolean);
-let _heliusKeyIndex = 0;
+let _heliusKeyIndex = _heliusKeys.length > 1 ? 1 : 0; // start on key 2 to spread load
 
 function getHeliusKey() {
   if (_heliusKeys.length === 0) return null;
