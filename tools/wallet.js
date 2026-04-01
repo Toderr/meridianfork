@@ -397,16 +397,25 @@ export async function swapToken({
  * Sweep all dust tokens (USD value > 0 and < $0.10, excluding SOL) back to SOL via swap.
  */
 export async function sweepDustTokens() {
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
   const balances = await getWalletBalances({});
-  const dust = (balances.tokens || []).filter(t => t.usd > 0 && t.usd < 0.10 && t.mint !== "So11111111111111111111111111111111111111112");
+  let tokens = (balances.tokens || []).filter(t => t.mint !== SOL_MINT && t.balance > 0);
+
+  // RPC fallback if Helius returned no tokens (rate-limited or unavailable)
+  if (tokens.length === 0) {
+    tokens = (await getAllTokenBalancesViaRpc()).filter(t => t.mint !== SOL_MINT);
+  }
+
   const results = [];
-  for (const token of dust) {
+  for (const token of tokens) {
     try {
       const result = await swapToken({ input_mint: token.mint, output_mint: "SOL", amount: token.balance });
-      results.push({ mint: token.mint, symbol: token.symbol, usd_value: token.usd, success: result?.success });
-      log("dust_sweep", `Swapped dust ${token.symbol || token.mint.slice(0,8)} ($${token.usd.toFixed(3)}) → SOL`);
+      if (result?.success) {
+        results.push({ mint: token.mint, symbol: token.symbol, usd_value: token.usd, success: true });
+        log("dust_sweep", `Swapped ${token.symbol || token.mint.slice(0, 8)} ($${token.usd?.toFixed(2) ?? "?"}) → SOL`);
+      }
     } catch (e) {
-      log("dust_sweep_error", `Failed to sweep ${token.symbol || token.mint.slice(0,8)}: ${e.message}`);
+      log("dust_sweep_error", `Failed to sweep ${token.symbol || token.mint.slice(0, 8)}: ${e.message}`);
     }
   }
   return results;
@@ -458,8 +467,34 @@ async function getTokenBalanceViaRpc(mint) {
 }
 
 /**
+ * Fetch ALL SPL token balances directly from RPC (bypasses Helius).
+ * Used as fallback when Helius is rate-limited to ensure no tokens are invisible.
+ */
+async function getAllTokenBalancesViaRpc() {
+  try {
+    const wallet = getWallet();
+    const connection = getConnection();
+    const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const resp = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: TOKEN_PROGRAM });
+    const tokens = [];
+    for (const { account } of resp.value) {
+      const info = account.data?.parsed?.info;
+      if (!info) continue;
+      const balance = parseFloat(info.tokenAmount?.uiAmountString || "0");
+      if (balance <= 0) continue;
+      tokens.push({ mint: info.mint, symbol: info.mint.slice(0, 8), balance, usd: null });
+    }
+    log("post_close_swap", `RPC fallback: found ${tokens.length} SPL token(s) with balance`);
+    return tokens;
+  } catch (e) {
+    log("post_close_swap", `RPC getAllTokenBalances failed: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * Swap all non-SOL tokens to SOL after a position close.
- * Attempts to swap all tokens with balance >= $0.10, then re-checks and retries
+ * Attempts to swap all tokens with balance > 0, then re-checks and retries
  * up to maxRounds times until no swappable tokens remain.
  */
 export async function swapAllTokensAfterClose({ maxRounds = 3, targetMint = null } = {}) {
@@ -478,21 +513,20 @@ export async function swapAllTokensAfterClose({ maxRounds = 3, targetMint = null
     const balances = await getWalletBalances({});
     const allTokens = balances.tokens || [];
 
-    // Always include the target mint if it has any balance, even if Helius didn't price it
+    // Swap ALL non-SOL tokens with any balance — dust included
     let tokens = allTokens.filter(t => {
       if (t.mint === SOL_MINT) return false;
-      if (targetMint && t.mint === targetMint && t.balance > 0) return true;
-      return t.usd >= 0.10;
+      return t.balance > 0;
     });
 
-    // If Helius returned no tokens (rate-limited / RPC fallback) but we have a targetMint,
-    // fetch the target token balance directly from RPC so we don't silently skip the swap
-    if (tokens.length === 0 && targetMint && targetMint !== SOL_MINT) {
-      const alreadySwapped = allResults.some(r => r.mint === targetMint && r.success);
-      if (!alreadySwapped) {
-        const rpcToken = await getTokenBalanceViaRpc(targetMint);
-        if (rpcToken) tokens = [rpcToken];
-      }
+    // If Helius returned no tokens (rate-limited / RPC fallback),
+    // fetch ALL SPL token balances directly from RPC so nothing is invisible
+    if (tokens.length === 0) {
+      const rpcTokens = await getAllTokenBalancesViaRpc();
+      tokens = rpcTokens.filter(t => {
+        if (t.mint === SOL_MINT) return false;
+        return !allResults.some(r => r.mint === t.mint && r.success);
+      });
     }
 
     if (tokens.length === 0) {

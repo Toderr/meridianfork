@@ -89,7 +89,7 @@ If the primary model fails 3 times (empty response, provider error, or timeout),
 ### Helius API Key Rotation
 `getWalletBalances()` in `tools/wallet.js` uses the Helius wallet balance API. Supports two keys: `HELIUS_API_KEY` and `HELIUS_API_KEY_2` (both in `.env`). Starts on key 2 (index 1) to spread load across keys. On 429, rotates to the other key and retries immediately. If both keys are exhausted, falls back to RPC for SOL-only balance (`rpc_fallback: true`, empty `tokens[]`). A `⚠️ HELIUS RATE LIMIT` notice is sent to the journal bot (throttled to once per hour).
 
-**Post-close swap RPC fallback**: When Helius is unavailable, `swapAllTokensAfterClose` queries the target token balance directly from RPC via `getParsedTokenAccountsByOwner`, bypassing Helius entirely. This ensures the base token from a closed position is always swapped to SOL even during Helius outages.
+**Post-close swap RPC fallback**: When Helius is unavailable, `swapAllTokensAfterClose` fetches ALL SPL token balances directly from RPC via `getAllTokenBalancesViaRpc()` (uses `getParsedTokenAccountsByOwner` with the Token Program), bypassing Helius entirely. This ensures all tokens (not just the target mint) are swapped to SOL even during Helius outages. The $0.10 minimum filter has been removed — all tokens with `balance > 0` are attempted.
 
 **Report footers** do not fetch wallet balance — only show `⏰ Next: Xm` to avoid unnecessary Helius calls.
 
@@ -324,6 +324,8 @@ close_position (on-chain claim + remove liquidity)
 Runs alongside the management cycle via `setInterval`. Skips when `_managementBusy`. If a position has an `instruction` set, it is skipped entirely (deferred to management cycle).
 
 ```
+if current_value_usd == 0 AND
+   unclaimed_fee_usd == 0            → CLOSE (empty position)
 if pnl_pct <= emergencyPriceDropPct  → CLOSE (stop loss)
 if pnl_pct >= fastTpPct              → CLOSE (hard take-profit)
 if pnl_pct >= takeProfitFeePct       → CLOSE (regular take-profit)
@@ -332,6 +334,8 @@ if pnl_pct > trailingActivate        → activate trailing stop, track peak
 if trailing active AND
    pnl_pct < trailingFloor           → CLOSE (trailing stop triggered)
 ```
+
+The empty position check runs before the `pnl_pct == null` guard so it catches on-chain fallback cases too (where API returns 0 balances).
 
 Thresholds (`fastTpPct=15`, `takeProfitFeePct`, `trailingActivate=6`, `trailingFloor=5`, `emergencyPriceDropPct`) are stored in `config.management` and read each tick — hot-reload and auto-evolution apply immediately. Lesson TP rules (`min_profit_pct`) are also loaded each tick from `extractRules("MANAGER")`. Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
 
@@ -409,7 +413,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Constraint persistence (GENERAL role)**: When user gives verbal constraints (sizing cap, stop loss, slot reservation), the GENERAL agent is instructed to call `add_lesson` with exact parseable phrasing AND update config values (e.g. `emergencyPriceDropPct`, `maxDeployAmount`). Verbal-only instructions are NOT persisted across sessions.
 - **Max change per step**: 20% to prevent whiplash
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
-- **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made.
+- **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made. The prompt includes a **LESSON FORMAT** guide documenting all parseable keyword patterns from `lesson-rules.js` so Claude writes lessons that get auto-enforced (e.g. `AVOID volatility > X`, `NEVER deploy more than X SOL`, `TAKE PROFIT at X%`) instead of fuzzy guidance.
 - **Claude Ask** (`scripts/claude-ask.js`): General-purpose Q&A agent triggered by Telegram `/claude <question>`. Loads runtime context (open positions from `state.json`, last 15 journal entries, last 20 lessons, last 10 performance records, strategy config subset) and spawns `claude --print` with a 3-minute timeout. Special output prefixes: `LESSON: <text>` → caller can extract and save lesson; `CONFIG: key=value` → caller can apply config change. Standalone test: `node scripts/claude-ask.js "your question"`.
 
 ## Experiment Tier
@@ -506,7 +510,7 @@ Experiment positions (variant starts with `"exp_"`) bypass:
 - ATH proximity check (skip tokens near their all-time high)
 
 ### Low Impact
-- Dust token consolidation (batch sweep tokens < $0.10)
+- ~~Dust token consolidation~~ ✅ Done — `sweepDustTokens()` runs every 10min, swaps ALL non-SOL tokens (no $0.10 minimum), with RPC fallback
 - Per-pool strategy overrides (some pools better with "spot" vs "bid_ask")
 - Prometheus metrics / observability endpoint
 - A/B testing framework for strategy variants

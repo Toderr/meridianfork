@@ -92,6 +92,25 @@ RULES:
 - Do NOT suggest config changes unless >= 5 of the last 20 closes support it.
 - Be conservative — omit lessons/config_updates entirely if the signal is weak.
 
+LESSON FORMAT (CRITICAL — lessons are auto-enforced ONLY if they match these exact patterns):
+Each lesson MUST start with a keyword: AVOID, NEVER, SKIP, DO NOT, or TAKE PROFIT.
+Use these templates exactly — fuzzy phrasing will NOT be enforced by the system:
+
+Screening rules (block bad deploys):
+  "AVOID strategy=X"                     → block a strategy (X = spot, bid_ask, etc.)
+  "AVOID strategy=X when volatility > Y" → block strategy for high-vol pools
+  "AVOID volatility > X"                 → block pools above X volatility
+  "SKIP: global_fees_sol < X"            → block pools with low fees
+  "AVOID top_10_pct > X"                 → block concentrated holder pools
+  "AVOID bundlers > X"                   → block high-bundler pools
+  "NEVER deploy more than X SOL"         → cap max deploy size
+
+Management rules (auto-close/hold positions):
+  "AVOID holding > Xm when pnl < Y%"    → force-close aged losing positions
+  "DO NOT close OOR < Xm"               → grace period before closing out-of-range
+  "NEVER hold position below -X%"        → stop loss at X%
+  "TAKE PROFIT at X%"                    → auto take-profit at X%
+
 Respond ONLY with valid JSON, no markdown, no explanation outside the JSON:
 {
   "lessons": [],

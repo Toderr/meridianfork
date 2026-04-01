@@ -112,6 +112,7 @@ let _screeningBusy = false;  // prevents overlapping screening cycles
 let _mgmtDispatcher = null;  // setInterval handle for tiered management dispatcher
 let _pnlCheckerBusy = false;
 let _pnlCheckerInterval = null;
+let _dustSweepInterval = null;
 // Map: position_address → { peak: number } — tracks peak PnL for trailing stop
 const _trailingStops = new Map();
 
@@ -157,6 +158,10 @@ function stopCronJobs() {
   if (_pnlCheckerInterval) {
     clearInterval(_pnlCheckerInterval);
     _pnlCheckerInterval = null;
+  }
+  if (_dustSweepInterval) {
+    clearInterval(_dustSweepInterval);
+    _dustSweepInterval = null;
   }
   _cronRunning = false;
 }
@@ -767,6 +772,15 @@ async function runPnlChecker() {
       }
 
       const pnl = await getPositionPnl({ pool_address: tracked.pool, position_address: tracked.position }).catch(() => null);
+
+      // Rule 0: Close if position value is zero (empty/drained)
+      if (pnl && !pnl.error && pnl.current_value_usd === 0 && (pnl.unclaimed_fee_usd ?? 0) === 0) {
+        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: current value = 0 — CLOSE (empty position)`);
+        _trailingStops.delete(tracked.position);
+        await executeTool("close_position", { position_address: tracked.position, close_reason: "Empty position: current value = 0" });
+        continue;
+      }
+
       if (!pnl || pnl.error || pnl.pnl_pct == null) continue;
 
       const pct = pnl.pnl_pct;
@@ -911,7 +925,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, { timezone: 'UTC' });
 
-  const dustTask = cron.schedule(`0 */6 * * *`, async () => {
+  _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
+
+  // Periodic dust sweep — every 10 minutes, retry any tokens still in wallet
+  _dustSweepInterval = setInterval(async () => {
     try {
       const swept = await sweepDustTokens();
       if (swept.length > 0) {
@@ -920,11 +937,9 @@ Summarize the current portfolio health, total fees earned, and performance of al
     } catch (e) {
       log("cron_error", `Dust sweep failed: ${e.message}`);
     }
-  });
+  }, 10 * 60 * 1000);
 
-  _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
-
-  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask];
+  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask];
   const t = config.schedule.managementTiers;
   log("cron", `Cycles started — management: high=${t.high.intervalMin}m, med=${t.med.intervalMin}m, low=${t.low.intervalMin}m | screening every ${config.schedule.screeningIntervalMin}m | pnl-check every 30s`);
 }
