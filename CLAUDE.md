@@ -380,6 +380,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Max positions**: Hard cap via `config.risk.maxPositions` (default 10)
 - **Gas reserve**: Always keep `gasReserve` SOL (default 0.2) untouched
 - **Anti-scam**: Skip if `global_fees_sol < minTokenFeesSol`, top_10_pct > 60%, bundlers > 30%
+- **Known-mints allowlist (dust attack protection)**: All swap functions (`swapAllTokensAfterClose`, `sweepDustTokens`, `sweepAllTokensToSol`) only swap tokens from positions the bot has deployed into. `getKnownMints()` in `state.js` builds a `Set` of `base_mint` values from ALL positions (open + closed) plus WSOL. Unknown tokens are logged with `⛔ SKIPPED unknown token` and never touched — prevents wallet drain from malicious airdropped tokens. `base_mint` is stored in state.json on deploy; legacy positions get backfilled on close via `updateBaseMint()`. The `targetMint` param (from `closePosition` return) is also added to the allowlist at swap time. `/withdraw` bypasses the filter (`bypassAllowlist: true`) since the user explicitly wants everything swapped.
 
 ## Learning System
 
@@ -510,7 +511,7 @@ Experiment positions (variant starts with `"exp_"`) bypass:
 - ATH proximity check (skip tokens near their all-time high)
 
 ### Low Impact
-- ~~Dust token consolidation~~ ✅ Done — `sweepDustTokens()` runs every 10min, swaps ALL non-SOL tokens (no $0.10 minimum), with RPC fallback
+- ~~Dust token consolidation~~ ✅ Done — `sweepDustTokens()` runs every 10min, swaps known-position tokens only (filtered by known-mints allowlist), with RPC fallback
 - Per-pool strategy overrides (some pools better with "spot" vs "bid_ask")
 - Prometheus metrics / observability endpoint
 - A/B testing framework for strategy variants

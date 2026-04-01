@@ -56,6 +56,7 @@ export function trackPosition({
   organic_score,
   initial_value_usd,
   variant,
+  base_mint,
 }) {
   const state = load();
   state.positions[position] = {
@@ -74,6 +75,7 @@ export function trackPosition({
     organic_score,
     initial_value_usd,
     variant: variant || null,
+    base_mint: base_mint || null,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
     last_claim_at: null,
@@ -98,6 +100,33 @@ export function updatePoolName(position_address, pool_name) {
   pos.pool_name = pool_name;
   save(state);
   log("state", `Backfilled pool_name for ${position_address.slice(0, 8)}: ${pool_name}`);
+}
+
+/**
+ * Backfill base_mint for an existing tracked position (one-time enrichment).
+ */
+export function updateBaseMint(position_address, base_mint) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos || pos.base_mint) return; // don't overwrite existing
+  pos.base_mint = base_mint;
+  save(state);
+  log("state", `Backfilled base_mint for ${position_address.slice(0, 8)}: ${base_mint}`);
+}
+
+/**
+ * Build a Set of token mints the bot has deployed into.
+ * Includes base_mint from ALL positions (open and closed).
+ * Always includes WSOL. Used to filter swap targets against dust attacks.
+ */
+export function getKnownMints() {
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  const state = load();
+  const mints = new Set([SOL_MINT]);
+  for (const pos of Object.values(state.positions)) {
+    if (pos.base_mint) mints.add(pos.base_mint);
+  }
+  return mints;
 }
 
 /**

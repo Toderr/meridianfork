@@ -8,10 +8,14 @@ import {
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
-// Dynamic import to avoid circular dependency (dlmm.js ↔ wallet.js)
+// Dynamic imports to avoid circular dependency (dlmm.js ↔ wallet.js)
 async function _checkRpcHealth() {
   const { checkRpcHealth } = await import("./dlmm.js");
   return checkRpcHealth();
+}
+async function _getKnownMints() {
+  const { getKnownMints } = await import("../state.js");
+  return getKnownMints();
 }
 
 let _connection = null;
@@ -396,7 +400,7 @@ export async function swapToken({
 /**
  * Sweep all dust tokens (USD value > 0 and < $0.10, excluding SOL) back to SOL via swap.
  */
-export async function sweepDustTokens() {
+export async function sweepDustTokens({ bypassAllowlist = false } = {}) {
   const SOL_MINT = "So11111111111111111111111111111111111111112";
   const balances = await getWalletBalances({});
   let tokens = (balances.tokens || []).filter(t => t.mint !== SOL_MINT && t.balance > 0);
@@ -404,6 +408,18 @@ export async function sweepDustTokens() {
   // RPC fallback if Helius returned no tokens (rate-limited or unavailable)
   if (tokens.length === 0) {
     tokens = (await getAllTokenBalancesViaRpc()).filter(t => t.mint !== SOL_MINT);
+  }
+
+  // Filter by known mints unless explicitly bypassed
+  if (!bypassAllowlist) {
+    const knownMints = await _getKnownMints();
+    tokens = tokens.filter(t => {
+      if (!knownMints.has(t.mint)) {
+        log("dust_sweep", `⛔ SKIPPED unknown token ${t.symbol || t.mint.slice(0, 8)} (${t.mint}) — not from a known position`);
+        return false;
+      }
+      return true;
+    });
   }
 
   const results = [];
@@ -425,10 +441,23 @@ export async function sweepDustTokens() {
  * Sweep ALL non-SOL tokens (any USD value > 0) back to SOL via swap.
  * Used by /withdraw to convert everything to SOL after closing all positions.
  */
-export async function sweepAllTokensToSol() {
+export async function sweepAllTokensToSol({ bypassAllowlist = false } = {}) {
   const balances = await getWalletBalances({});
   const SOL_MINT = "So11111111111111111111111111111111111111112";
-  const tokens = (balances.tokens || []).filter(t => t.usd > 0 && t.mint !== SOL_MINT);
+  let tokens = (balances.tokens || []).filter(t => t.usd > 0 && t.mint !== SOL_MINT);
+
+  // Filter by known mints unless explicitly bypassed
+  if (!bypassAllowlist) {
+    const knownMints = await _getKnownMints();
+    tokens = tokens.filter(t => {
+      if (!knownMints.has(t.mint)) {
+        log("sweep_all", `⛔ SKIPPED unknown token ${t.symbol || t.mint.slice(0, 8)} (${t.mint}) — not from a known position`);
+        return false;
+      }
+      return true;
+    });
+  }
+
   const results = [];
   for (const token of tokens) {
     try {
@@ -513,10 +542,18 @@ export async function swapAllTokensAfterClose({ maxRounds = 3, targetMint = null
     const balances = await getWalletBalances({});
     const allTokens = balances.tokens || [];
 
-    // Swap ALL non-SOL tokens with any balance — dust included
+    // Swap only known tokens (from deployed positions) — skip unknown/airdropped tokens
+    const knownMints = await _getKnownMints();
+    if (targetMint) knownMints.add(targetMint);
+
     let tokens = allTokens.filter(t => {
       if (t.mint === SOL_MINT) return false;
-      return t.balance > 0;
+      if (t.balance <= 0) return false;
+      if (!knownMints.has(t.mint)) {
+        log("post_close_swap", `⛔ SKIPPED unknown token ${t.symbol || t.mint.slice(0, 8)} (${t.mint}) — not from a known position`);
+        return false;
+      }
+      return true;
     });
 
     // If Helius returned no tokens (rate-limited / RPC fallback),
@@ -525,7 +562,12 @@ export async function swapAllTokensAfterClose({ maxRounds = 3, targetMint = null
       const rpcTokens = await getAllTokenBalancesViaRpc();
       tokens = rpcTokens.filter(t => {
         if (t.mint === SOL_MINT) return false;
-        return !allResults.some(r => r.mint === t.mint && r.success);
+        if (allResults.some(r => r.mint === t.mint && r.success)) return false;
+        if (!knownMints.has(t.mint)) {
+          log("post_close_swap", `⛔ SKIPPED unknown token ${t.mint.slice(0, 8)} (${t.mint}) — not from a known position`);
+          return false;
+        }
+        return true;
       });
     }
 

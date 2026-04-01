@@ -1236,7 +1236,7 @@ if (isTTY) {
 
           // Sweep ALL remaining non-SOL tokens to SOL
           await new Promise(r => setTimeout(r, 3000)); // let balances settle
-          const sweepResults = await sweepAllTokensToSol();
+          const sweepResults = await sweepAllTokensToSol({ bypassAllowlist: true });
 
           // Build summary
           const closedOk = closeResults.filter(r => r.success).length;
@@ -1668,7 +1668,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
           }
 
           await new Promise(r => setTimeout(r, 3000));
-          const sweepResults = await sweepAllTokensToSol();
+          const sweepResults = await sweepAllTokensToSol({ bypassAllowlist: true });
 
           const closedOk = closeResults.filter(r => r.success).length;
           const closedFail = closeResults.filter(r => !r.success).length;

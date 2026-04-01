@@ -11,6 +11,7 @@ import { log } from "../logger.js";
 import {
   trackPosition,
   updatePoolName,
+  updateBaseMint,
   markOutOfRange,
   markInRange,
   recordClaim,
@@ -279,6 +280,7 @@ export async function deployPosition({
     active_bin: activeBin.binId,
     initial_value_usd,
     variant,
+    base_mint: pool.lbPair.tokenXMint.toString(),
   };
 
   log("deploy", `Pool: ${pool_address}`);
@@ -812,6 +814,10 @@ export async function closePosition({ position_address, close_reason }) {
     // Backfill state.json so future lookups succeed immediately
     if (poolName && trackedPre && !trackedPre.pool_name) {
       updatePoolName(position_address, poolName);
+    }
+    // Backfill base_mint for positions deployed before the allowlist feature
+    if (trackedPre && !trackedPre.base_mint) {
+      updateBaseMint(position_address, pool.lbPair.tokenXMint.toString());
     }
 
     recordClose(position_address, close_reason || "agent decision");
