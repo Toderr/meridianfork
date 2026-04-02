@@ -335,7 +335,7 @@ if trailing active AND
    pnl_pct < trailingFloor           → CLOSE (trailing stop triggered)
 ```
 
-The empty position check runs before the `pnl_pct == null` guard so it catches on-chain fallback cases too (where API returns 0 balances).
+The empty position check runs before the `pnl_pct == null` guard so it catches on-chain fallback cases too (where API returns 0 balances). Empty-position closes report `pnl_pct = 0` and `pnl_usd = 0` — the position was already drained on-chain, so -100% would be misleading. Override applied in `closePosition()` (`tools/dlmm.js`) when `close_reason` starts with "Empty position" and `finalValueUsd === 0`.
 
 Thresholds (`fastTpPct=15`, `takeProfitFeePct`, `trailingActivate=6`, `trailingFloor=5`, `emergencyPriceDropPct`) are stored in `config.management` and read each tick — hot-reload and auto-evolution apply immediately. Lesson TP rules (`min_profit_pct`) are also loaded each tick from `extractRules("MANAGER")`. Peak is stored in `_trailingStops` Map (in-memory, resets on restart). Calls `executeTool("close_position")` which handles close → notify → swap → journal → hive sync.
 
@@ -396,6 +396,9 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Pinned lesson cap**: Max 10 pinned lessons. `pinLesson()` returns `{ error }` if cap is reached without saving.
 - **Dashboard lesson delete**: Dashboard lessons grid has a per-card delete button (✕, appears on hover). Calls `DELETE /api/lessons/:id`.
 - **Dashboard lessons filter**: `GET /api/lessons?source=regular|experiment` filters by lesson source. Without param, returns all.
+- **Dashboard lessons search**: Text input in the lessons section header. Filters cards by rule text, structural type, category, outcome, or tags (client-side, no re-fetch).
+- **Dashboard lesson structural type**: Each lesson card shows a `rule_type` badge (e.g. `MAX LOSS PCT`, `FORCE CLOSE AGED LOSING`). Computed by `getLessonRuleType()` (`lessons.js`) and included in `/api/lessons` response.
+- **Dashboard experimental badge**: Active position cards show a `🧪 EXP` badge when `variant` starts with `"exp_"`. `getMyPositions()` now includes `variant` in the returned position objects.
 - **Dashboard journal edit/delete**: Journal table has per-row action buttons (✎ edit, ✕ delete) visible on row hover. Delete calls `DELETE /api/journal/:id`. Edit opens a modal to update: pool_name, strategy, amount_sol, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, close_reason — calls `PUT /api/journal/:id`. Both mutations invalidate the portfolio cache. Backend: `removeJournalEntry(id)` and `updateJournalEntry(id, fields)` in `journal.js`.
 - **Dashboard position tiers**: Active positions are grouped by volatility tier (High ≥ 5, Medium 2–5, Low < 2, null → Medium). Each tier has a color-coded header (red/yellow/green) with position count. Empty tiers are hidden.
 - **Lesson enforcement (3-layer)**:
@@ -414,6 +417,7 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Constraint persistence (GENERAL role)**: When user gives verbal constraints (sizing cap, stop loss, slot reservation), the GENERAL agent is instructed to call `add_lesson` with exact parseable phrasing AND update config values (e.g. `emergencyPriceDropPct`, `maxDeployAmount`). Verbal-only instructions are NOT persisted across sessions.
 - **Max change per step**: 20% to prevent whiplash
 - **Persistent instructions**: Tell agent "hold until X%" or "save lesson: ..." → agent calls `set_position_note` / `add_lesson` → stored in state.json / lessons.json → applied every cycle. Verbal-only instructions (no tool call) are forgotten after the turn.
+- **Lesson dedup / update-in-place**: `addLesson()` in `lessons.js` extracts the structural type of the new rule via `getLessonRuleType()` before appending. If an existing regular lesson of the same type already exists (e.g. two `max_loss_pct` rules), the existing lesson's rule text is updated in place and `updated_at` is set — no duplicate created. Multi-variant types are discriminated: `block_strategy` by strategy name, `reserve_slot` by token, `block_concentration` by field. Freeform rules that don't match any type fall through to normal append. Experiment lessons are never deduped.
 - **Claude lesson updater** (`scripts/claude-lesson-updater.js`): Runs every 5 closes, AFTER `evolveThresholds()`, fire-and-forget. Uses `claude --print` to analyze 20 recent closes + existing lessons, adds new lesson rules via `addLesson()`, applies minor config tweaks (allowed keys: `binsBelow`, `strategyRules`, `minFeeTvl24h`, `minAgeForYieldExit`, `outOfRangeBinsToClose`), notifies journal bot with `🧠 CLAUDE REVIEW` if any changes were made. The prompt includes a **LESSON FORMAT** guide documenting all parseable keyword patterns from `lesson-rules.js` so Claude writes lessons that get auto-enforced (e.g. `AVOID volatility > X`, `NEVER deploy more than X SOL`, `TAKE PROFIT at X%`) instead of fuzzy guidance.
 - **Claude Ask** (`scripts/claude-ask.js`): General-purpose Q&A agent triggered by Telegram `/claude <question>`. Loads runtime context (open positions from `state.json`, last 15 journal entries, last 20 lessons, last 10 performance records, strategy config subset) and spawns `claude --print` with a 3-minute timeout. Special output prefixes: `LESSON: <text>` → caller can extract and save lesson; `CONFIG: key=value` → caller can apply config change. Standalone test: `node scripts/claude-ask.js "your question"`.
 
@@ -494,6 +498,8 @@ Experiment positions (variant starts with `"exp_"`) bypass:
 - `base_mint` duplicate guard (same token, iterating)
 - Confidence gate (experiments always use `confidence_level: 10`)
 - Lesson deploy compliance (`checkDeployCompliance`) — experiments iterate params freely
+- `reserve_slot` lesson enforcement — slot reservation rules do not block experiment deploys
+- `bin_step` range check (`minBinStep`/`maxBinStep`) — experiments can deploy into any pool regardless of configured bin_step range
 - Management pre-enforcement (`checkPositionCompliance`) — experiments are not force-closed/held by regular lesson rules
 
 ## Roadmap / Improvement Ideas

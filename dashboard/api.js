@@ -11,7 +11,7 @@ import { getJournalEntries, removeJournalEntry, updateJournalEntry } from "../jo
 import { getMyPositions } from "../tools/dlmm.js";
 import { getWalletBalances } from "../tools/wallet.js";
 import { getTrackedPositions, getStateSummary } from "../state.js";
-import { getPerformanceSummary, listLessons, removeLesson } from "../lessons.js";
+import { getPerformanceSummary, listLessons, removeLesson, getLessonRuleType } from "../lessons.js";
 import { _stats } from "../stats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -227,7 +227,8 @@ export async function handleLessons(req, res, url) {
       lessons.push(...(raw.lessons || []));
     }
     lessons.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")); // newest first
-    json(res, { total: lessons.length, lessons });
+    const enriched = lessons.map(l => ({ ...l, rule_type: getLessonRuleType(l.rule) }));
+    json(res, { total: enriched.length, lessons: enriched });
   } catch (e) {
     err(res, e.message);
   }

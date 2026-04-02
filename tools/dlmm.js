@@ -594,6 +594,7 @@ export async function getMyPositions({ force = false } = {}) {
         amount_sol_api: p?.amountSol != null ? Math.round(parseFloat(p.amountSol) * 10000) / 10000 : null,
         age_minutes: ageMinutes,
         minutes_out_of_range: minutesOutOfRange(r.position),
+        variant: tracked?.variant || null,
       };
     }));
 
@@ -864,6 +865,12 @@ export async function closePosition({ position_address, close_reason }) {
           feesUsd       = (cachedPos.collected_fees_usd || 0) + (cachedPos.unclaimed_fees_usd || 0);
           pnlSolNative  = cachedPos.pnl_sol        ?? null;
         }
+      }
+
+      // Empty-position closes: position was already drained on-chain; report 0% not -100%
+      if (close_reason && /^empty position/i.test(close_reason) && finalValueUsd === 0) {
+        pnlPct = 0;
+        pnlUsd = 0;
       }
 
       _positionsCacheAt = 0; // invalidate cache

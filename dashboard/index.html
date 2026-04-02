@@ -720,7 +720,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
       <!-- ═══ LESSONS ══════════════════════════════════ -->
       <section class="section" id="section-lessons">
-        <div class="sh"><div class="sh-title">Derived Lessons</div><div class="sh-line"></div></div>
+        <div class="sh"><div class="sh-title">Derived Lessons</div><input type="text" id="lesson-search" placeholder="Search lessons…" class="log-input" style="width:200px;font-size:11px;margin-left:12px"><div class="sh-line"></div></div>
         <div class="lessons-grid" id="lessons-grid"><div class="empty">Loading...</div></div>
       </section>
 
@@ -745,6 +745,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 // ── State ──────────────────────────────────────────────
 let _stats = null, _wallet = null, _positions = null, _portfolio = null;
 let _history = [], _journal = [], _lessons = [];
+let _lessonSearch = "";
 let _hsort = { col: "timestamp", dir: "desc" };
 let _jsort = { col: "timestamp", dir: "desc" };
 let _jfilter = "";
@@ -950,9 +951,10 @@ function renderPosCard(p, i, sol, solPrice) {
     ? (feesSol != null ? f(feesSol,4)+" SOL" : "—")
     : "$"+f(feesUsd,2);
 
+  const expBadge = p.variant?.startsWith("exp_") ? `<span class="badge b-clm" style="font-size:7px;padding:1px 5px">🧪 EXP</span>` : "";
   return `<div class="card pos-card" style="animation-delay:${i*0.07}s">
     <div class="pc-header">
-      <div class="pc-name">${p.pair||p.pool_name||"—"}</div>
+      <div class="pc-name">${p.pair||p.pool_name||"—"} ${expBadge}</div>
       <div class="pc-strat">${p.strategy||"—"}</div>
     </div>
     ${status}
@@ -1401,19 +1403,34 @@ document.getElementById("cal-next").addEventListener("click", () => {
 
 
 // ── Lessons ────────────────────────────────────────────
+function fmtRuleType(t) {
+  if (!t) return null;
+  const [type, disc] = t.split(':');
+  const label = type.replace(/_/g, ' ').toUpperCase();
+  return disc ? `${label}: ${disc}` : label;
+}
 function renderLessons() {
   const grid = $("lessons-grid");
-  if (!_lessons.length) { grid.innerHTML='<div class="empty">No lessons yet</div>'; return; }
+  const q = _lessonSearch.toLowerCase();
+  const visible = q ? _lessons.filter(l =>
+    (l.rule||"").toLowerCase().includes(q) ||
+    (l.rule_type||"").toLowerCase().includes(q) ||
+    (l.category||"").toLowerCase().includes(q) ||
+    (l.outcome||"").toLowerCase().includes(q) ||
+    (l.tags||[]).some(t => t.toLowerCase().includes(q))
+  ) : _lessons;
+  if (!visible.length) { grid.innerHTML=`<div class="empty">${q?"No matching lessons":"No lessons yet"}</div>`; return; }
   const omap = { good:"b-cp", bad:"b-cn", poor:"b-clm", manual:"b-open" };
-  grid.innerHTML = _lessons.map(l => {
+  grid.innerHTML = visible.map((l, lIdx) => {
     const bc   = omap[l.outcome]||"b-cls";
     const tags = (l.tags||[]).map(t=>`<span class="ltag">${t}</span>`).join("");
     const role = l.role?`<span class="badge b-cls">${l.role}</span>`:"";
+    const rtype = fmtRuleType(l.rule_type);
+    const rtBadge = rtype?`<span class="badge b-cls" style="opacity:0.7">${rtype}</span>`:"";
     const pin  = l.pinned?`<svg class="lpin" width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`:"";
-    const lIdx = _lessons.indexOf(l);
     return `<div class="card lesson-card" style="animation-delay:${lIdx*0.07}s">
       <button class="lesson-del" title="Delete lesson" onclick="deleteLesson(${l.id})">✕</button>
-      <div class="lmeta"><span class="badge ${bc}">${(l.outcome||"—").toUpperCase()}</span>${role}${pin}</div>
+      <div class="lmeta"><span class="badge ${bc}">${(l.outcome||"—").toUpperCase()}</span>${role}${rtBadge}${pin}</div>
       <div class="lrule">${l.rule||"—"}</div>
       <div class="ltags">${tags}</div>
     </div>`;
@@ -1456,6 +1473,7 @@ async function deleteLesson(id) {
   } catch { alert("Failed to delete lesson."); }
 }
 async function fetchLessons()  { try { const d=await api("/api/lessons"); _lessons=d.lessons||[]; renderLessons(); } catch {} }
+$("lesson-search").addEventListener("input", e => { _lessonSearch = e.target.value; renderLessons(); });
 
 function tick() { $("last-update").textContent = new Date().toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit",second:"2-digit"}); }
 

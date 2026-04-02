@@ -682,7 +682,103 @@ function nudge(current, target, maxChange) {
 // ─── Manual Lessons ────────────────────────────────────────────
 
 /**
+ * Extract a structural similarity key from a rule text.
+ * Used by addLesson() to detect same-type lessons that should update in place
+ * rather than accumulate as conflicting duplicates.
+ *
+ * Returns a string key like "max_loss_pct" or "block_strategy:bid_ask", or null
+ * if the rule doesn't match any extractable pattern.
+ *
+ * Mirrors the regex patterns in lesson-rules.js extractRules().
+ */
+export function getLessonRuleType(rule) {
+  if (!rule) return null;
+  const upper = rule.toUpperCase();
+
+  // block_strategy — discriminated by strategy name (check before block_high_volatility)
+  const strategyMatch = rule.match(/strategy[=:"'\s]+(spot|bid_ask|fee_compounding|multi_layer|partial_harvest|custom_ratio_spot)/i);
+  if (strategyMatch && (upper.includes("AVOID") || upper.includes("NEVER") || upper.includes("FAILED"))) {
+    return `block_strategy:${strategyMatch[1].toLowerCase().trim()}`;
+  }
+
+  // block_high_volatility
+  if (rule.match(/volatility[=\s]*[>≥]\s*\d+/i) && (upper.includes("AVOID") || upper.includes("SKIP") || upper.includes("NEVER"))) {
+    return "block_high_volatility";
+  }
+
+  // block_low_fees
+  if (rule.match(/global_fees_sol\s*[<≤]\s*\d+/i)) return "block_low_fees";
+
+  // block_concentration — discriminated by field
+  if (rule.match(/top_10[_\w]*\s*[>≥]\s*\d+/i) && (upper.includes("AVOID") || upper.includes("SKIP") || upper.includes("HARD SKIP"))) {
+    return "block_concentration:top_10_pct";
+  }
+  if (rule.match(/bundlers?\s*[>≥]\s*\d+/i) && (upper.includes("AVOID") || upper.includes("SKIP") || upper.includes("HARD SKIP"))) {
+    return "block_concentration:bundlers_pct";
+  }
+
+  // max_deploy_sol
+  if (
+    rule.match(/(?:more\s+than|cap(?:ped)?\s+(?:sizing|deploy)?\s*at|max(?:imum)?\s+(?:deploy\s+)?|deploy\s+max\s+)\s*\d+(?:\.\d+)?\s*sol/i) &&
+    (upper.includes("NEVER") || upper.includes("AVOID") || upper.includes("DO NOT") || upper.includes("CAP") || upper.includes("MAX"))
+  ) {
+    return "max_deploy_sol";
+  }
+
+  // force_close_aged_losing
+  if (
+    rule.match(/(?:holding|hold).*?\d+\s*m(?:in)?/i) &&
+    rule.match(/pnl[_\w]*\s*[<≤]\s*[+-]?\d+/i) &&
+    (upper.includes("AVOID") || upper.includes("NEVER"))
+  ) {
+    return "force_close_aged_losing";
+  }
+
+  // oor_grace_period
+  if (
+    rule.match(/(?:oor|out.of.range)[^<>]*[<≤]\s*\d+\s*m(?:in)?/i) &&
+    (upper.includes("DO NOT") || upper.includes("AVOID CLOS") || upper.includes("NOT AUTO-CLOSE") || upper.includes("OFTEN RECOVERS"))
+  ) {
+    return "oor_grace_period";
+  }
+
+  // max_loss_pct
+  if (
+    rule.match(/(?:hold(?:ing)?\s+(?:a\s+)?positions?\s+below\s+[-−]?|stop\s+loss\s+at\s+[-−]?|cut\s+(?:the\s+)?losses?\s+(?:at\s+)?[-−]?)\d+(?:\.\d+)?\s*%/i) &&
+    (upper.includes("NEVER") || upper.includes("AVOID") || upper.includes("DO NOT") || upper.includes("STOP LOSS") || upper.includes("CUT LOSS"))
+  ) {
+    return "max_loss_pct";
+  }
+
+  // min_profit_pct
+  if (
+    rule.match(/(?:take[\s-]*profit|tp)\s+(?:at\s+|when\s+pnl[_\s]*[>≥]=?\s*)?[+]?\d+(?:\.\d+)?\s*%/i) ||
+    rule.match(/(?:close|exit)\s+(?:at\s+)?[+]?\d+(?:\.\d+)?\s*%\s*profit/i)
+  ) {
+    return "min_profit_pct";
+  }
+
+  // protect_null_volatility
+  if (
+    (upper.includes("NULL") || upper.includes("VOLATILITY=NULL")) &&
+    (upper.includes("AVOID CLOS") || upper.includes("DO NOT CLOSE"))
+  ) {
+    return "protect_null_volatility";
+  }
+
+  // reserve_slot — discriminated by token name
+  const reserveSlotMatch = rule.match(/(?:spare|reserve|keep|hold)\s+\d+\s+slots?\s+(?:for|to deploy)\s+([\w][\w-]*)/i);
+  if (reserveSlotMatch) {
+    return `reserve_slot:${reserveSlotMatch[1].toUpperCase().trim()}`;
+  }
+
+  return null;
+}
+
+/**
  * Add a manual lesson (e.g. from operator observation).
+ * If an existing lesson of the same structural type already exists, it is
+ * updated in place instead of appending a duplicate (prevents conflicting rules).
  *
  * @param {string}   rule
  * @param {string[]} tags
@@ -692,6 +788,24 @@ function nudge(current, target, maxChange) {
  */
 export function addLesson(rule, tags = [], { pinned = false, role = null, category = null, source = "regular" } = {}) {
   const src = source || "regular";
+
+  // For regular lessons, check if a same-type lesson already exists and update it
+  if (src !== "experiment") {
+    const newKey = getLessonRuleType(rule);
+    if (newKey) {
+      const data = loadRegular();
+      const idx = data.lessons.findIndex((l) => getLessonRuleType(l.rule) === newKey);
+      if (idx !== -1) {
+        const prev = data.lessons[idx].rule;
+        data.lessons[idx].rule = rule;
+        data.lessons[idx].updated_at = new Date().toISOString();
+        saveRegular(data);
+        log("lessons", `Lesson updated in place [${src}] (${newKey}): "${prev}" → "${rule}"`);
+        return;
+      }
+    }
+  }
+
   const lesson = {
     id: Date.now(),
     rule,

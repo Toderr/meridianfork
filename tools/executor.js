@@ -468,14 +468,16 @@ async function runSafetyChecks(name, args) {
         log("warn", `Lesson compliance check failed (non-fatal): ${lessonErr.message}`);
       }
 
-      // Reject pools with bin_step out of configured range
-      const minStep = config.screening.minBinStep;
-      const maxStep = config.screening.maxBinStep;
-      if (args.bin_step != null && (args.bin_step < minStep || args.bin_step > maxStep)) {
-        return {
-          pass: false,
-          reason: `bin_step ${args.bin_step} is outside the allowed range of [${minStep}-${maxStep}].`,
-        };
+      // Reject pools with bin_step out of configured range (experiments exempt — iterating freely)
+      if (!isExperiment) {
+        const minStep = config.screening.minBinStep;
+        const maxStep = config.screening.maxBinStep;
+        if (args.bin_step != null && (args.bin_step < minStep || args.bin_step > maxStep)) {
+          return {
+            pass: false,
+            reason: `bin_step ${args.bin_step} is outside the allowed range of [${minStep}-${maxStep}].`,
+          };
+        }
       }
 
       // Check position count limit + duplicate pool guard
@@ -503,7 +505,7 @@ async function runSafetyChecks(name, args) {
       try {
         const { screening: slotRules } = extractRules("SCREENER");
         const reserveRules = slotRules.filter((r) => r.type === "reserve_slot");
-        if (reserveRules.length > 0) {
+        if (reserveRules.length > 0 && !isExperiment) {
           const openPairs = positions.positions.map((p) => (p.pair || p.name || "").toUpperCase());
           const deployingPair = (args.pair || "").toUpperCase();
           const deployingMint = (args.base_mint || "").toUpperCase();
