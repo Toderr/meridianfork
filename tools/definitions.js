@@ -723,6 +723,11 @@ Examples:
           pinned: {
             type: "boolean",
             description: "Pin this lesson so it's always injected regardless of memory cap. Use for critical rules."
+          },
+          source: {
+            type: "string",
+            enum: ["regular", "experiment"],
+            description: "Store in experiment-lessons.json instead of lessons.json. Use 'experiment' for experiment-specific observations."
           }
         },
         required: ["rule"]

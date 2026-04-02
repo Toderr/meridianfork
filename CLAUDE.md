@@ -38,6 +38,7 @@ Meridian is a Node.js autonomous agent that manages liquidity positions on Meteo
 | `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
 | `scripts/claude-ask.js` | General-purpose Q&A agent for Telegram `/claude` command — loads runtime context, spawns `claude --print` |
 | `scripts/claude-lesson-updater.js` | Auto lesson updater — runs every 5 closes via `claude --print` |
+| `scripts/claude-lesson-summarizer.js` | Daily lesson cleanup — runs at 23:59 UTC+7 via `claude --print`; deletes superseded/contradicted lessons and merges similar ones |
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
@@ -260,6 +261,8 @@ On failure, each attempt logs `[retry] <label> attempt N/5 failed (...), retryin
 | `/report [daily\|weekly\|monthly]` | Trading report |
 | `/claude <question>` | Ask Claude anything — loads runtime context (positions, journal, lessons, config), answers via `claude --print`. Supports "take lesson" → outputs `LESSON: ...` and "update config" → outputs `CONFIG: key=value` |
 | `/review` | Manually trigger Claude lesson updater |
+| `/update_lesson` | List all lessons (regular + experiment) with 1-based index numbers |
+| `/update_lesson <N> <new rule>` | Update the rule text of lesson #N in place |
 | `/withdraw` | Zap out all — close every open position, swap all tokens to SOL, report final balance |
 
 ## VPS Deployment
@@ -385,7 +388,8 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 ## Learning System
 
 - **Lesson derivation**: Auto after each close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0%), bad (<-5%). Each lesson gets `source: "regular"` or `"experiment"` based on the position's variant.
-- **Experiment lesson separation**: Regular and experiment lessons are stored in separate files (`lessons.json` and `experiment-lessons.json`). On first load, existing experiment lessons are auto-migrated from `lessons.json` to `experiment-lessons.json`. Experiment lessons are excluded from prompt injection, threshold evolution, and rule extraction. Use `getExperimentLessons(experimentId?)` to query them. `list_lessons` accepts a `source` filter ("regular" or "experiment").
+- **Experiment lesson separation**: Regular and experiment lessons are stored in separate files (`lessons.json` and `experiment-lessons.json`). On first load, existing experiment lessons are auto-migrated from `lessons.json` to `experiment-lessons.json`. Experiment lessons are excluded from prompt injection, threshold evolution, rule extraction, and daily summarization. Use `getExperimentLessons(experimentId?)` to query them. `list_lessons` accepts a `source` filter ("regular" or "experiment").
+- **Adding experiment lessons manually**: `add_lesson` tool accepts `source: "experiment"` to store directly in `experiment-lessons.json`. Tell the agent: `"save experiment lesson: <rule>"` — agent calls `add_lesson` with `source: "experiment"`. Via Telegram: `/update_lesson` lists them with `[EXP]` badge; they can be edited/deleted from the dashboard like regular lessons.
 - **Threshold evolution**: Every 5 closes, `evolveThresholds()` in `lessons.js` auto-adjusts 7 dimensions (experiment positions excluded):
   - Screening: `maxVolatility`, `minFeeTvlRatio`, `minOrganic`
   - Strategy: `strategyRules` (spot vs bid_ask per volatility bucket), `binsBelow` (bin width via range_efficiency)
@@ -395,8 +399,11 @@ Opt-in collective intelligence network (`hive-mind.js`). When enabled:
 - **Lesson injection**: ALL lessons injected — no caps. Pinned → Role-matched → Recent. Priority: good > bad > manual > neutral
 - **Pinned lesson cap**: Max 10 pinned lessons. `pinLesson()` returns `{ error }` if cap is reached without saving.
 - **Dashboard lesson delete**: Dashboard lessons grid has a per-card delete button (✕, appears on hover). Calls `DELETE /api/lessons/:id`.
+- **Dashboard lesson edit**: Each lesson card has a pencil (✎) button that opens a modal to edit: rule text, tags (comma-separated), outcome, role, category, pinned. Calls `PUT /api/lessons/:id`. Backend: `updateLessonFields(id, fields)` in `lessons.js` (editable fields: rule, tags, outcome, pinned, role, category).
 - **Dashboard lessons filter**: `GET /api/lessons?source=regular|experiment` filters by lesson source. Without param, returns all.
 - **Dashboard lessons search**: Text input in the lessons section header. Filters cards by rule text, structural type, category, outcome, or tags (client-side, no re-fetch).
+- **Dashboard lessons categories**: Filter pills above the grid — "All (N)" plus one pill per category present (Strategy, Stop Loss, Take Profit, Sizing, General). When "All" is selected, lessons are grouped under colored section headers. When a category pill is active, only that group is shown flat.
+- **Daily lesson summarization**: `scripts/claude-lesson-summarizer.js` runs at 23:59 UTC+7. Uses `claude --print` to delete superseded/contradicted lessons and merge groups of 3+ similar lessons. Safety: never deletes pinned or experiment lessons, max 40% reduction per run. Notifies both bots with `🧹 LESSON CLEANUP` message. Manual trigger: `node scripts/claude-lesson-summarizer.js`.
 - **Dashboard lesson structural type**: Each lesson card shows a `rule_type` badge (e.g. `MAX LOSS PCT`, `FORCE CLOSE AGED LOSING`). Computed by `getLessonRuleType()` (`lessons.js`) and included in `/api/lessons` response.
 - **Dashboard experimental badge**: Active position cards show a `🧪 EXP` badge when `variant` starts with `"exp_"`. `getMyPositions()` now includes `variant` in the returned position objects.
 - **Dashboard journal edit/delete**: Journal table has per-row action buttons (✎ edit, ✕ delete) visible on row hover. Delete calls `DELETE /api/journal/:id`. Edit opens a modal to update: pool_name, strategy, amount_sol, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, close_reason — calls `PUT /api/journal/:id`. Both mutations invalidate the portfolio cache. Backend: `removeJournalEntry(id)` and `updateJournalEntry(id, fields)` in `journal.js`.

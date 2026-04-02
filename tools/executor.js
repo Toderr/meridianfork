@@ -104,9 +104,10 @@ const toolMap = {
   get_hive_pulse: () => getHivePulse(),
   get_hive_pool_consensus: ({ pool_address }) => queryPoolConsensus(pool_address),
   get_hive_lessons: ({ tags } = {}) => queryLessonConsensus(tags),
-  add_lesson: ({ rule, tags, pinned, role }) => {
-    addLesson(rule, tags || [], { pinned: !!pinned, role: role || null });
-    return { saved: true, rule, pinned: !!pinned, role: role || "all" };
+  add_lesson: ({ rule, tags, pinned, role, source }) => {
+    const src = source === "experiment" ? "experiment" : "regular";
+    addLesson(rule, tags || [], { pinned: !!pinned, role: role || null, source: src });
+    return { saved: true, rule, pinned: !!pinned, role: role || "all", source: src };
   },
   pin_lesson:   ({ id }) => pinLesson(id),
   unpin_lesson: ({ id }) => unpinLesson(id),

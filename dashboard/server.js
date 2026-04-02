@@ -19,6 +19,7 @@ import {
   handleDeleteJournal,
   handleUpdateJournal,
   handleLessons,
+  handleUpdateLesson,
   handleDeleteLesson,
   handleLogs,
 } from "./api.js";
@@ -74,6 +75,7 @@ export function startDashboard(port = 3000, password = null) {
         if (req.method === "DELETE" && pathname.startsWith("/api/journal/")) return await handleDeleteJournal(req, res, pathname);
         if (req.method === "PUT"    && pathname.startsWith("/api/journal/")) return await handleUpdateJournal(req, res, pathname);
         if (pathname === "/api/lessons")   return await handleLessons(req, res, url);
+        if (req.method === "PUT"    && pathname.startsWith("/api/lessons/")) return await handleUpdateLesson(req, res, pathname);
         if (req.method === "DELETE" && pathname.startsWith("/api/lessons/")) return await handleDeleteLesson(req, res, pathname);
         if (pathname === "/api/logs")      return await handleLogs(req, res, url);
       } catch (e) {

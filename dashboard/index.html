@@ -386,12 +386,24 @@ td.nv { color: var(--red); }
 .neg-c .cal-pct { color: var(--red); }
 
 /* ── Lessons ─────────────────────────────────────────────── */
+.lesson-filters { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+.lesson-filter  { padding:4px 12px; border-radius:20px; border:1px solid var(--border); background:transparent; color:var(--muted); cursor:pointer; font-size:11px; transition:all 0.15s; }
+.lesson-filter:hover  { border-color:var(--accent); color:var(--text); }
+.lesson-filter.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+.lesson-group-hdr   { grid-column:1/-1; display:flex; align-items:center; gap:10px; padding:6px 0 2px; margin-top:8px; }
+.lesson-group-hdr:first-child { margin-top:0; }
+.lesson-group-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; }
+.lesson-group-count { font-size:10px; color:var(--muted); }
+.lesson-group-line  { flex:1; height:1px; background:var(--border); }
 .lessons-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
 .lesson-card { padding: 14px; animation: scaleIn 0.3s ease-out both; transition: transform 0.18s; position: relative; }
 .lesson-card:hover { transform: translateY(-1px); }
 .lesson-del { position: absolute; top: 8px; right: 8px; background: none; border: none; color: var(--cn); opacity: 0; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 4px; transition: opacity 0.15s, background 0.15s; }
 .lesson-card:hover .lesson-del { opacity: 0.5; }
 .lesson-del:hover { opacity: 1 !important; background: rgba(255,80,80,0.15); }
+.lesson-edit { position: absolute; top: 8px; right: 32px; background: none; border: none; color: var(--muted); opacity: 0; cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 4px; transition: opacity 0.15s, background 0.15s; }
+.lesson-card:hover .lesson-edit { opacity: 0.5; }
+.lesson-edit:hover { opacity: 1 !important; background: rgba(100,180,255,0.15); color: var(--accent); }
 .lmeta { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
 .lrule { font-size: 12px; line-height: 1.6; color: var(--text); margin-bottom: 8px; }
 .ltags { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -720,7 +732,8 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
       <!-- ═══ LESSONS ══════════════════════════════════ -->
       <section class="section" id="section-lessons">
-        <div class="sh"><div class="sh-title">Derived Lessons</div><input type="text" id="lesson-search" placeholder="Search lessons…" class="log-input" style="width:200px;font-size:11px;margin-left:12px"><div class="sh-line"></div></div>
+        <div class="sh"><div class="sh-title">Derived Lessons</div><input type="text" id="lesson-search" placeholder="Search lessons…" class="log-input" style="width:180px;font-size:11px;margin-left:12px"><div class="sh-line"></div></div>
+        <div class="lesson-filters" id="lesson-filters"></div>
         <div class="lessons-grid" id="lessons-grid"><div class="empty">Loading...</div></div>
       </section>
 
@@ -745,7 +758,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 // ── State ──────────────────────────────────────────────
 let _stats = null, _wallet = null, _positions = null, _portfolio = null;
 let _history = [], _journal = [], _lessons = [];
-let _lessonSearch = "";
+let _lessonSearch = "", _lessonCatFilter = "all";
 let _hsort = { col: "timestamp", dir: "desc" };
 let _jsort = { col: "timestamp", dir: "desc" };
 let _jfilter = "";
@@ -1409,33 +1422,86 @@ function fmtRuleType(t) {
   const label = type.replace(/_/g, ' ').toUpperCase();
   return disc ? `${label}: ${disc}` : label;
 }
+const CAT_META = {
+  strategy:      { label: "Strategy",    color: "#4fa8e8" },
+  stop_loss:     { label: "Stop Loss",   color: "var(--cn)" },
+  taking_profit: { label: "Take Profit", color: "var(--cp)" },
+  sizing:        { label: "Sizing",      color: "var(--yellow)" },
+  general:       { label: "General",     color: "var(--muted)" },
+};
+const CAT_ORDER = ["strategy","stop_loss","taking_profit","sizing","general"];
+
 function renderLessons() {
   const grid = $("lessons-grid");
+  const filtersEl = $("lesson-filters");
   const q = _lessonSearch.toLowerCase();
-  const visible = q ? _lessons.filter(l =>
+
+  // Apply search filter first
+  const searched = q ? _lessons.filter(l =>
     (l.rule||"").toLowerCase().includes(q) ||
     (l.rule_type||"").toLowerCase().includes(q) ||
     (l.category||"").toLowerCase().includes(q) ||
     (l.outcome||"").toLowerCase().includes(q) ||
     (l.tags||[]).some(t => t.toLowerCase().includes(q))
   ) : _lessons;
-  if (!visible.length) { grid.innerHTML=`<div class="empty">${q?"No matching lessons":"No lessons yet"}</div>`; return; }
+
+  // Build filter pills from categories that have lessons
+  const catCounts = {};
+  for (const l of searched) { const c = l.category||"general"; catCounts[c] = (catCounts[c]||0)+1; }
+  const pillCats = CAT_ORDER.filter(c => catCounts[c]);
+  filtersEl.innerHTML = [
+    `<button class="lesson-filter${_lessonCatFilter==="all"?" active":""}" onclick="setLessonCat('all')">All (${searched.length})</button>`,
+    ...pillCats.map(c => {
+      const m = CAT_META[c]||{label:c,color:"var(--muted)"};
+      const act = _lessonCatFilter===c?" active":"";
+      return `<button class="lesson-filter${act}" style="${act?`background:${m.color};border-color:${m.color}`:`color:${m.color};border-color:${m.color}40`}" onclick="setLessonCat('${c}')">${m.label} (${catCounts[c]})</button>`;
+    })
+  ].join("");
+
+  // Apply category filter
+  const visible = _lessonCatFilter==="all" ? searched : searched.filter(l => (l.category||"general")===_lessonCatFilter);
+
+  if (!visible.length) { grid.innerHTML=`<div class="empty">${q||_lessonCatFilter!=="all"?"No matching lessons":"No lessons yet"}</div>`; return; }
+
   const omap = { good:"b-cp", bad:"b-cn", poor:"b-clm", manual:"b-open" };
-  grid.innerHTML = visible.map((l, lIdx) => {
+
+  function cardHtml(l, lIdx) {
     const bc   = omap[l.outcome]||"b-cls";
     const tags = (l.tags||[]).map(t=>`<span class="ltag">${t}</span>`).join("");
     const role = l.role?`<span class="badge b-cls">${l.role}</span>`:"";
     const rtype = fmtRuleType(l.rule_type);
     const rtBadge = rtype?`<span class="badge b-cls" style="opacity:0.7">${rtype}</span>`:"";
     const pin  = l.pinned?`<svg class="lpin" width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`:"";
-    return `<div class="card lesson-card" style="animation-delay:${lIdx*0.07}s">
+    return `<div class="card lesson-card" style="animation-delay:${lIdx*0.04}s">
+      <button class="lesson-edit" title="Edit lesson" onclick="editLesson(${l.id})">&#9998;</button>
       <button class="lesson-del" title="Delete lesson" onclick="deleteLesson(${l.id})">✕</button>
       <div class="lmeta"><span class="badge ${bc}">${(l.outcome||"—").toUpperCase()}</span>${role}${rtBadge}${pin}</div>
       <div class="lrule">${l.rule||"—"}</div>
       <div class="ltags">${tags}</div>
     </div>`;
-  }).join("");
+  }
+
+  // When a specific category is active: flat grid, no headers
+  if (_lessonCatFilter !== "all") {
+    grid.innerHTML = visible.map((l, i) => cardHtml(l, i)).join("");
+    return;
+  }
+
+  // When "All": group by category with colored section headers
+  const groups = {};
+  for (const l of visible) { const c = l.category||"general"; (groups[c]||(groups[c]=[])).push(l); }
+  let html = "", cardIdx = 0;
+  for (const cat of CAT_ORDER) {
+    const items = groups[cat];
+    if (!items?.length) continue;
+    const m = CAT_META[cat]||{label:cat,color:"var(--muted)"};
+    html += `<div class="lesson-group-hdr"><span class="lesson-group-label" style="color:${m.color}">${m.label}</span><span class="lesson-group-count">${items.length}</span><div class="lesson-group-line"></div></div>`;
+    html += items.map(l => cardHtml(l, cardIdx++)).join("");
+  }
+  grid.innerHTML = html;
 }
+
+function setLessonCat(cat) { _lessonCatFilter = cat; renderLessons(); }
 
 // ── Logs ───────────────────────────────────────────────
 $("log-date").value = new Date().toISOString().slice(0,10);
@@ -1471,6 +1537,66 @@ async function deleteLesson(id) {
     await fetch(`/api/lessons/${id}`, { method: "DELETE" });
     await fetchLessons();
   } catch { alert("Failed to delete lesson."); }
+}
+function editLesson(id) {
+  const lesson = _lessons.find(l => l.id === id);
+  if (!lesson) return;
+  const overlay = document.createElement("div");
+  overlay.className = "jour-modal-overlay";
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  const tagsVal = (lesson.tags || []).join(", ");
+  const outcomeOpts = ["manual","good","bad","poor","neutral"].map(o =>
+    `<option value="${o}"${(lesson.outcome||"manual")===o?" selected":""}>${o}</option>`).join("");
+  const roleOpts = ["","SCREENER","MANAGER","GENERAL"].map(r =>
+    `<option value="${r}"${(lesson.role||"")===r?" selected":""}>${r||"(all roles)"}</option>`).join("");
+  const catOpts = ["","general","strategy","stop_loss","taking_profit","sizing"].map(c =>
+    `<option value="${c}"${(lesson.category||"")===c?" selected":""}>${c||"(auto)"}</option>`).join("");
+  overlay.innerHTML = `<div class="jour-modal" style="max-width:520px">
+    <h3>Edit Lesson</h3>
+    <label>Rule</label>
+    <textarea id="le-rule" style="min-height:90px">${lesson.rule||""}</textarea>
+    <label>Tags (comma-separated)</label>
+    <input type="text" id="le-tags" value="${tagsVal}"/>
+    <label>Outcome</label>
+    <select id="le-outcome" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">${outcomeOpts}</select>
+    <label>Role</label>
+    <select id="le-role" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">${roleOpts}</select>
+    <label>Category</label>
+    <select id="le-category" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">${catOpts}</select>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-direction:row">
+      <input type="checkbox" id="le-pinned" ${lesson.pinned?"checked":""} style="width:auto"/>
+      Pinned (always injected into prompts)
+    </label>
+    <div class="jour-modal-btns">
+      <button class="jour-cancel" onclick="this.closest('.jour-modal-overlay').remove()">Cancel</button>
+      <button class="jour-save" id="le-save">Save</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector("#le-save").onclick = async () => {
+    const rule = overlay.querySelector("#le-rule").value.trim();
+    if (!rule) { alert("Rule cannot be empty."); return; }
+    const tagsRaw = overlay.querySelector("#le-tags").value;
+    const tags = tagsRaw.split(",").map(t => t.trim()).filter(Boolean);
+    const updates = {
+      rule,
+      tags,
+      outcome: overlay.querySelector("#le-outcome").value,
+      role: overlay.querySelector("#le-role").value || null,
+      category: overlay.querySelector("#le-category").value || null,
+      pinned: overlay.querySelector("#le-pinned").checked,
+    };
+    try {
+      const res = await fetch(`/api/lessons/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      if (!res.ok) { const e = await res.json(); alert(e.error || "Failed to save."); return; }
+      overlay.remove();
+      await fetchLessons();
+    } catch { alert("Failed to update lesson."); }
+  };
 }
 async function fetchLessons()  { try { const d=await api("/api/lessons"); _lessons=d.lessons||[]; renderLessons(); } catch {} }
 $("lesson-search").addEventListener("input", e => { _lessonSearch = e.target.value; renderLessons(); });

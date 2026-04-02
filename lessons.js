@@ -922,6 +922,90 @@ export function removeLesson(id) {
 }
 
 /**
+ * Update a lesson's rule text by ID.
+ * Searches regular lessons first, then experiment lessons.
+ * Returns { found: true, id, old_rule, new_rule } or { found: false }.
+ */
+export function updateLesson(id, newRule) {
+  const reg = loadRegular();
+  const lesson = reg.lessons.find((l) => l.id === id);
+  if (lesson) {
+    const old_rule = lesson.rule;
+    lesson.rule = newRule;
+    lesson.updated_at = new Date().toISOString();
+    saveRegular(reg);
+    log("lessons", `Lesson ${id} updated: "${old_rule.slice(0, 60)}" → "${newRule.slice(0, 60)}"`);
+    return { found: true, id, old_rule, new_rule: newRule };
+  }
+  const exp = loadExperiment();
+  const expLesson = exp.lessons.find((l) => l.id === id);
+  if (expLesson) {
+    const old_rule = expLesson.rule;
+    expLesson.rule = newRule;
+    expLesson.updated_at = new Date().toISOString();
+    saveExperiment(exp);
+    log("lessons", `Experiment lesson ${id} updated: "${old_rule.slice(0, 60)}" → "${newRule.slice(0, 60)}"`);
+    return { found: true, id, old_rule, new_rule: newRule };
+  }
+  return { found: false };
+}
+
+/**
+ * List all lessons (regular + experiment) with their 1-based index.
+ * Returns array of { index, id, rule, outcome, pinned, source }.
+ */
+export function listAllLessons() {
+  const reg = loadRegular();
+  const exp = loadExperiment();
+  const all = [
+    ...reg.lessons.map(l => ({ ...l, source: l.source || "regular" })),
+    ...exp.lessons.map(l => ({ ...l, source: "experiment" })),
+  ];
+  return all.map((l, i) => ({
+    index: i + 1,
+    id: l.id,
+    rule: l.rule,
+    outcome: l.outcome || "manual",
+    pinned: !!l.pinned,
+    source: l.source,
+    tags: l.tags || [],
+    category: l.category || null,
+  }));
+}
+
+/**
+ * Update multiple fields of a lesson by ID (used by dashboard).
+ * Editable fields: rule, tags, outcome, pinned, role, category.
+ * Returns the updated lesson object or null if not found.
+ */
+export function updateLessonFields(id, fields) {
+  const EDITABLE = ["rule", "tags", "outcome", "pinned", "role", "category"];
+  const reg = loadRegular();
+  let lesson = reg.lessons.find((l) => l.id === id);
+  if (lesson) {
+    for (const key of EDITABLE) {
+      if (key in fields) lesson[key] = fields[key];
+    }
+    lesson.updated_at = new Date().toISOString();
+    saveRegular(reg);
+    log("lessons", `Lesson ${id} fields updated: ${Object.keys(fields).join(", ")}`);
+    return lesson;
+  }
+  const exp = loadExperiment();
+  lesson = exp.lessons.find((l) => l.id === id);
+  if (lesson) {
+    for (const key of EDITABLE) {
+      if (key in fields) lesson[key] = fields[key];
+    }
+    lesson.updated_at = new Date().toISOString();
+    saveExperiment(exp);
+    log("lessons", `Experiment lesson ${id} fields updated: ${Object.keys(fields).join(", ")}`);
+    return lesson;
+  }
+  return null;
+}
+
+/**
  * Remove lessons matching a keyword in their rule text (case-insensitive).
  */
 export function removeLessonsByKeyword(keyword) {

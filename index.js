@@ -8,7 +8,7 @@ import { getWalletBalances, sweepDustTokens, sweepAllTokensToSol } from "./tools
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
-import { evolveThresholds, getPerformanceSummary, addLesson } from "./lessons.js";
+import { evolveThresholds, getPerformanceSummary, addLesson, updateLesson, listAllLessons } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
 import { startJournalPolling, stopJournalPolling, startJournalCrons } from "./telegram-journal.js";
@@ -925,6 +925,13 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, { timezone: 'UTC' });
 
+  // Daily lesson cleanup — 23:59 UTC+7 (Asia/Bangkok), same time as journal daily report
+  const lessonSummarizerTask = cron.schedule("59 23 * * *", () => {
+    import("./scripts/claude-lesson-summarizer.js")
+      .then(m => m.claudeSummarizeLessons())
+      .catch(e => log("lesson_summarizer_error", e.message));
+  }, { timezone: "Asia/Bangkok" });
+
   _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
 
   // Periodic dust sweep — every 10 minutes, retry any tokens still in wallet
@@ -939,7 +946,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, 10 * 60 * 1000);
 
-  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask];
+  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, lessonSummarizerTask];
   const t = config.schedule.managementTiers;
   log("cron", `Cycles started — management: high=${t.high.intervalMin}m, med=${t.med.intervalMin}m, low=${t.low.intervalMin}m | screening every ${config.schedule.screeningIntervalMin}m | pnl-check every 30s`);
 }
@@ -1181,6 +1188,62 @@ if (isTTY) {
       import("./scripts/claude-lesson-updater.js")
         .then(m => m.claudeUpdateLessons())
         .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
+      return;
+    }
+
+    if (text.startsWith("/update_lesson")) {
+      const args = text.slice("/update_lesson".length).trim();
+      if (!args) {
+        const lessons = listAllLessons();
+        if (lessons.length === 0) {
+          sendMessage("No lessons found.").catch(() => {});
+        } else {
+          function fmtLesson(l) {
+            const badges = [l.outcome];
+            if (l.pinned) badges.push("PINNED");
+            if (l.source === "experiment") badges.push("EXP");
+            const header = `#${l.index}  ${badges.join("  ")}` +
+              (l.tags?.length ? `  |  ${l.tags.slice(0, 4).join(", ")}` : "");
+            const ruleText = l.rule.length > 120 ? l.rule.slice(0, 117) + "..." : l.rule;
+            return `${header}\n${ruleText}`;
+          }
+          let chunk = `📚 Lessons — ${lessons.length} total\n/update_lesson <N> <new rule>\n\n`;
+          for (const l of lessons) {
+            const card = fmtLesson(l) + "\n\n";
+            if (chunk.length + card.length > 4000) {
+              sendMessage(chunk.trimEnd()).catch(() => {});
+              chunk = "";
+            }
+            chunk += card;
+          }
+          if (chunk.trim()) sendMessage(chunk.trimEnd()).catch(() => {});
+        }
+        return;
+      }
+      // Parse: first token is index N, rest is new rule
+      const spaceIdx = args.indexOf(" ");
+      if (spaceIdx === -1) {
+        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
+        return;
+      }
+      const n = parseInt(args.slice(0, spaceIdx), 10);
+      const newRule = args.slice(spaceIdx + 1).trim();
+      if (!n || n < 1 || !newRule) {
+        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
+        return;
+      }
+      const lessons = listAllLessons();
+      const target = lessons[n - 1];
+      if (!target) {
+        sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
+        return;
+      }
+      const result = updateLesson(target.id, newRule);
+      if (result.found) {
+        sendMessage(`✅ Lesson ${n} updated.\n\nOld: ${result.old_rule.slice(0, 200)}\n\nNew: ${result.new_rule.slice(0, 200)}`).catch(() => {});
+      } else {
+        sendMessage(`❌ Failed to update lesson ${n}.`).catch(() => {});
+      }
       return;
     }
 
@@ -1633,6 +1696,61 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       import("./scripts/claude-lesson-updater.js")
         .then(m => m.claudeUpdateLessons())
         .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
+      return;
+    }
+
+    if (text.startsWith("/update_lesson")) {
+      const args = text.slice("/update_lesson".length).trim();
+      if (!args) {
+        const lessons = listAllLessons();
+        if (lessons.length === 0) {
+          sendMessage("No lessons found.").catch(() => {});
+        } else {
+          function fmtLesson(l) {
+            const badges = [l.outcome];
+            if (l.pinned) badges.push("PINNED");
+            if (l.source === "experiment") badges.push("EXP");
+            const header = `#${l.index}  ${badges.join("  ")}` +
+              (l.tags?.length ? `  |  ${l.tags.slice(0, 4).join(", ")}` : "");
+            const ruleText = l.rule.length > 120 ? l.rule.slice(0, 117) + "..." : l.rule;
+            return `${header}\n${ruleText}`;
+          }
+          let chunk = `📚 Lessons — ${lessons.length} total\n/update_lesson <N> <new rule>\n\n`;
+          for (const l of lessons) {
+            const card = fmtLesson(l) + "\n\n";
+            if (chunk.length + card.length > 4000) {
+              sendMessage(chunk.trimEnd()).catch(() => {});
+              chunk = "";
+            }
+            chunk += card;
+          }
+          if (chunk.trim()) sendMessage(chunk.trimEnd()).catch(() => {});
+        }
+        return;
+      }
+      const spaceIdx = args.indexOf(" ");
+      if (spaceIdx === -1) {
+        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
+        return;
+      }
+      const n = parseInt(args.slice(0, spaceIdx), 10);
+      const newRule = args.slice(spaceIdx + 1).trim();
+      if (!n || n < 1 || !newRule) {
+        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
+        return;
+      }
+      const lessons = listAllLessons();
+      const target = lessons[n - 1];
+      if (!target) {
+        sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
+        return;
+      }
+      const result = updateLesson(target.id, newRule);
+      if (result.found) {
+        sendMessage(`✅ Lesson ${n} updated.\n\nOld: ${result.old_rule.slice(0, 200)}\n\nNew: ${result.new_rule.slice(0, 200)}`).catch(() => {});
+      } else {
+        sendMessage(`❌ Failed to update lesson ${n}.`).catch(() => {});
+      }
       return;
     }
 
