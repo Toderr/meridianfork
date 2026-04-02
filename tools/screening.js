@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { isBlacklisted } from "../token-blacklist.js";
 import { log } from "../logger.js";
+import { getRiskFlags } from "./okx.js";
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
@@ -86,8 +87,31 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
     .slice(0, limit);
 
+  // Enrich with OKX risk flags — parallel, fire-and-forget per candidate
+  const enriched = await Promise.all(
+    eligible.map(async (pool) => {
+      const mint = pool.base?.mint;
+      if (!mint) return pool;
+      try {
+        const flags = await getRiskFlags(mint);
+        return { ...pool, is_rugpull: flags.is_rugpull, is_wash: flags.is_wash };
+      } catch {
+        return pool; // OKX unavailable — pass through without flags
+      }
+    })
+  );
+
+  // Hard-filter wash trading (always disqualifying)
+  const filtered = enriched.filter(p => {
+    if (p.is_wash === true) {
+      log("screening", `Filtered wash-trading pool: ${p.name} (${p.pool?.slice(0, 8)})`);
+      return false;
+    }
+    return true;
+  });
+
   return {
-    candidates: eligible,
+    candidates: filtered,
     total_screened: pools.length,
   };
 }
