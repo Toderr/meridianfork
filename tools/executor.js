@@ -13,7 +13,7 @@ import {
 } from "./dlmm.js";
 import { getWalletBalances, swapToken, swapAllTokensAfterClose } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
-import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
+import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, removeLesson, getPerformanceHistory, pinLesson, unpinLesson, listLessons, listAllLessons } from "../lessons.js";
 import { setPositionInstruction, getTrackedPosition } from "../state.js";
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
@@ -119,6 +119,19 @@ const toolMap = {
   },
   pin_lesson:   ({ id }) => pinLesson(id),
   unpin_lesson: ({ id }) => unpinLesson(id),
+  remove_lesson: ({ id, index }) => {
+    let lessonId = id;
+    if (lessonId == null && index != null) {
+      const all = listAllLessons();
+      const target = all[index - 1];
+      if (!target) return { removed: false, error: `No lesson at index ${index}` };
+      if (target.pinned) return { removed: false, error: `Lesson #${index} is pinned — unpin first` };
+      lessonId = target.id;
+    }
+    if (lessonId == null) return { removed: false, error: "Provide id or index" };
+    const n = removeLesson(lessonId);
+    return { removed: n > 0 };
+  },
   list_lessons: ({ role, pinned, tag, source, limit } = {}) => listLessons({ role, pinned, tag, source, limit }),
   clear_lessons: ({ mode, keyword }) => {
     if (mode === "all") {

@@ -875,6 +875,24 @@ Use to find a lesson ID before pinning/unpinning, or to audit what the agent cur
   {
     type: "function",
     function: {
+      name: "remove_lesson",
+      description: `Delete a single lesson by its numeric index (shown in /update_lesson list) or by its lesson ID.
+Use when the user asks to delete, remove, or discard a specific lesson by number.
+Call list_lessons first if you need to confirm which lesson to delete.
+Cannot delete pinned lessons — unpin first.`,
+      parameters: {
+        type: "object",
+        properties: {
+          index: { type: "number", description: "1-based lesson index from list_lessons / /update_lesson" },
+          id:    { type: "number", description: "Lesson ID (timestamp). Use index instead if available." }
+        }
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
       name: "pin_lesson",
       description: `Pin a lesson by ID so it's always injected into the prompt regardless of memory cap.
 Use for critical rules that must never be forgotten — e.g. narrative criteria, hard risk rules.

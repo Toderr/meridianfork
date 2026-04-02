@@ -8,7 +8,7 @@ import { getWalletBalances, sweepDustTokens, sweepAllTokensToSol } from "./tools
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
-import { evolveThresholds, getPerformanceSummary, addLesson, updateLesson, listAllLessons } from "./lessons.js";
+import { evolveThresholds, getPerformanceSummary, addLesson, updateLesson, listAllLessons, removeLesson } from "./lessons.js";
 import { registerCronRestarter, executeTool, resetDeployGuard } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
 import { startJournalPolling, stopJournalPolling, startJournalCrons } from "./telegram-journal.js";
@@ -1152,6 +1152,43 @@ if (isTTY) {
       return;
     }
 
+    if (text === "/help") {
+      sendMessage([
+        "🤖 Meridian Commands",
+        "",
+        "── Agent Control ──",
+        "/start          Resume cron cycles",
+        "/stop           Pause cron cycles",
+        "/stats          Agent uptime, cycle counts, errors",
+        "/withdraw       Close all positions, swap to SOL",
+        "",
+        "── Reports ──",
+        "/briefing       Last 24h trading summary",
+        "/report         Daily report (default)",
+        "/report weekly  Weekly report",
+        "/report monthly Monthly report",
+        "",
+        "── Screening ──",
+        "/screen         Manual screening cycle now",
+        "/candidates     Refresh top pool candidates",
+        "/thresholds     Current screening thresholds + perf stats",
+        "/evolve         Trigger threshold evolution",
+        "",
+        "── Lessons ──",
+        "/update_lesson              List all lessons with index numbers",
+        "/update_lesson <N> <rule>   Edit lesson #N",
+        "/del_lesson <N>             Delete lesson #N",
+        "/review                     Claude lesson review (last 20 closes)",
+        "",
+        "── Claude AI ──",
+        "/claude <question>   Ask Claude about positions, lessons, journal",
+        "",
+        "── Reconcile ──",
+        "/reconcile      Re-sync state.json with on-chain positions",
+      ].join("\n")).catch(() => {});
+      return;
+    }
+
     if (text === "/start") {
       if (_cronRunning) {
         sendMessage("Agent is already running.").catch(() => {});
@@ -1262,6 +1299,32 @@ if (isTTY) {
         sendMessage(`✅ Lesson ${n} updated.\n\nOld: ${result.old_rule.slice(0, 200)}\n\nNew: ${result.new_rule.slice(0, 200)}`).catch(() => {});
       } else {
         sendMessage(`❌ Failed to update lesson ${n}.`).catch(() => {});
+      }
+      return;
+    }
+
+    if (text.startsWith("/del_lesson")) {
+      const arg = text.slice("/del_lesson".length).trim();
+      const n = parseInt(arg, 10);
+      if (!n || n < 1) {
+        sendMessage("Usage: /del_lesson <N>  — use /update_lesson to list lessons with their numbers").catch(() => {});
+        return;
+      }
+      const lessons = listAllLessons();
+      const target = lessons[n - 1];
+      if (!target) {
+        sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
+        return;
+      }
+      if (target.pinned) {
+        sendMessage(`❌ Lesson #${n} is pinned — unpin it first via the dashboard before deleting.`).catch(() => {});
+        return;
+      }
+      const removed = removeLesson(target.id);
+      if (removed) {
+        sendMessage(`🗑️ Lesson #${n} deleted.\n\n${target.rule.slice(0, 200)}`).catch(() => {});
+      } else {
+        sendMessage(`❌ Failed to delete lesson ${n}.`).catch(() => {});
       }
       return;
     }
@@ -1667,6 +1730,43 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   startPolling(async (text) => {
     if (busy) {
       sendMessage("Agent is busy with another chat — try again in a moment.").catch(() => {});
+      return;
+    }
+
+    if (text === "/help") {
+      sendMessage([
+        "🤖 Meridian Commands",
+        "",
+        "── Agent Control ──",
+        "/start          Resume cron cycles",
+        "/stop           Pause cron cycles",
+        "/stats          Agent uptime, cycle counts, errors",
+        "/withdraw       Close all positions, swap to SOL",
+        "",
+        "── Reports ──",
+        "/briefing       Last 24h trading summary",
+        "/report         Daily report (default)",
+        "/report weekly  Weekly report",
+        "/report monthly Monthly report",
+        "",
+        "── Screening ──",
+        "/screen         Manual screening cycle now",
+        "/candidates     Refresh top pool candidates",
+        "/thresholds     Current screening thresholds + perf stats",
+        "/evolve         Trigger threshold evolution",
+        "",
+        "── Lessons ──",
+        "/update_lesson              List all lessons with index numbers",
+        "/update_lesson <N> <rule>   Edit lesson #N",
+        "/del_lesson <N>             Delete lesson #N",
+        "/review                     Claude lesson review (last 20 closes)",
+        "",
+        "── Claude AI ──",
+        "/claude <question>   Ask Claude about positions, lessons, journal",
+        "",
+        "── Reconcile ──",
+        "/reconcile      Re-sync state.json with on-chain positions",
+      ].join("\n")).catch(() => {});
       return;
     }
 

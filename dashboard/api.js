@@ -64,7 +64,7 @@ function computePortfolio(closes) {
 
   let totalPnlUsd = 0, totalPnlSol = 0, totalInitUsd = 0;
   let posGross = 0, negGross = 0, wins = 0;
-  const byDay = {}, byDayInitUsd = {};
+  const byDay = {}, byDaySol = {}, byDayInitUsd = {};
   const sorted = [...closes].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
   for (const c of sorted) {
@@ -79,6 +79,7 @@ function computePortfolio(closes) {
     const day = (c.timestamp || "").slice(0, 10);
     if (day) {
       byDay[day] = (byDay[day] ?? 0) + pnlUsd;
+      byDaySol[day] = +(((byDaySol[day] ?? 0) + pnlSol).toFixed(6));
       byDayInitUsd[day] = (byDayInitUsd[day] ?? 0) + (c.initial_value_usd ?? 0);
     }
   }
@@ -114,6 +115,7 @@ function computePortfolio(closes) {
     day_win_rate_pct:  +dayWinRate.toFixed(1),
     profit_factor:     profitFactor !== null ? +profitFactor.toFixed(2) : null,
     calendar:          byDay,
+    calendar_sol:      byDaySol,
     calendar_pct:      calendarPct,
     cumulative,
     total_closes:      closes.length,

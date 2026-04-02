@@ -881,13 +881,13 @@ function updateTopbar() {
   }
 }
 
-// Total portfolio = available wallet USD + sum of invested in open positions
+// Total portfolio = available wallet USD + sum of current value of open positions
 function computeTotalPortfolio() {
   const walletUsd = _wallet?.sol_usd ?? 0;
   const price     = _wallet?.sol_price ?? 0;
   const positions = _positions?.positions ?? [];
   const deployedUsd = positions.reduce((s, p) => {
-    const usd = p.initial_value_usd ?? (p.amount_sol ?? 0) * price;
+    const usd = p.total_value_usd ?? p.initial_value_usd ?? (p.amount_sol ?? 0) * price;
     return s + usd;
   }, 0);
   return { totalUsd: walletUsd + deployedUsd, walletUsd, deployedUsd };
@@ -996,9 +996,19 @@ function renderPosCards(id) {
   const sol      = _unit === "sol";
   const solPrice = _wallet?.sol_price ?? 0;
 
+  // Filter out empty/zombie positions (all value fields are 0 or null)
+  const validPositions = _positions.positions.filter(p => {
+    const amtSol = p.amount_sol ?? p.amount_sol_api ?? 0;
+    const amtUsd = p.initial_value_usd ?? p.initial_value_usd_api ?? 0;
+    const curUsd = p.total_value_usd ?? 0;
+    return amtSol > 0 || amtUsd > 0 || curUsd > 0;
+  });
+
+  if (!validPositions.length) { grid.innerHTML = '<div class="empty">No open positions</div>'; return; }
+
   // Group by volatility tier
   const tiers = { high: [], med: [], low: [] };
-  for (const p of _positions.positions) tiers[volTier(p.volatility)].push(p);
+  for (const p of validPositions) tiers[volTier(p.volatility)].push(p);
 
   // Sort each tier by age (oldest first)
   for (const t of Object.values(tiers)) t.sort((a, b) => (b.age_minutes ?? 0) - (a.age_minutes ?? 0));
@@ -1023,15 +1033,20 @@ function renderPosCards(id) {
 }
 
 // ── Mini chart ─────────────────────────────────────────
+let _miniChartUnit = null;
 function renderMiniChart() {
   if (!_portfolio?.cumulative?.length) return;
+  const sol = _unit === "sol";
   const labels = _portfolio.cumulative.map(d => d.date.slice(0,10));
-  const values = _portfolio.cumulative.map(d => d.cum_usd);
+  const values = _portfolio.cumulative.map(d => sol ? d.cum_sol : d.cum_usd);
 
-  if (miniChart) {
+  if (miniChart && _miniChartUnit === _unit) {
     miniChart.data.labels = labels; miniChart.data.datasets[0].data = values;
     miniChart.update("none"); return;
   }
+
+  if (miniChart) { miniChart.destroy(); miniChart = null; }
+  _miniChartUnit = _unit;
 
   const ctx = $("chart-mini").getContext("2d");
   const fgrad = ctx.createLinearGradient(0, 0, 0, 110);
@@ -1049,13 +1064,13 @@ function renderMiniChart() {
         tooltip: {
           callbacks: {
             title: items => items[0]?.label || "",
-            label: c => "  PnL: $" + c.parsed.y.toFixed(2)
+            label: c => sol ? "  PnL: " + c.parsed.y.toFixed(4) + " SOL" : "  PnL: $" + c.parsed.y.toFixed(2)
           }
         }
       },
       scales: {
         x: { display: false },
-        y: { grid: { color: "rgba(255,255,255,0.03)", drawBorder: false }, ticks: { color: "#4a5568", font: { size: 9 }, callback: v => "$"+v.toFixed(0) }, border: { display: false } }
+        y: { grid: { color: "rgba(255,255,255,0.03)", drawBorder: false }, ticks: { color: "#4a5568", font: { size: 9 }, callback: v => sol ? v.toFixed(3)+"◎" : "$"+v.toFixed(0) }, border: { display: false } }
       }
     }
   });
@@ -1084,7 +1099,7 @@ function renderPortfolio() {
   setV("pf-day-wr", f(p.day_win_rate_pct,1)+"%",  pc(p.day_win_rate_pct-50));
   const pf = p.profit_factor;
   setV("pf-pf", pf != null ? f(pf,2) : "—", pf>1?"p":pf<1?"n":"");
-  renderCalendar(p.calendar||{}, p.calendar_pct||{});
+  renderCalendar(p.calendar||{}, p.calendar_sol||{}, p.calendar_pct||{});
   renderPfChart(p.cumulative||[]);
 }
 
@@ -1094,7 +1109,7 @@ function getCalMonths(cal) {
   return [...s].sort();
 }
 
-function renderCalendar(cal, calPct) {
+function renderCalendar(cal, calSol, calPct) {
   const wrap = $("calendar-wrap");
   const allMonths = getCalMonths(cal);
   if (!allMonths.length) { wrap.innerHTML='<div class="empty">No trade data yet</div>'; updateCalNav([], null); return; }
@@ -1114,14 +1129,23 @@ function renderCalendar(cal, calPct) {
   for (let i=0; i<startDow; i++) { html += `<div class="cal-cell empty" style="animation-delay:${cellIdx*0.012}s"></div>`; cellIdx++; }
   for (let d=1; d<=lastD; d++) {
     const ds = month+"-"+String(d).padStart(2,"0");
-    const v  = cal[ds];
-    const vp = calPct[ds];
+    const v   = cal[ds];
+    const vp  = calPct[ds];
     const isToday = ds===today;
+    const useSol = _unit === "sol";
+    const solPrice = _wallet?.sol_price ?? 0;
+    // Use calendar_sol if available, fall back to converting USD via sol_price
+    const vsRaw = calSol[ds];
+    const vs = vsRaw != null ? vsRaw : (v != null && solPrice > 0 ? +(v / solPrice).toFixed(6) : null);
+    const dispV = useSol ? vs : v;
     let cls = isToday ? " today" : "";
-    if (v != null) cls += v>0 ? " pos-c" : " neg-c";
-    const sign = v>0 ? "+" : "";
-    const inner = v != null
-      ? `<div class="cal-usd">${sign}$${Math.abs(v).toFixed(2)}</div><div class="cal-pct">${sign}${vp!=null?vp.toFixed(1):"—"}%</div>`
+    if (dispV != null) cls += dispV>0 ? " pos-c" : " neg-c";
+    const sign = (dispV??0)>0 ? "+" : "";
+    const valStr = useSol
+      ? (vs != null ? `${sign}${Math.abs(vs).toFixed(4)}◎` : null)
+      : (v  != null ? `${sign}$${Math.abs(v).toFixed(2)}` : null);
+    const inner = valStr != null
+      ? `<div class="cal-usd">${valStr}</div><div class="cal-pct">${sign}${vp!=null?vp.toFixed(1):"—"}%</div>`
       : "";
     html += `<div class="cal-cell${cls}" style="animation-delay:${cellIdx*0.012}s"><div class="cal-num">${d}</div>${inner}</div>`;
     cellIdx++;
@@ -1230,7 +1254,7 @@ function renderHistory() {
       <td>${amountCell}</td>
       <td>${pnlCell}</td>
       <td class="${(r.pnl_pct??0)>=0?"pv":"nv"}">${f(r.pnl_pct,2)}%</td>
-      <td>$${f(r.fees_earned_usd,2)}</td>
+      <td>${sol && _wallet?.sol_price > 0 && r.fees_earned_usd != null ? f(r.fees_earned_usd/_wallet.sol_price,4)+"◎" : "$"+f(r.fees_earned_usd,2)}</td>
       <td>${fmtHold(r.minutes_held)}</td>
       <td>${f(r.range_efficiency,1)}%</td>
       <td>${reason}</td>
@@ -1282,7 +1306,10 @@ function renderJournal() {
     } else {
       pnlCell = r.pnl_usd!=null ? `<span class="${r.pnl_usd>=0?"pv":"nv"}">${r.pnl_usd>=0?"+":""} $${f(r.pnl_usd,2)}</span>` : "—";
     }
-    const fees = r.fees_earned_usd!=null?"$"+f(r.fees_earned_usd,2):r.fees_usd!=null?"$"+f(r.fees_usd,2):"—";
+    const _feeUsd = r.fees_earned_usd ?? r.fees_usd ?? null;
+    const fees = _feeUsd != null
+      ? (sol && _wallet?.sol_price > 0 ? f(_feeUsd/_wallet.sol_price,4)+"◎" : "$"+f(_feeUsd,2))
+      : "—";
     const jIdx = data.indexOf(r);
     return `<tr style="animation-delay:${Math.min(jIdx,14)*0.03}s" class="jour-row">
       <td>${badge}</td><td class="nm">${r.pool_name||"—"}</td><td>${r.strategy||"—"}${fmtRange(r.bin_range,r.bin_step) ? `<br><span style="font-size:9px;color:var(--muted)">${fmtRange(r.bin_range,r.bin_step)}</span>` : ""}</td>
@@ -1380,6 +1407,7 @@ function setUnit(u) {
   document.querySelectorAll(".unit-toggle .fbtn").forEach(b => b.classList.toggle("active", b.dataset.unit === u));
   renderOverview();
   renderPortfolio();
+  renderMiniChart();
   renderHistory();
   renderJournal();
 }
@@ -1401,18 +1429,19 @@ document.getElementById("sidebar-overlay").addEventListener("click", () => {
 });
 
 // Calendar nav
-document.getElementById("cal-prev").addEventListener("click", () => {
+function calNav(dir) {
   if (!_portfolio) return;
-  const months = getCalMonths(_portfolio.calendar||{});
+  const p = _portfolio;
+  const months = getCalMonths(p.calendar||{});
   const idx = months.indexOf(_calMonth);
-  if (idx > 0) { _calMonth = months[idx-1]; renderCalendar(_portfolio.calendar||{}, _portfolio.calendar_pct||{}); }
-});
-document.getElementById("cal-next").addEventListener("click", () => {
-  if (!_portfolio) return;
-  const months = getCalMonths(_portfolio.calendar||{});
-  const idx = months.indexOf(_calMonth);
-  if (idx < months.length-1) { _calMonth = months[idx+1]; renderCalendar(_portfolio.calendar||{}, _portfolio.calendar_pct||{}); }
-});
+  const next = idx + dir;
+  if (next >= 0 && next < months.length) {
+    _calMonth = months[next];
+    renderCalendar(p.calendar||{}, p.calendar_sol||{}, p.calendar_pct||{});
+  }
+}
+document.getElementById("cal-prev").addEventListener("click", () => calNav(-1));
+document.getElementById("cal-next").addEventListener("click", () => calNav(+1));
 
 
 // ── Lessons ────────────────────────────────────────────
