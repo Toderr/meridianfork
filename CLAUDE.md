@@ -514,6 +514,7 @@ Experiment positions (variant starts with `"exp_"`) bypass:
 - `reserve_slot` lesson enforcement — slot reservation rules do not block experiment deploys
 - `bin_step` range check (`minBinStep`/`maxBinStep`) — experiments can deploy into any pool regardless of configured bin_step range
 - Management pre-enforcement (`checkPositionCompliance`) — experiments are not force-closed/held by regular lesson rules
+- **Prompt-level hard rule self-blocking** — the GENERAL agent prompt includes an `EXPERIMENT BYPASS` notice so the LLM does not refuse to call `start_experiment` when lesson hard rules (AVOID/NEVER/SKIP) appear to block a strategy+volatility combination; the executor bypass applies regardless
 
 ## Roadmap / Improvement Ideas
 
