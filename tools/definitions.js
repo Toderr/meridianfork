@@ -1096,6 +1096,47 @@ Optionally specify a number of days after which the entry auto-expires.`,
       }
     }
   },
+  {
+    type: "function",
+    function: {
+      name: "block_dev",
+      description: "Block a deployer/creator wallet address. Any pool deployed by this wallet will be hard-filtered from screening.",
+      parameters: {
+        type: "object",
+        properties: {
+          wallet: { type: "string", description: "Deployer wallet address to block" },
+          reason: { type: "string", description: "Why this deployer is being blocked (e.g. 'rug', 'farm', 'honeypot')" },
+          label: { type: "string", description: "Optional human-readable label for this deployer" },
+        },
+        required: ["wallet"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "unblock_dev",
+      description: "Remove a deployer wallet from the dev blocklist.",
+      parameters: {
+        type: "object",
+        properties: {
+          wallet: { type: "string", description: "Deployer wallet address to unblock" },
+        },
+        required: ["wallet"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_blocked_devs",
+      description: "List all blocked deployer wallets with their reasons and timestamps.",
+      parameters: {
+        type: "object",
+        properties: {}
+      }
+    }
+  },
 
   // ═══════════════════════════════════════════
   //  LIQUIDITY MANAGEMENT TOOLS

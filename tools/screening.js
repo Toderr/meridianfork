@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { isBlacklisted } from "../token-blacklist.js";
+import { isDevBlocked } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { getRiskFlags } from "./okx.js";
 
@@ -49,10 +50,14 @@ export async function discoverPools({
 
   const condensed = (data.data || []).map(condensePool);
 
-  // Filter blacklisted base tokens
+  // Filter blacklisted base tokens and blocked deployers
   const pools = condensed.filter((p) => {
     if (isBlacklisted(p.base?.mint)) {
       log("blacklist", `Filtered blacklisted token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)}) in pool ${p.name}`);
+      return false;
+    }
+    if (isDevBlocked(p.creator)) {
+      log("dev_blocklist", `Filtered pool ${p.name} — deployer ${p.creator?.slice(0, 8)} is blocked`);
       return false;
     }
     return true;
@@ -151,6 +156,7 @@ function condensePool(p) {
   return {
     pool: p.pool_address,
     name: p.name,
+    creator: p.creator || p.creator_address || null,
     base: {
       symbol: p.token_x?.symbol,
       mint: p.token_x?.address,

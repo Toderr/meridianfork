@@ -18,6 +18,7 @@ import { setPositionInstruction, getTrackedPosition } from "../state.js";
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
+import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { syncToHive, isEnabled as hiveEnabled, getHivePulse, queryPoolConsensus, queryLessonConsensus } from "../hive-mind.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
@@ -103,6 +104,9 @@ const toolMap = {
   add_to_blacklist: addToBlacklist,
   remove_from_blacklist: removeFromBlacklist,
   list_blacklist: listBlacklist,
+  block_dev: blockDev,
+  unblock_dev: unblockDev,
+  list_blocked_devs: listBlockedDevs,
   withdraw_liquidity: withdrawLiquidity,
   add_liquidity: addLiquidity,
   get_hive_pulse: () => getHivePulse(),
