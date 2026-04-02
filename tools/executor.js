@@ -38,6 +38,10 @@ import { _stats, _flags } from "../stats.js";
 let _cronRestarter = null;
 export function registerCronRestarter(fn) { _cronRestarter = fn; }
 
+// Prevents two deploys in the same screening cycle (reset by runScreeningCycle at start)
+let _deployedThisCycle = false;
+export function resetDeployGuard() { _deployedThisCycle = false; }
+
 // Map tool names to implementations
 const toolMap = {
   discover_pools: discoverPools,
@@ -329,6 +333,7 @@ export async function executeTool(name, args) {
 
     if (success) {
       if (name === "deploy_position") {
+        _deployedThisCycle = true; // block second deploy in this screening cycle
         _stats.positionsDeployed++;
         notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, strategy: args.strategy, position: result.position, tx: result.tx }).catch(() => {});
         // Record open to trading journal — retry up to 3 times in case of transient failure
@@ -437,6 +442,14 @@ async function runSafetyChecks(name, args) {
     case "deploy_position": {
       // Experiment deploys bypass confidence gate, max-positions, duplicate pool/mint guards
       const isExperiment = typeof args.variant === "string" && args.variant.startsWith("exp_");
+
+      // Block second deploy in same screening cycle (experiments are allowed to redeploy freely)
+      if (!isExperiment && _deployedThisCycle) {
+        return {
+          pass: false,
+          reason: "Already deployed once in this screening cycle. Wait for the next cycle.",
+        };
+      }
 
       // Block low-confidence deploys (experiments always pass confidence=10)
       if (!isExperiment && args.confidence_level != null && args.confidence_level <= 7) {

@@ -9,7 +9,7 @@ import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
 import { evolveThresholds, getPerformanceSummary, addLesson, updateLesson, listAllLessons } from "./lessons.js";
-import { registerCronRestarter, executeTool } from "./tools/executor.js";
+import { registerCronRestarter, executeTool, resetDeployGuard } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
 import { startJournalPolling, stopJournalPolling, startJournalCrons } from "./telegram-journal.js";
 import { generateBriefing } from "./briefing.js";
@@ -533,6 +533,8 @@ CRITICAL: When calling close_position, you MUST set close_reason to a descriptiv
 
 async function runScreeningCycle() {
   if (_screeningBusy) return;
+  _screeningBusy = true; // set immediately to prevent race condition with overlapping cron ticks
+  resetDeployGuard();    // allow one deploy per screening cycle
 
   // Hard guards — don't even run the agent if preconditions aren't met
   let prePositions, preBalance;
@@ -547,6 +549,7 @@ async function runScreeningCycle() {
         notifyMaxPositions({ count: prePositions.total_positions, max: config.risk.maxPositions }).catch(() => {});
         _flags.maxPositionsNotified = true;
       }
+      _screeningBusy = false;
       return;
     }
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
@@ -559,16 +562,16 @@ async function runScreeningCycle() {
         _flags.gasLowNotified = true;
         _flags.gasLowNotifiedAt = Date.now();
       }
+      _screeningBusy = false;
       return;
     }
     _flags.gasLowNotified = false; // SOL is sufficient — reset so next low triggers a fresh warning
     _flags.gasLowNotifiedAt = null;
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
+    _screeningBusy = false;
     return;
   }
-
-  _screeningBusy = true;
   _stats.screeningCycles++;
   timers.screeningLastRun = Date.now();
   log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
@@ -610,7 +613,7 @@ async function runScreeningCycle() {
         log("cron_error", `Lesson screening filter failed (non-fatal): ${lessonErr.message}`);
       }
 
-      const candidateBlocks = await Promise.all(
+      const candidateResults = await Promise.all(
         candidates.slice(0, 5).map(async (pool) => {
           const mint = pool.base?.mint;
           const [smartWallets, holders, narrative, tokenInfo, poolMemory] = await Promise.allSettled([
@@ -635,6 +638,8 @@ async function runScreeningCycle() {
           const lines = [
             `POOL: ${pool.name} (${pool.pool})`,
             `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}`,
+            pool.is_rugpull != null ? `  rugpull=${pool.is_rugpull ? "YES" : "NO"}` : null,
+            pool.is_wash    != null ? `  wash=${pool.is_wash ? "YES" : "NO"}`       : null,
             `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
             h ? `  holders: top_10_pct=${h.top_10_real_holders_pct ?? "?"}%, bundlers_pct=${h.bundlers_pct_in_top_100 ?? "?"}%, global_fees_sol=${h.global_fees_sol ?? "?"}` : `  holders: fetch failed`,
             momentum ? `  momentum: ${momentum}` : null,
@@ -642,9 +647,21 @@ async function runScreeningCycle() {
             mem ? `  memory: ${mem}` : null,
           ].filter(Boolean);
 
-          return lines.join("\n");
+          return { block: lines.join("\n"), botHoldersPct: ti?.audit?.bot_holders_pct ?? null };
         })
       );
+
+      // Hard-filter bot-heavy tokens if maxBotHoldersPct is configured
+      const maxBotPct = config.screening.maxBotHoldersPct;
+      const candidateBlocks = candidateResults
+        .filter(r => {
+          if (maxBotPct != null && r.botHoldersPct != null && r.botHoldersPct > maxBotPct) {
+            log("lesson_enforce", `Filtered candidate — bot_holders_pct ${r.botHoldersPct}% > ${maxBotPct}%`);
+            return false;
+          }
+          return true;
+        })
+        .map(r => r.block);
 
       const candidateContext = candidateBlocks.length > 0
         ? `\nPRE-LOADED CANDIDATE ANALYSIS (smart wallets, holders, narrative already fetched):\n${candidateBlocks.join("\n\n")}\n`
@@ -663,6 +680,8 @@ ${candidateContext}${hiveBlock}
 DECISION RULES (apply to the pre-loaded candidates above, no re-fetching needed):
 - HARD SKIP if global_fees_sol < ${config.screening.minTokenFeesSol} SOL (bundled/scam)
 - HARD SKIP if top_10_pct > 60% OR bundlers_pct > 30%
+- rugpull=YES → default to SKIP; treat as disqualifying unless overwhelming evidence otherwise
+- wash=YES → treat as disqualifying even if other metrics look attractive
 - SKIP if narrative is empty/null or pure hype with no specific story (unless smart wallets present)
 - Bundlers 5–15% are normal, not a skip reason on their own
 - Smart wallets present → strong confidence boost

@@ -37,6 +37,7 @@ export const config = {
     timeframe:         u.timeframe         ?? "5m",
     category:          u.category          ?? "trending",
     minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
+    maxBotHoldersPct:  u.maxBotHoldersPct  ?? null, // null = disabled; set to e.g. 30 to hard-filter bot-heavy tokens
   },
 
   // ─── Position Management ────────────────
@@ -204,7 +205,8 @@ export function reloadConfig() {
     if (f.maxBinStep     != null) s.maxBinStep     = f.maxBinStep;
     if (f.timeframe      != null) s.timeframe      = f.timeframe;
     if (f.category       != null) s.category       = f.category;
-    if (f.minTokenFeesSol != null) s.minTokenFeesSol = f.minTokenFeesSol;
+    if (f.minTokenFeesSol   != null) s.minTokenFeesSol   = f.minTokenFeesSol;
+    if (f.maxBotHoldersPct  != null) s.maxBotHoldersPct  = f.maxBotHoldersPct;
 
     const m = config.management;
     if (f.minClaimAmount        != null) m.minClaimAmount        = f.minClaimAmount;

@@ -63,10 +63,12 @@ if (fs.existsSync(dlmmMjs)) {
 
   // Fix 3: ESM cannot find named export 'BN' from CommonJS anchor
   // We rewrite the imports to remove BN and then add a top-level BN import.
-  
-  // First, ensure BN is imported from bn.js at the top if any BN imports exist
-  const alreadyImportsBN = /^import\s+BN\s+from\s+["']bn\.js["']/m.test(src);
-  if (!alreadyImportsBN && src.includes('from "@coral-xyz/anchor"') && src.includes('BN')) {
+
+  // Strip any existing BN imports (any quote style) before adding a canonical one
+  src = src.replace(/^import BN from ["']bn\.js["'];\n/gm, "");
+  src = src.replace(/^var BN = require\(["']bn\.js["']\);\n/gm, "");
+  src = src.replace(/^const BN = require\(["']bn\.js["']\);\n/gm, "");
+  if (src.includes('BN')) {
     src = 'import BN from "bn.js";\n' + src;
   }
 
@@ -97,17 +99,6 @@ if (fs.existsSync(dlmmMjs)) {
       return remaining ? `import { ${remaining} } from "@coral-xyz/anchor";` : "";
     }
   );
-
-  // Deduplicate: if the file was patched multiple times before the guard existed,
-  // there may be 2+ `import BN from "bn.js"` lines. Keep only the first one.
-  let seenBNImport = false;
-  src = src.split("\n").filter(line => {
-    if (/^import\s+BN\s+from\s+["']bn\.js["'];?\s*$/.test(line)) {
-      if (seenBNImport) return false; // drop duplicate
-      seenBNImport = true;
-    }
-    return true;
-  }).join("\n");
 
   if (src !== original) {
     fs.writeFileSync(dlmmMjs, src);

@@ -178,11 +178,11 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           volatility: { type: "number", description: "Pool volatility at deploy time" },
           fee_tvl_ratio: { type: "number", description: "fee/TVL ratio at deploy time" },
           organic_score: { type: "number", description: "Base token organic score at deploy time" },
-          initial_value_usd: { type: "number", description: "Estimated USD value being deployed" },
+          initial_value_usd: { type: "number", description: "USD value being deployed — REQUIRED for accurate PnL tracking" },
           variant: { type: "string", description: "Optional A/B test label (e.g. 'A', 'B', 'conservative', 'aggressive'). Used to compare strategy performance." },
           confidence_level: { type: "number", description: "Your confidence in this deploy opportunity, 0-10. Required. Deploys are blocked if <= 7. Scale amount_y = deployAmount × (confidence/10), minimum 0.1 SOL." }
         },
-        required: ["pool_address"]
+        required: ["pool_address", "initial_value_usd"]
       }
     }
   },
