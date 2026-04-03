@@ -938,8 +938,8 @@ function renderPosCard(p, i, sol, solPrice) {
   const upper  = p.upper_bin  ?? p.bin_range?.[1] ?? 0;
   const active = p.active_bin ?? 0;
   const pct    = lower < upper ? Math.max(0, Math.min(100, ((active-lower)/(upper-lower))*100)) : 50;
-  const pu     = p.pnl_usd ?? 0;
-  const ps     = p.pnl_sol ?? (solPrice > 0 ? pu / solPrice : null);
+  const pu     = (p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0);
+  const ps     = p.pnl_sol != null ? p.pnl_sol + (solPrice > 0 ? (p.unclaimed_fees_usd ?? 0) / solPrice : 0) : (solPrice > 0 ? pu / solPrice : null);
   const status = p.in_range
     ? '<span class="badge b-in">In Range</span>'
     : '<span class="badge b-out">Out of Range</span>';
@@ -1235,8 +1235,9 @@ function renderHistory() {
   if ($("hist-th-pnl"))    $("hist-th-pnl").textContent    = sol ? "PnL SOL" : "PnL $";
 
   tbody.innerHTML = data.map(r => {
-    const p = r.pnl_usd??0;
-    const ps = r.pnl_sol??null;
+    const feeInc = r.fees_earned_usd ?? 0;
+    const p = (r.pnl_usd ?? 0) + feeInc;
+    const ps = r.pnl_sol != null ? r.pnl_sol + (_wallet?.sol_price > 0 ? feeInc / _wallet.sol_price : 0) : null;
     const statusBadge = p>=0 ? '<span class="badge b-cp">CLOSED +</span>' : '<span class="badge b-cn">CLOSED −</span>';
     const reason = r.close_reason ? `<span class="badge b-cls">${r.close_reason.toUpperCase().slice(0,18)}</span>` : "—";
     const amountCell = sol
@@ -1474,21 +1475,31 @@ function renderLessons() {
     (l.tags||[]).some(t => t.toLowerCase().includes(q))
   ) : _lessons;
 
-  // Build filter pills from categories that have lessons
+  const expCount = searched.filter(l => l.source === "experiment").length;
+  const regularSearched = searched.filter(l => l.source !== "experiment");
+
+  // Build filter pills from categories that have lessons (regular only)
   const catCounts = {};
-  for (const l of searched) { const c = l.category||"general"; catCounts[c] = (catCounts[c]||0)+1; }
+  for (const l of regularSearched) { const c = l.category||"general"; catCounts[c] = (catCounts[c]||0)+1; }
   const pillCats = CAT_ORDER.filter(c => catCounts[c]);
+  const expPill = expCount > 0
+    ? `<button class="lesson-filter${_lessonCatFilter==="experiment"?" active":""}" style="${_lessonCatFilter==="experiment"?"background:#a78bfa;border-color:#a78bfa":"color:#a78bfa;border-color:#a78bfa40"}" onclick="setLessonCat('experiment')">🧪 Experiment (${expCount})</button>`
+    : "";
   filtersEl.innerHTML = [
     `<button class="lesson-filter${_lessonCatFilter==="all"?" active":""}" onclick="setLessonCat('all')">All (${searched.length})</button>`,
     ...pillCats.map(c => {
       const m = CAT_META[c]||{label:c,color:"var(--muted)"};
       const act = _lessonCatFilter===c?" active":"";
       return `<button class="lesson-filter${act}" style="${act?`background:${m.color};border-color:${m.color}`:`color:${m.color};border-color:${m.color}40`}" onclick="setLessonCat('${c}')">${m.label} (${catCounts[c]})</button>`;
-    })
+    }),
+    expPill
   ].join("");
 
-  // Apply category filter
-  const visible = _lessonCatFilter==="all" ? searched : searched.filter(l => (l.category||"general")===_lessonCatFilter);
+  // Apply category/source filter
+  let visible;
+  if (_lessonCatFilter === "all") visible = searched;
+  else if (_lessonCatFilter === "experiment") visible = searched.filter(l => l.source === "experiment");
+  else visible = searched.filter(l => (l.category||"general") === _lessonCatFilter && l.source !== "experiment");
 
   if (!visible.length) { grid.innerHTML=`<div class="empty">${q||_lessonCatFilter!=="all"?"No matching lessons":"No lessons yet"}</div>`; return; }
 
@@ -1500,25 +1511,29 @@ function renderLessons() {
     const role = l.role?`<span class="badge b-cls">${l.role}</span>`:"";
     const rtype = fmtRuleType(l.rule_type);
     const rtBadge = rtype?`<span class="badge b-cls" style="opacity:0.7">${rtype}</span>`:"";
+    const expBadge = l.source==="experiment"?`<span class="badge b-clm" style="font-size:9px;padding:1px 5px">🧪 EXP</span>`:"";
     const pin  = l.pinned?`<svg class="lpin" width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`:"";
     return `<div class="card lesson-card" style="animation-delay:${lIdx*0.04}s">
       <button class="lesson-edit" title="Edit lesson" onclick="editLesson(${l.id})">&#9998;</button>
       <button class="lesson-del" title="Delete lesson" onclick="deleteLesson(${l.id})">✕</button>
-      <div class="lmeta"><span class="badge ${bc}">${(l.outcome||"—").toUpperCase()}</span>${role}${rtBadge}${pin}</div>
+      <div class="lmeta"><span class="badge ${bc}">${(l.outcome||"—").toUpperCase()}</span>${role}${rtBadge}${expBadge}${pin}</div>
       <div class="lrule">${l.rule||"—"}</div>
       <div class="ltags">${tags}</div>
     </div>`;
   }
 
-  // When a specific category is active: flat grid, no headers
+  // When a specific category/source is active: flat grid, no headers
   if (_lessonCatFilter !== "all") {
     grid.innerHTML = visible.map((l, i) => cardHtml(l, i)).join("");
     return;
   }
 
-  // When "All": group by category with colored section headers
+  // When "All": group by category with colored section headers (regular first, then experiment)
   const groups = {};
-  for (const l of visible) { const c = l.category||"general"; (groups[c]||(groups[c]=[])).push(l); }
+  for (const l of visible) {
+    const c = l.source === "experiment" ? "__experiment__" : (l.category||"general");
+    (groups[c]||(groups[c]=[])).push(l);
+  }
   let html = "", cardIdx = 0;
   for (const cat of CAT_ORDER) {
     const items = groups[cat];
@@ -1526,6 +1541,10 @@ function renderLessons() {
     const m = CAT_META[cat]||{label:cat,color:"var(--muted)"};
     html += `<div class="lesson-group-hdr"><span class="lesson-group-label" style="color:${m.color}">${m.label}</span><span class="lesson-group-count">${items.length}</span><div class="lesson-group-line"></div></div>`;
     html += items.map(l => cardHtml(l, cardIdx++)).join("");
+  }
+  if (groups["__experiment__"]?.length) {
+    html += `<div class="lesson-group-hdr"><span class="lesson-group-label" style="color:#a78bfa">🧪 Experiment</span><span class="lesson-group-count">${groups["__experiment__"].length}</span><div class="lesson-group-line"></div></div>`;
+    html += groups["__experiment__"].map(l => cardHtml(l, cardIdx++)).join("");
   }
   grid.innerHTML = html;
 }

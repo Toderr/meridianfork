@@ -68,8 +68,9 @@ function computePortfolio(closes) {
   const sorted = [...closes].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
   for (const c of sorted) {
-    const pnlUsd = c.pnl_usd ?? 0;
-    const pnlSol = c.pnl_sol ?? 0;
+    const feesUsd = c.fees_earned_usd ?? 0;
+    const pnlUsd = (c.pnl_usd ?? 0) + feesUsd;
+    const pnlSol = (c.pnl_sol ?? 0) + (c.sol_price > 0 ? feesUsd / c.sol_price : 0);
     totalPnlUsd += pnlUsd;
     totalPnlSol += pnlSol;
     totalInitUsd += c.initial_value_usd ?? 0;
@@ -102,8 +103,9 @@ function computePortfolio(closes) {
   // Cumulative series
   let cumUsd = 0, cumSol = 0;
   const cumulative = sorted.map(c => {
-    cumUsd += c.pnl_usd ?? 0;
-    cumSol += c.pnl_sol ?? 0;
+    const cFees = c.fees_earned_usd ?? 0;
+    cumUsd += (c.pnl_usd ?? 0) + cFees;
+    cumSol += (c.pnl_sol ?? 0) + (c.sol_price > 0 ? cFees / c.sol_price : 0);
     return { date: c.timestamp, cum_usd: +cumUsd.toFixed(4), cum_sol: +cumSol.toFixed(6) };
   });
 

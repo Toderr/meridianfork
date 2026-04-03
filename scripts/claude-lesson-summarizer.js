@@ -164,7 +164,154 @@ function buildLessonPages(lessons, idToIndex, maxChars = 3800) {
   return pages;
 }
 
-async function notifyCleanup({ deleted, merged, deletedByCategory, mergeDetails, remainingLessons, idToIndex }) {
+// ─── Policy digest consolidation via Claude ─────────────────────
+
+const AVOID_RE = /\b(AVOID|NEVER|SKIP|FAILED|DO NOT|BLOCK)\b/i;
+const PREFER_RE = /\b(PREFER|WORKED|CONSIDER|GOOD|USE|TAKE PROFIT)\b/i;
+
+async function consolidatePolicyLessons(lessons, { removeLesson, addLesson, log }) {
+  const avoidLessons  = lessons.filter(l => !l.pinned && AVOID_RE.test(l.rule));
+  const preferLessons = lessons.filter(l => !l.pinned && PREFER_RE.test(l.rule));
+  const policyLessons = [...avoidLessons, ...preferLessons];
+
+  // Need at least 3 policy lessons to consolidate
+  if (policyLessons.length < 3) return null;
+
+  // Deduplicate (a lesson can match both AVOID and PREFER)
+  const uniqueIds = new Set();
+  const unique = policyLessons.filter(l => {
+    if (uniqueIds.has(l.id)) return false;
+    uniqueIds.add(l.id);
+    return true;
+  });
+
+  const lessonLines = unique.map(l =>
+    `ID:${l.id} [${l.category||"general"}] ${l.rule}`
+  ).join("\n");
+
+  const prompt = `You are consolidating the AVOID/PREFER trading rules of an autonomous Solana DLMM LP agent.
+These rules are auto-enforced by a rule parser. Each consolidated rule MUST use one of the STRUCTURED FORMATS below or it will be IGNORED by the system.
+
+CURRENT POLICY LESSONS (${unique.length}):
+${lessonLines}
+
+TASK:
+Group lessons by topic, then consolidate each group into ONE structured rule that captures the best threshold from the originals. Output one consolidation per group.
+
+STRUCTURED FORMATS (each new_rule MUST match exactly one of these — the rule parser uses regex):
+  "AVOID strategy=X"                              → blocks strategy X in screening
+  "AVOID strategy=X when volatility > Y"          → blocks strategy X above volatility Y
+  "AVOID volatility > X"                          → blocks pools with volatility above X
+  "SKIP: global_fees_sol < X"                     → blocks pools with fees below X SOL
+  "AVOID top_10_pct > X"                          → blocks concentrated holder pools
+  "AVOID bundlers > X%"                           → blocks high-bundler pools
+  "NEVER deploy more than X SOL"                  → caps deploy sizing
+  "AVOID holding > Xm when pnl < Y%"             → force-close aged losers
+  "DO NOT close OOR < Xm"                        → grace period for OOR positions
+  "NEVER hold position below -X%"                 → stop loss enforcement
+  "TAKE PROFIT at X%"                             → take profit enforcement
+  "Reserve N slot for TOKEN-SOL"                  → slot reservation
+  "PREFER strategy=X when volatility < Y"         → guidance (prompt-only, not hard-enforced)
+  "WORKED: [description of what worked]"          → guidance (prompt-only)
+
+RULES:
+- Each new_rule must be a SINGLE rule matching ONE format above. Do NOT combine multiple formats in one rule.
+- Preserve the most conservative numeric threshold from the originals (e.g., if lessons say AVOID vol > 8 and AVOID vol > 10, keep AVOID volatility > 8)
+- Only consolidate lessons covering the SAME topic. 3+ lessons minimum per consolidation.
+- NEVER touch PINNED lessons
+- PREFER/WORKED lessons can only be consolidated with other PREFER/WORKED lessons
+- AVOID/NEVER/SKIP lessons can only be consolidated with other AVOID/NEVER/SKIP lessons
+
+Respond ONLY with valid JSON:
+{
+  "consolidations": [
+    {
+      "delete_ids": [id1, id2, id3, ...],
+      "new_rule": "AVOID volatility > 8",
+      "category": "strategy|general|stop loss|take profit|sizing"
+    }
+  ],
+  "rationale": "1-2 sentence summary"
+}
+
+If nothing can be meaningfully consolidated, respond: { "consolidations": [], "rationale": "..." }`;
+
+  const args = ["--print", "--output-format", "json", "--no-session-persistence", "--tools", ""];
+
+  const stdout = await new Promise((resolve, reject) => {
+    const child = spawn(CLAUDE_BIN, args, { env: { ...process.env } });
+    let out = "", err = "";
+    child.stdout.on("data", d => { out += d; });
+    child.stderr.on("data", d => { err += d; });
+    child.on("close", code => {
+      if (code !== 0) reject(new Error(`claude digest exited ${code}: ${err.slice(0, 300)}`));
+      else resolve(out);
+    });
+    child.on("error", reject);
+    child.stdin.write(prompt);
+    child.stdin.end();
+    setTimeout(() => { child.kill(); reject(new Error("claude digest timed out")); }, 3 * 60 * 1000);
+  });
+
+  let envelope;
+  try { envelope = JSON.parse(stdout.trim()); } catch { return null; }
+  if (envelope.is_error) return null;
+
+  const raw = (envelope.result || "").trim();
+  const jsonStart = raw.indexOf("{");
+  const jsonEnd   = raw.lastIndexOf("}");
+  const cleaned = jsonStart !== -1 && jsonEnd > jsonStart ? raw.slice(jsonStart, jsonEnd + 1) : raw;
+  let parsed;
+  try { parsed = JSON.parse(cleaned); } catch { return null; }
+
+  const consolidations = Array.isArray(parsed.consolidations)
+    ? parsed.consolidations.filter(c => Array.isArray(c.delete_ids) && c.delete_ids.length >= 3 && typeof c.new_rule === "string" && c.new_rule.trim())
+    : [];
+
+  if (consolidations.length === 0) return null;
+
+  const pinnedIds = new Set(lessons.filter(l => l.pinned).map(l => l.id));
+  const validIds = new Set(unique.map(l => l.id));
+  const idToLesson = Object.fromEntries(unique.map(l => [l.id, l]));
+
+  let totalDeleted = 0;
+  const digestParts = ["📋 POLICY DIGEST"];
+  const deletedByCategory = {};
+
+  for (const { delete_ids, new_rule, category } of consolidations) {
+    const safeIds = delete_ids.filter(id => validIds.has(id) && !pinnedIds.has(id));
+    if (safeIds.length < 3) continue;
+
+    // Add consolidated lesson
+    const cat = category || "general";
+    addLesson(new_rule.trim(), ["consolidated"], { category: cat });
+    log("lesson_summarizer", `Policy consolidation: ${safeIds.length} lessons → "${new_rule.slice(0, 80)}"`);
+
+    // Delete originals
+    for (const id of safeIds) {
+      const removed = removeLesson(id);
+      if (removed) {
+        totalDeleted++;
+        const origCat = (idToLesson[id]?.category || "general").toLowerCase();
+        deletedByCategory[origCat] = (deletedByCategory[origCat] || 0) + 1;
+      }
+    }
+
+    digestParts.push(`\n${catEmoji(cat)} ${cap(cat)} (${safeIds.length} → 1):`);
+    digestParts.push(new_rule);
+  }
+
+  if (totalDeleted === 0) return null;
+
+  return {
+    deletedCount: totalDeleted,
+    digestMsg: digestParts.join("\n"),
+    deletedByCategory,
+    consolidationCount: consolidations.length,
+  };
+}
+
+async function notifyCleanup({ deleted, merged, deletedByCategory, mergeDetails, remainingLessons, idToIndex, digestMsg }) {
   const parts = ["🧹 LESSON CLEANUP"];
 
   if (deleted > 0) {
@@ -190,6 +337,7 @@ async function notifyCleanup({ deleted, merged, deletedByCategory, mergeDetails,
     const { isEnabled, sendMessage } = await import("../telegram.js");
     if (isEnabled()) {
       await sendMessage(summaryMsg);
+      if (digestMsg) await sendMessage(digestMsg);
       for (const page of lessonPages) await sendMessage(page);
     }
   } catch { /* main bot not available */ }
@@ -199,6 +347,7 @@ async function notifyCleanup({ deleted, merged, deletedByCategory, mergeDetails,
     const { isEnabled: journalEnabled, notifyClaudeReview } = await import("../telegram-journal.js");
     if (journalEnabled()) {
       await notifyClaudeReview({ newLessons: [], appliedConfig: {}, rationale: summaryMsg });
+      if (digestMsg) await notifyClaudeReview({ newLessons: [], appliedConfig: {}, rationale: digestMsg });
       for (const page of lessonPages) await notifyClaudeReview({ newLessons: [], appliedConfig: {}, rationale: page });
     }
   } catch { /* journal bot not available */ }
@@ -348,6 +497,24 @@ export async function claudeSummarizeLessons() {
       }
     }
 
+    // ── Policy digest consolidation (runs after batch cleanup) ──
+    let digestMsg = null;
+    try {
+      const postCleanupData = loadJson(LESSONS_FILE) || { lessons: [] };
+      const postCleanupLessons = (postCleanupData.lessons || []).filter(l => l.source !== "experiment");
+      const digestResult = await consolidatePolicyLessons(postCleanupLessons, { removeLesson, addLesson, log });
+      if (digestResult) {
+        totalDeleted += digestResult.deletedCount;
+        for (const [cat, n] of Object.entries(digestResult.deletedByCategory || {})) {
+          totalDeletedByCategory[cat] = (totalDeletedByCategory[cat] || 0) + n;
+        }
+        digestMsg = digestResult.digestMsg;
+        log("lesson_summarizer", `Policy consolidation: deleted ${digestResult.deletedCount}, created ${digestResult.consolidationCount} summary lesson(s)`);
+      }
+    } catch (e) {
+      log("lesson_summarizer_error", `Policy consolidation failed: ${e.message}`);
+    }
+
     if (totalDeleted > 0 || totalMerged > 0) {
       // Reload lessons after all mutations to get final state
       const finalData = loadJson(LESSONS_FILE) || { lessons: [] };
@@ -356,7 +523,7 @@ export async function claudeSummarizeLessons() {
       const { listAllLessons: listAll } = await import("../lessons.js");
       const allLessons = listAll();
       const idToIndex = new Map(allLessons.map(l => [l.id, l.index]));
-      await notifyCleanup({ deleted: totalDeleted, merged: totalMerged, deletedByCategory: totalDeletedByCategory, mergeDetails: allMergeDetails, remainingLessons, idToIndex });
+      await notifyCleanup({ deleted: totalDeleted, merged: totalMerged, deletedByCategory: totalDeletedByCategory, mergeDetails: allMergeDetails, remainingLessons, idToIndex, digestMsg });
       log("lesson_summarizer", `Done — deleted ${totalDeleted}, merged ${totalMerged} group(s). ${remainingLessons.length} lessons remain.`);
     } else {
       log("lesson_summarizer", `Done — no cleanup needed across all batches.`);
