@@ -67,6 +67,8 @@ Management runs on 3 volatility tiers via 1-minute dispatcher. Only one tier run
 - `managementModel`, `screeningModel` (use best model here), `generalModel`
 - Fallback: `process.env.LLM_MODEL` → hardcoded default
 - On 3 consecutive failures: auto-fallback to `z-ai/glm-5` for that turn only
+- Telegram/TTY deploy requests auto-route to `screeningModel` (not generalModel)
+- Step 0 forces `tool_choice: "required"` for action intents (deploy/close/swap) to prevent hallucinated results
 
 ### Hot-reload
 `user-config.json` watched via `fs.watchFile` (2s). Most settings apply live. `rpcUrl`, `walletKey`, `dryRun`, schedule intervals require restart.
@@ -150,6 +152,7 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
 
 ## Learning System
 
+- **Unit-mix guard**: `recordPerformance()` skips records where `final_value_usd` looks like a SOL amount (e.g. 2.0 when initial was $20+). Prevents bad lessons from unit-mixed data.
 - **Derivation**: Auto after close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0%), bad (<-5%)
 - **Experiment separation**: Regular in `lessons.json`, experiment in `experiment-lessons.json`. Experiment lessons excluded from prompt injection, threshold evolution, rule extraction, summarization.
 - **Threshold evolution**: Every 5 closes, auto-adjusts screening/strategy/TP-SL/sizing params. Max 20% change per step.
