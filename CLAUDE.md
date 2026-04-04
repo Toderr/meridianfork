@@ -18,6 +18,8 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `tools/dlmm.js` | Meteora DLMM SDK — deploy/close/PnL/positions |
 | `tools/wallet.js` | Wallet balance, SOL price, Jupiter swaps |
 | `tools/screening.js` | Pool discovery and candidate scoring |
+| `tools/okx.js` | OKX DEX API — risk flags, advanced token intel, clusters, price/ATH |
+| `tools/study.js` | LPAgent API — top LPer patterns per pool |
 | `tools/executor.js` | Tool dispatch, post-tool hooks (notify, journal, sync) |
 | `tools/definitions.js` | LLM tool schemas for all agent roles |
 | `experiment.js` | Experiment tier — strategy optimization loop |
@@ -125,7 +127,26 @@ All on-chain calls go through `sendWithRetry()` — 5 attempts with exponential 
 - **Max positions**: `config.risk.maxPositions` (default 10)
 - **Gas reserve**: `gasReserve` SOL (default 0.2) always kept
 - **Anti-scam**: Skip if `global_fees_sol < minTokenFeesSol`, top_10_pct > 60%, bundlers > 30%
+- **OKX hard filters**: honeypot → auto-reject, dev_rug_count > 0 → auto-reject (pre-LLM)
 - **Known-mints allowlist**: Only swap tokens from positions the bot deployed into. `getKnownMints()` builds Set from ALL positions (open + closed). Unknown tokens never touched — prevents wallet drain from airdropped tokens. `/withdraw` bypasses filter.
+
+## Screening Enrichment
+
+All recon data is pre-loaded per candidate in parallel (`Promise.allSettled`) before the screener agent runs — no LLM tool calls needed for these:
+
+| Source | Data | Signal |
+|--------|------|--------|
+| Smart wallets API | wallets in pool | Confidence boost |
+| Token holders API | top_10_pct, bundlers_pct, global_fees_sol | Scam filter |
+| Token narrative | text narrative | Fundamental signal |
+| Token info | 1h momentum, bot_holders_pct | Direction + filter |
+| Pool memory | past deploy history | Avoid bad pools |
+| Top LPers (LPAgent) | win_rate, hold time, ROI, scalper/holder ratio | Strategy guidance |
+| OKX advanced | smart_money_buy, dev_rug_count, dev_sold_all, dev_buying_more, honeypot, bundle/sniper %, lp_burned | Token safety + conviction |
+| OKX price | price_vs_ath_pct, 5m/1h price change | ATH proximity + momentum |
+| OKX clusters | top holder trends (buy/sell), KOL presence, PnL | Distribution detection |
+
+OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. All other OKX signals are soft — LLM adjusts confidence based on decision rules in the screening prompt.
 
 ## Learning System
 
@@ -209,4 +230,3 @@ Python CLI (`cli-anything-meridian`) for inspecting/configuring the agent. Group
 ### Medium Impact
 - Re-evaluate management interval during holding
 - Cross-role learning (manager mistakes → screener avoidance)
-- ATH proximity check (skip tokens near all-time high)

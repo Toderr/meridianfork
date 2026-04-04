@@ -20,6 +20,7 @@ import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memor
 import { formatPoolConsensusForPrompt, syncToHive, isEnabled as hiveEnabled } from "./hive-mind.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { studyTopLPers } from "./tools/study.js";
+import { getFullTokenAnalysis } from "./tools/okx.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { _stats, _flags } from "./stats.js";
 import { startDashboard } from "./dashboard/server.js";
@@ -616,12 +617,14 @@ async function runScreeningCycle() {
       const candidateResults = await Promise.all(
         candidates.slice(0, 5).map(async (pool) => {
           const mint = pool.base?.mint;
-          const [smartWallets, holders, narrative, tokenInfo, poolMemory] = await Promise.allSettled([
+          const [smartWallets, holders, narrative, tokenInfo, poolMemory, topLPers, okxAnalysis] = await Promise.allSettled([
             checkSmartWalletsOnPool({ pool_address: pool.pool }),
             mint ? getTokenHolders({ mint, limit: 10 }) : Promise.resolve(null),
             mint ? getTokenNarrative({ mint }) : Promise.resolve(null),
             mint ? getTokenInfo({ query: mint }) : Promise.resolve(null),
             Promise.resolve(recallForPool(pool.pool)),
+            studyTopLPers({ pool_address: pool.pool, limit: 3 }),
+            mint ? getFullTokenAnalysis(mint) : Promise.resolve(null),
           ]);
 
           const sw   = smartWallets.status === "fulfilled" ? smartWallets.value : null;
@@ -629,6 +632,8 @@ async function runScreeningCycle() {
           const n    = narrative.status === "fulfilled" ? narrative.value : null;
           const ti   = tokenInfo.status === "fulfilled" ? tokenInfo.value?.results?.[0] : null;
           const mem  = poolMemory.value;
+          const lps  = topLPers.status === "fulfilled" ? topLPers.value : null;
+          const okx  = okxAnalysis.status === "fulfilled" ? okxAnalysis.value : null;
 
           const momentum = ti?.stats_1h
             ? `1h: price${ti.stats_1h.price_change >= 0 ? "+" : ""}${ti.stats_1h.price_change}%, buyers=${ti.stats_1h.buyers}, net_buyers=${ti.stats_1h.net_buyers}`
@@ -645,13 +650,24 @@ async function runScreeningCycle() {
             momentum ? `  momentum: ${momentum}` : null,
             n?.narrative ? `  narrative: ${n.narrative.slice(0, 500)}` : `  narrative: none`,
             mem ? `  memory: ${mem}` : null,
+            lps?.patterns?.top_lper_count > 0
+              ? `  top_lpers: ${lps.patterns.top_lper_count} credible LPers — avg_hold=${lps.patterns.avg_hold_hours}h, win_rate=${Math.round(lps.patterns.avg_win_rate * 100)}%, avg_roi=${lps.patterns.avg_roi_pct}%, fee_pct=${lps.patterns.avg_fee_pct_of_capital}%, best_roi=${lps.patterns.best_roi}, scalpers=${lps.patterns.scalper_count}, holders=${lps.patterns.holder_count}`
+              : lps?.message ? `  top_lpers: ${lps.message}` : `  top_lpers: no data`,
+            // OKX advanced token intelligence
+            okx?.advanced ? `  okx_token: smart_money_buy=${okx.advanced.smart_money_buy}, dev_rug_count=${okx.advanced.dev_rug_count}, dev_sold_all=${okx.advanced.dev_sold_all}, dev_buying_more=${okx.advanced.dev_buying_more}, honeypot=${okx.advanced.is_honeypot}, bundle_pct=${okx.advanced.bundle_pct}%, sniper_pct=${okx.advanced.sniper_pct}%, lp_burned_pct=${okx.advanced.lp_burned_pct != null ? okx.advanced.lp_burned_pct.toFixed(1) : "?"}%, risk_level=${okx.advanced.risk_level}` : null,
+            okx?.price?.price_vs_ath_pct != null ? `  okx_price: price_vs_ath=${okx.price.price_vs_ath_pct}%, price_change_5m=${okx.price.price_change_5m ?? "?"}%, price_change_1h=${okx.price.price_change_1h ?? "?"}%` : null,
+            okx?.clusters?.length > 0 ? `  okx_clusters: ${okx.clusters.slice(0, 3).map(c => `[${c.trend ?? "?"} hold=${c.avg_hold_days}d pnl=${c.pnl_pct}%${c.has_kol ? " KOL" : ""}]`).join(", ")}` : null,
           ].filter(Boolean);
 
-          return { block: lines.join("\n"), botHoldersPct: ti?.audit?.bot_holders_pct ?? null };
+          return {
+            block: lines.join("\n"),
+            botHoldersPct: ti?.audit?.bot_holders_pct ?? null,
+            okxAdvanced: okx?.advanced ?? null,
+          };
         })
       );
 
-      // Hard-filter bot-heavy tokens if maxBotHoldersPct is configured
+      // Hard-filter bot-heavy, honeypot, and dev-rugger tokens
       const maxBotPct = config.screening.maxBotHoldersPct;
       const candidateBlocks = candidateResults
         .filter(r => {
@@ -659,12 +675,20 @@ async function runScreeningCycle() {
             log("lesson_enforce", `Filtered candidate — bot_holders_pct ${r.botHoldersPct}% > ${maxBotPct}%`);
             return false;
           }
+          if (r.okxAdvanced?.is_honeypot) {
+            log("lesson_enforce", `Filtered candidate — OKX honeypot detected`);
+            return false;
+          }
+          if (r.okxAdvanced?.dev_rug_count > 0) {
+            log("lesson_enforce", `Filtered candidate — dev has ${r.okxAdvanced.dev_rug_count} prior rug(s)`);
+            return false;
+          }
           return true;
         })
         .map(r => r.block);
 
       const candidateContext = candidateBlocks.length > 0
-        ? `\nPRE-LOADED CANDIDATE ANALYSIS (smart wallets, holders, narrative already fetched):\n${candidateBlocks.join("\n\n")}\n`
+        ? `\nPRE-LOADED CANDIDATE ANALYSIS (smart wallets, holders, narrative, top LPers, OKX token intel already fetched):\n${candidateBlocks.join("\n\n")}\n`
         : "";
 
       // Hive Mind consensus — only shown if enabled and 3+ agents have data on a pool
@@ -685,6 +709,24 @@ DECISION RULES (apply to the pre-loaded candidates above, no re-fetching needed)
 - SKIP if narrative is empty/null or pure hype with no specific story (unless smart wallets present)
 - Bundlers 5–15% are normal, not a skip reason on their own
 - Smart wallets present → strong confidence boost
+
+OKX TOKEN INTELLIGENCE (pre-loaded per candidate):
+- smart_money_buy=true → strong confidence boost (+1), smart money is accumulating this token globally
+- dev_sold_all=true → bearish, dev dumped — penalize confidence by -2
+- dev_buying_more=true → bullish, dev has skin in the game
+- price_vs_ath > 90% → near ATH, high risk of retracement — penalize confidence by -1
+- price_vs_ath < 30% → far from ATH, recovery play or dead — check volume + narrative
+- sniper_pct > 10% → heavy sniper presence, dump risk — penalize confidence by -1
+- lp_burned_pct > 50% → safer, dev can't rug liquidity
+- okx_clusters: check if top holder clusters are buying or selling. Majority selling = distribution phase, avoid.
+
+TOP LPER INTELLIGENCE (pre-loaded per candidate):
+- top_lpers data shows how the best LPers perform on each pool. USE THIS to guide your strategy and bin choices.
+- If avg_win_rate < 50% → pool is hard even for pros → penalize confidence by -2
+- If scalpers > holders → pool favors short holds → use tighter bins, expect fast TP
+- If holders > scalpers → pool rewards patience → wider bins OK
+- Match your strategy to what top LPers are actually doing profitably
+- No credible LPers found → pool is unproven → penalize confidence by -1
 
 CONFIDENCE-BASED SIZING:
 - Rate your confidence 0-10 for the best candidate based on all signals (smart wallets, narrative, holders, momentum, fees)
