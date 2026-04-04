@@ -102,16 +102,19 @@ function fmtBins(bin_range, bin_step) {
 }
 
 // ─── Notification ────────────────────────────────────────────────
-export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, minutes_held, close_reason }) {
+export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
-  const su = (pnl_usd ?? 0) >= 0 ? "+" : "";
-  const ss = (pnl_sol ?? 0) >= 0 ? "+" : "";
+  const inclUsd = (pnl_usd ?? 0) + fees_earned_usd;
+  const feesSol = (pnl_usd && pnl_sol != null) ? fees_earned_usd * (pnl_sol / pnl_usd) : 0;
+  const inclSol = (pnl_sol ?? 0) + feesSol;
+  const su = inclUsd >= 0 ? "+" : "";
+  const ss = inclSol >= 0 ? "+" : "";
   const sp = (pnl_pct ?? 0) >= 0 ? "+" : "";
   const stratLine = [strategy, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
   const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
   await sendMessage(
     `📍 ${pool_name}\n` +
-    `💰 ${sp}${(pnl_pct ?? 0).toFixed(2)}% | ${su}$${(pnl_usd ?? 0).toFixed(2)} | ${ss}${(pnl_sol ?? 0).toFixed(4)} SOL\n\n` +
+    `💰 ${sp}${(pnl_pct ?? 0).toFixed(2)}% | ${su}$${inclUsd.toFixed(2)} | ${ss}${inclSol.toFixed(4)} SOL\n\n` +
     (stratLine ? `📊 ${stratLine}\n` : ``) +
     `💵 Invested: ${(amount_sol ?? 0).toFixed(4)} SOL${usdPart}\n` +
     (close_reason ? `💡 ${close_reason}\n` : ``) +

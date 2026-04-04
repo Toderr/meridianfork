@@ -129,6 +129,7 @@ export function recordJournalClose(d) {
         pnl_usd: d.pnl_usd,
         pnl_sol,
         pnl_pct: d.pnl_pct,
+        fees_earned_usd: d.fees_earned_usd ?? 0,
         minutes_held: d.minutes_held,
         close_reason: d.close_reason,
       }).catch(() => {});

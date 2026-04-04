@@ -146,15 +146,18 @@ export async function notifyDeploy({ pair, amountSol, strategy, position, tx }) 
   );
 }
 
-export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, reason }) {
-  const su = (pnlUsd ?? 0) >= 0 ? "+" : "";
-  const ss = (pnlSol ?? 0) >= 0 ? "+" : "";
+export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, feesUsd = 0, reason }) {
+  const inclUsd = (pnlUsd ?? 0) + feesUsd;
+  const feesSol = (pnlUsd && pnlSol != null) ? feesUsd * (pnlSol / pnlUsd) : 0;
+  const inclSol = (pnlSol ?? 0) + feesSol;
+  const su = inclUsd >= 0 ? "+" : "";
+  const ss = inclSol >= 0 ? "+" : "";
   const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
   await sendMessage(
     `🔒 CLOSE\n\n` +
     `📍 ${pair}\n` +
     (strategy ? `📊 Strategy: ${strategy}\n` : ``) +
-    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${ss}${(pnlSol ?? 0).toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
+    `💰 PnL: ${su}$${inclUsd.toFixed(2)} | ${ss}${inclSol.toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
     (reason ? `\n💡 ${reason}` : "")
   );
 }

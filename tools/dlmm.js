@@ -919,7 +919,7 @@ export async function closePosition({ position_address, close_reason }) {
         variant: tracked.variant || null,
       });
 
-      return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, base_mint: pool.lbPair.tokenXMint.toString() };
+      return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, fees_earned_usd: feesUsd, base_mint: pool.lbPair.tokenXMint.toString() };
     }
 
     return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };
