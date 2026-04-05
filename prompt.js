@@ -10,6 +10,7 @@
  * @returns {string} - Complete system prompt
  */
 import { config } from "./config.js";
+import { getWikiSummary } from "./wiki.js";
 
 export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null) {
   const s = config.screening;
@@ -42,7 +43,17 @@ ${lessons}
   schedule: config.schedule,
 }, null, 2)}
 
+${(() => {
+  try {
+    const wiki = getWikiSummary();
+    if (wiki) return `═══════════════════════════════════════════
+ KNOWLEDGE WIKI
 ═══════════════════════════════════════════
+${wiki}
+`;
+    return "";
+  } catch { return ""; }
+})()}═══════════════════════════════════════════
  BEHAVIORAL CORE
 ═══════════════════════════════════════════
 

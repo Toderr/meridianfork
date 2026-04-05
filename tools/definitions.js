@@ -1332,4 +1332,53 @@ Use this to systematically find the best parameters for a specific pool without 
       },
     },
   },
+
+  // ═══════════════════════════════════════════
+  //  KNOWLEDGE WIKI
+  // ═══════════════════════════════════════════
+
+  {
+    type: "function",
+    function: {
+      name: "query_wiki",
+      description: `Query the auto-compiled trading knowledge wiki.
+The wiki is compiled from all journal entries, lessons, strategy library, and portfolio snapshots.
+
+Pages available:
+- Token pages: trade history, win rate, best strategy, lessons per token
+- Strategy pages: performance by volatility, bin step, insights, comparative lessons
+- Market conditions: current regime (trending/ranging/volatile), trade signals, trend comparison
+
+Use type="list" to see all available pages.
+Use type + name to read a specific page (e.g. type="token", name="BURNIE").
+Use query to search across all pages (e.g. query="bid_ask volatility").`,
+      parameters: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["token", "strategy", "market", "list"],
+            description: "Page type to query. 'list' returns all available pages."
+          },
+          name: {
+            type: "string",
+            description: "Page name (token name, strategy id, or 'conditions' for market). Case-insensitive."
+          },
+          query: {
+            type: "string",
+            description: "Free-text search across all wiki pages."
+          }
+        }
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "rebuild_wiki",
+      description: "Force a full rebuild of the trading knowledge wiki from all data sources. Use when wiki seems stale or after manual data changes.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
 ];

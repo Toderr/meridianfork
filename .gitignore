@@ -26,6 +26,9 @@ experiments.json
 # Logs
 logs/
 
+# Knowledge wiki (auto-compiled runtime data)
+wiki/
+
 # OS
 .DS_Store
 

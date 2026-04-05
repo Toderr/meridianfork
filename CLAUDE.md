@@ -25,6 +25,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `experiment.js` | Experiment tier — strategy optimization loop |
 | `lessons.js` | Performance recording and learning system |
 | `lesson-rules.js` | Lesson rule extractor + compliance checkers |
+| `wiki.js` | Knowledge wiki — auto-compiled markdown KB from journal/lessons/snapshots |
 | `journal.js` | Append-only trade journal |
 | `reports.js` | Daily/weekly/monthly plain-text reports |
 | `prompt.js` | System prompt builder |
@@ -41,7 +42,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
-`user-config.json`, `state.json`, `journal.json`, `lessons.json`, `experiment-lessons.json`, `strategy-library.json`, `pool-memory.json`, `experiments.json`, `.env`, `.agent.pid`
+`user-config.json`, `state.json`, `journal.json`, `lessons.json`, `experiment-lessons.json`, `strategy-library.json`, `pool-memory.json`, `experiments.json`, `.env`, `.agent.pid`, `wiki/`
 
 All runtime JSON files use **atomic writes** (write to `.tmp` then `fs.renameSync`) to prevent corruption on crash.
 
@@ -171,6 +172,24 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
 - **Comparative lessons**: Every 5 closes, aggregates performance by strategy + volatility bucket. Generates PREFER lessons when one strategy outperforms another by >2% avg PnL (min 3 samples per group). Deduped by strategy pair.
 - **Claude lesson updater**: Every 5 closes. Analyzes recent closes, adds lessons, applies config tweaks (limited keys).
 - **Constraint persistence**: Verbal constraints must be saved via `add_lesson` or `set_position_note` tool calls. Verbal-only instructions are NOT persisted.
+
+## Knowledge Wiki
+
+Auto-compiled markdown knowledge base (`wiki.js`). Deterministic compilation — no LLM needed per update. Inspired by Karpathy's "raw data compiled into .md wiki" pattern.
+
+- **Token pages** (`wiki/tokens/`): Per-token trade history, win rate, strategy breakdown, close reasons, lessons. Auto-updated after every close.
+- **Strategy playbook** (`wiki/strategies/`): Per-strategy performance by volatility bucket, bin step, comparative lessons. Includes strategy definitions from library.
+- **Market conditions** (`wiki/market/`): Regime detection (trending/ranging/volatile) from portfolio snapshots, trade performance signals, win rate trends. Updated every 10 snapshots.
+- **Index** (`wiki/index.md`): Master index linking all pages with key metrics.
+
+**Integration points**:
+- `recordPerformance()` → `updateAfterClose()` (fire-and-forget after every close)
+- `logSnapshot()` → `updateMarketFromSnapshot()` (every 10 snapshots)
+- `buildSystemPrompt()` → `getWikiSummary()` (strategy playbook + market conditions injected into all agent prompts)
+- Startup → `compileFullWiki()` (full rebuild from all data)
+- Tools: `query_wiki` (agent can read any wiki page), `rebuild_wiki` (force full recompile)
+
+**Runtime**: `wiki/` directory is gitignored. Rebuilt on startup from journal + lessons + snapshots.
 
 ## Experiment Tier
 

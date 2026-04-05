@@ -262,6 +262,8 @@ const toolMap = {
   pause_experiment:  (args) => import("../experiment.js").then(m => m.pauseExperiment(args.experiment_id)),
   resume_experiment: (args) => import("../experiment.js").then(m => m.resumeExperiment(args.experiment_id)),
   cancel_experiment: (args) => import("../experiment.js").then(m => m.cancelExperiment(args.experiment_id)),
+  query_wiki: (args) => import("../wiki.js").then(m => m.queryWiki(args)),
+  rebuild_wiki: () => import("../wiki.js").then(m => m.compileFullWiki()),
 };
 
 // Tools that modify on-chain state (need extra safety checks)

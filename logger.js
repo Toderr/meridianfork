@@ -88,4 +88,11 @@ export function logSnapshot(snapshot) {
   const dateStr = timestamp.split("T")[0];
   const snapshotFile = path.join(LOG_DIR, `snapshots-${dateStr}.jsonl`);
   fs.appendFileSync(snapshotFile, JSON.stringify(entry) + "\n");
+
+  // Update wiki market page every 10 snapshots (fire-and-forget)
+  if (!logSnapshot._counter) logSnapshot._counter = 0;
+  logSnapshot._counter++;
+  if (logSnapshot._counter % 10 === 0) {
+    import("./wiki.js").then(m => m.updateMarketFromSnapshot()).catch(() => {});
+  }
 }

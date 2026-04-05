@@ -187,6 +187,12 @@ export async function recordPerformance(perf) {
 
   saveRegular(data);
 
+  // Update knowledge wiki (fire-and-forget)
+  import("./wiki.js").then(m => m.updateAfterClose({
+    pool_name: perf.pool_name,
+    strategy: perf.strategy,
+  })).catch(e => log("wiki_error", `Wiki update failed: ${e.message}`));
+
   // Update pool-level memory
   if (perf.pool) {
     const { recordPoolDeploy } = await import("./pool-memory.js");

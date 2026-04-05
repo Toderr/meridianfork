@@ -54,6 +54,12 @@ log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Models: management=${config.llm.managementModel} | screening=${config.llm.screeningModel} | general=${config.llm.generalModel}`);
 
+// Compile knowledge wiki on startup (fire-and-forget)
+import("./wiki.js").then(m => {
+  const r = m.compileFullWiki();
+  log("startup", `Wiki compiled: ${r.tokens} tokens, ${r.strategies} strategies, regime=${r.regime || "unknown"}`);
+}).catch(e => log("wiki_error", `Startup wiki compile failed: ${e.message}`));
+
 // ─── Hot-reload user-config.json on file change ─────────────────
 fs.watchFile(USER_CONFIG_PATH, { interval: 2000 }, (curr, prev) => {
   if (curr.mtime > prev.mtime) {
