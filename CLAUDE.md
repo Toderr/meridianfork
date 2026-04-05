@@ -50,7 +50,7 @@ All runtime JSON files use **atomic writes** (write to `.tmp` then `fs.renameSyn
 
 ### Cron Cycles
 
-Management runs on 3 volatility tiers via 1-minute dispatcher. Only one tier runs at a time (`_managementBusy` mutex).
+Management runs on 3 volatility tiers via 1-minute dispatcher. Only one tier runs at a time (`_managementBusy` mutex). The `finally` block uses nested `try/finally` to guarantee `_managementBusy = false` even if notification code throws.
 
 | Tier | Volatility | Interval |
 |------|-----------|----------|

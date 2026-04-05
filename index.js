@@ -448,9 +448,9 @@ CRITICAL: When calling close_position, you MUST set close_reason to a descriptiv
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
     clearTimeout(_mgmtTimeout);
+    try {
     // If tier filter left no matching positions, skip report and screening — just release lock
     if (tierFilteredToEmpty) {
-      _managementBusy = false;
       return;
     }
 
@@ -466,6 +466,7 @@ CRITICAL: When calling close_position, you MUST set close_reason to a descriptiv
     } catch { /* non-fatal */ }
 
     if (telegramEnabled()) {
+      try {
       // Parse agent reasoning lines: "[PAIR]: STAY — reason" or "[PAIR]: CLOSE — reason"
       const reasonMap = new Map();
       for (const line of (mgmtReport || "").split("\n")) {
@@ -488,12 +489,12 @@ CRITICAL: When calling close_position, you MUST set close_reason to a descriptiv
         if (pnl?.pnl_usd != null) {
           const su = pnl.pnl_usd >= 0 ? "+" : "";
           const ss = (pnl.pnl_sol ?? 0) >= 0 ? "+" : "";
-          const sp = pnl.pnl_pct >= 0 ? "+" : "";
+          const sp = (pnl.pnl_pct ?? 0) >= 0 ? "+" : "";
           lines.push(`💰 PnL: ${su}$${pnl.pnl_usd.toFixed(2)} | ${ss}${(pnl.pnl_sol ?? 0).toFixed(4)} SOL`);
           if (pnl.unclaimed_fee_usd > 0) {
-            lines.push(`💸 Fees: $${pnl.unclaimed_fee_usd.toFixed(2)} | Total: ${sp}${pnl.pnl_pct.toFixed(2)}%`);
+            lines.push(`💸 Fees: $${pnl.unclaimed_fee_usd.toFixed(2)} | Total: ${sp}${(pnl.pnl_pct ?? 0).toFixed(2)}%`);
           } else {
-            lines.push(`📊 ${sp}${pnl.pnl_pct.toFixed(2)}%`);
+            lines.push(`📊 ${sp}${(pnl.pnl_pct ?? 0).toFixed(2)}%`);
           }
         }
         if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 🎯 ${p.strategy}` : ""}`);
@@ -528,6 +529,9 @@ CRITICAL: When calling close_position, you MUST set close_reason to a descriptiv
           notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
         }
       }
+      } catch (notifyErr) {
+        log("cron_error", `Management notification failed (non-fatal): ${notifyErr.message}`);
+      }
     }
 
     // Trigger screening only from the lowest-frequency active tier (prefer low > med > high).
@@ -542,11 +546,10 @@ CRITICAL: When calling close_position, you MUST set close_reason to a descriptiv
       log("cron", `Management${tierLabel} done with ${openPositions.length}/${config.risk.maxPositions} positions — triggering screening in 30s`);
       setTimeout(() => { runScreeningCycle(); }, 30_000);
     }
-
-    // Release the busy lock only after all async work (including Telegram sends) is complete.
-    // Releasing it early (before the re-fetch and sendMessage) allowed the next cron tick to
-    // start a second management cycle during the async gap, producing duplicate notifications.
-    _managementBusy = false;
+    } finally {
+      // ALWAYS release the busy lock — even if notification/screening code throws
+      _managementBusy = false;
+    }
   }
 }
 
