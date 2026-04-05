@@ -15,7 +15,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `index.js` | Entry point — cron scheduler, Telegram bot, TTY REPL |
 | `agent.js` | Core ReAct agent loop (OpenRouter API) |
 | `config.js` | Config loader with hot-reload for `user-config.json` |
-| `tools/dlmm.js` | Meteora DLMM SDK — deploy/close/PnL/positions |
+| `tools/dlmm.js` | Meteora DLMM SDK — deploy/close/PnL/positions (LPAgent primary for economics) |
 | `tools/wallet.js` | Wallet balance, SOL price, Jupiter swaps |
 | `tools/screening.js` | Pool discovery and candidate scoring |
 | `tools/okx.js` | OKX DEX API — risk flags, advanced token intel, clusters, price/ATH |
@@ -83,7 +83,9 @@ Two keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`). On 429, rotates and retries. Bo
 
 **Never compute `pnl_sol` via USD conversion.** Meteora DLMM API returns native SOL fields: `pnlSol`, `balancesSol`, `amountSol`. Use these directly.
 
-**On-chain PnL fallback**: When Meteora datapi returns `balances: 0` (pricing failure), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
+**LPAgent as primary PnL source**: When `LPAGENT_API_KEY` is set, `getPositionPnl()` and `getMyPositions()` fetch live economics (value, PnL, fees) from LPAgent API (`/lp-positions/opening`), using Meteora only for structure (bins, range, OOR, age). 30s cache shared across PnL checker and management cycle. Falls back to Meteora automatically if LPAgent is unavailable or key is unset.
+
+**On-chain PnL fallback**: When both LPAgent and Meteora datapi fail (or Meteora returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
 ## PnL Display — Fee Inclusion
 
@@ -91,7 +93,7 @@ Journal stores `pnl_usd` (price-only) and `fees_earned_usd` separately. **Fee in
 - Close notifications (both bots): fee-inclusive USD, SOL, and % in all three values
 - Management reports: price PnL (USD, SOL) on one line, unclaimed fees + total % separately
 - Dashboard & reports: fee-inclusive totals for net PnL, win/loss, best/worst trade
-- `pnl_pct` from `getPositionPnl()` is already fee-inclusive: `(pnlUsd + unclaimedFees) / initial * 100`
+- `pnl_pct` from `getPositionPnl()` is already fee-inclusive: LPAgent provides it directly when available, otherwise `(pnlUsd + unclaimedFees) / initial * 100`
 
 ## PnL Checker (every 30s, no LLM)
 

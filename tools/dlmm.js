@@ -377,6 +377,78 @@ let _positionsCache = null;
 let _positionsCacheAt = 0;
 let _positionsInflight = null; // deduplicates concurrent calls
 
+// ─── LPAgent API (live position economics) ──────────────────────
+const LPAGENT_API = "https://api.lpagent.io/open-api/v1";
+const LPAGENT_KEYS = (process.env.LPAGENT_API_KEY || "").split(",").map(k => k.trim()).filter(Boolean);
+let _lpKeyIndex = 0;
+function nextLpKey() {
+  if (!LPAGENT_KEYS.length) return null;
+  const key = LPAGENT_KEYS[_lpKeyIndex % LPAGENT_KEYS.length];
+  _lpKeyIndex++;
+  return key;
+}
+
+let _lpAgentCache = null;
+let _lpAgentCacheAt = 0;
+const LPAGENT_CACHE_TTL = 30_000;
+let _lpAgentInflight = null;
+
+async function fetchLpAgentPositions(walletAddress) {
+  if (!LPAGENT_KEYS.length) return null;
+  if (_lpAgentCache && Date.now() - _lpAgentCacheAt < LPAGENT_CACHE_TTL) return _lpAgentCache;
+  if (_lpAgentInflight) return _lpAgentInflight;
+
+  _lpAgentInflight = (async () => {
+    try {
+      const res = await fetch(
+        `${LPAGENT_API}/lp-positions/opening?owner=${walletAddress}`,
+        { headers: { "x-api-key": nextLpKey() } }
+      );
+      if (!res.ok) {
+        log("lpagent", `HTTP ${res.status} — falling back to Meteora`);
+        return null;
+      }
+      const data = await res.json();
+      const positions = data.data || [];
+      const byAddress = {};
+      for (const p of positions) {
+        const addr = p.position || p.id || p.tokenId;
+        if (addr) byAddress[addr] = p;
+      }
+      _lpAgentCache = byAddress;
+      _lpAgentCacheAt = Date.now();
+      log("lpagent", `Fetched ${positions.length} position(s) for wallet`);
+      return byAddress;
+    } catch (e) {
+      log("lpagent", `Fetch error: ${e.message} — falling back to Meteora`);
+      return null;
+    } finally {
+      _lpAgentInflight = null;
+    }
+  })();
+  return _lpAgentInflight;
+}
+
+function mapLpAgentToEconomics(lp) {
+  const currentValueUsd = parseFloat(lp.value ?? 0);
+  const inputValueUsd   = parseFloat(lp.inputValue ?? 0);
+  const unclaimedFeeUsd = parseFloat(lp.unCollectedFee ?? 0);
+  const collectedFeeUsd = parseFloat(lp.collectedFee ?? 0);
+  const pnlUsd = lp.pnl?.value ?? null;
+  const pnlSol = lp.pnl?.valueNative ?? null;
+  const pnlPct = lp.pnl?.percent != null ? lp.pnl.percent * 100 : null;
+
+  return {
+    current_value_usd: Math.round(currentValueUsd * 100) / 100,
+    initial_value_usd: Math.round(inputValueUsd * 100) / 100,
+    pnl_usd:           pnlUsd != null ? Math.round(pnlUsd * 100) / 100 : null,
+    pnl_sol:           pnlSol != null ? Math.round(pnlSol * 10000) / 10000 : null,
+    pnl_pct:           pnlPct != null ? Math.round(pnlPct * 100) / 100 : null,
+    unclaimed_fee_usd: Math.round(unclaimedFeeUsd * 100) / 100,
+    all_time_fees_usd: Math.round((unclaimedFeeUsd + collectedFeeUsd) * 100) / 100,
+  };
+}
+
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
   const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=open&pageSize=100&page=1`;
@@ -404,16 +476,46 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
   }
 }
 
-// ─── Get Position PnL (Meteora API) ─────────────────────────────
+// ─── Get Position PnL (LPAgent primary, Meteora fallback) ──────
 export async function getPositionPnl({ pool_address, position_address }) {
   pool_address = normalizeMint(pool_address);
   position_address = normalizeMint(position_address);
   const walletAddress = getWallet().publicKey.toString();
   try {
+    // LPAgent: economics (value, PnL, fees)
+    const lpMap = await fetchLpAgentPositions(walletAddress);
+    const lp = lpMap?.[position_address] ?? null;
+
+    // Meteora: structure (bins, range, age, pair name)
     const byAddress = await fetchDlmmPnlForPool(pool_address, walletAddress);
     const p = byAddress[position_address];
-    if (!p) return { error: "Position not found in PnL API" };
 
+    if (!lp && !p) return { error: "Position not found in PnL API" };
+
+    // Structure fields always from Meteora
+    const inRange   = p ? !p.isOutOfRange : true;
+    const lowerBin  = p?.lowerBinId      ?? null;
+    const upperBin  = p?.upperBinId      ?? null;
+    const activeBin = p?.poolActiveBinId ?? null;
+    const ageMinutes = p?.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null;
+    const pairName = p?.pairName || (p?.tokenName0 && p?.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null);
+
+    // LPAgent path: economics from LPAgent, structure from Meteora
+    if (lp) {
+      const econ = mapLpAgentToEconomics(lp);
+      return {
+        ...econ,
+        in_range:    inRange,
+        lower_bin:   lowerBin,
+        upper_bin:   upperBin,
+        active_bin:  activeBin,
+        age_minutes: ageMinutes,
+        pair_name:   pairName,
+        source:      "lpagent",
+      };
+    }
+
+    // Meteora-only path (existing logic)
     const unclaimedUsd    = parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0);
     const currentValueUsd = parseFloat(p.unrealizedPnl?.balances || 0);
     const pnlUsdRaw       = parseFloat(p.pnlUsd ?? 0);
@@ -436,12 +538,12 @@ export async function getPositionPnl({ pool_address, position_address }) {
           unclaimed_fee_usd: onchain.unclaimed_fee_usd,
           all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
           initial_value_usd: null,
-          in_range:    !p.isOutOfRange,
-          lower_bin:   p.lowerBinId      ?? null,
-          upper_bin:   p.upperBinId      ?? null,
-          active_bin:  p.poolActiveBinId ?? null,
-          age_minutes: p.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
-          pair_name: p.pairName || (p.tokenName0 && p.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null),
+          in_range:    inRange,
+          lower_bin:   lowerBin,
+          upper_bin:   upperBin,
+          active_bin:  activeBin,
+          age_minutes: ageMinutes,
+          pair_name:   pairName,
           fallback:    true,
         };
       } catch (e) {
@@ -457,12 +559,12 @@ export async function getPositionPnl({ pool_address, position_address }) {
       unclaimed_fee_usd: Math.round(unclaimedUsd * 100) / 100,
       all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
       initial_value_usd: Math.round(initialValueUsd * 100) / 100,
-      in_range:    !p.isOutOfRange,
-      lower_bin:   p.lowerBinId      ?? null,
-      upper_bin:   p.upperBinId      ?? null,
-      active_bin:  p.poolActiveBinId ?? null,
-      age_minutes: p.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
-      pair_name: p.pairName || (p.tokenName0 && p.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null),
+      in_range:    inRange,
+      lower_bin:   lowerBin,
+      upper_bin:   upperBin,
+      active_bin:  activeBin,
+      age_minutes: ageMinutes,
+      pair_name:   pairName,
     };
   } catch (error) {
     log("pnl_error", error.message);
@@ -515,9 +617,12 @@ export async function getMyPositions({ force = false } = {}) {
       });
     }
 
-    // Enrich with DLMM PnL API for each unique pool in parallel
+    // Enrich with DLMM PnL API for each unique pool in parallel + LPAgent economics
     const uniquePools = [...new Set(raw.map((p) => p.pool))];
-    const pnlMaps = await Promise.all(uniquePools.map((pool) => fetchDlmmPnlForPool(pool, walletAddress)));
+    const [pnlMaps, lpMap] = await Promise.all([
+      Promise.all(uniquePools.map((pool) => fetchDlmmPnlForPool(pool, walletAddress))),
+      fetchLpAgentPositions(walletAddress),
+    ]);
     const pnlByPool = {};
     uniquePools.forEach((pool, i) => { pnlByPool[pool] = pnlMaps[i]; });
 
@@ -557,8 +662,17 @@ export async function getMyPositions({ force = false } = {}) {
         }
       }
 
-      let initialValueUsd = totalValue - pnlUsd;
-      const pnlPct          = initialValueUsd > 0 ? (pnlUsd + unclaimedFees) / initialValueUsd * 100 : 0;
+      // LPAgent economics overlay — overrides Meteora values when available
+      const lp = lpMap?.[r.position] ?? null;
+      const lpEcon = lp ? mapLpAgentToEconomics(lp) : null;
+      if (lpEcon) {
+        totalValue    = lpEcon.current_value_usd;
+        unclaimedFees = lpEcon.unclaimed_fee_usd;
+        pnlUsd        = lpEcon.pnl_usd ?? pnlUsd;
+      }
+
+      let initialValueUsd = lpEcon ? lpEcon.initial_value_usd : (totalValue - pnlUsd);
+      const pnlPct          = lpEcon?.pnl_pct ?? (initialValueUsd > 0 ? (pnlUsd + unclaimedFees) / initialValueUsd * 100 : 0);
       const pnlPairName = p?.pairName || (p?.tokenName0 && p?.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null);
       const resolvedPair = tracked?.pool_name || pnlPairName || r.pair;
 
@@ -586,10 +700,10 @@ export async function getMyPositions({ force = false } = {}) {
         in_range: inRange,
         unclaimed_fees_usd: Math.round(unclaimedFees * 100) / 100,
         total_value_usd: Math.round(totalValue * 100) / 100,
-        collected_fees_usd: Math.round(collectedFees * 100) / 100,
+        collected_fees_usd: lpEcon ? lpEcon.all_time_fees_usd : Math.round(collectedFees * 100) / 100,
         pnl_usd: Math.round(pnlUsd * 100) / 100,
         pnl_pct: Math.round(pnlPct * 100) / 100,
-        pnl_sol: Math.round((parseFloat(p?.pnlSol ?? 0)) * 10000) / 10000,
+        pnl_sol: lpEcon?.pnl_sol ?? Math.round((parseFloat(p?.pnlSol ?? 0)) * 10000) / 10000,
         initial_value_usd_api: Math.round(initialValueUsd * 100) / 100,
         amount_sol_api: p?.amountSol != null ? Math.round(parseFloat(p.amountSol) * 10000) / 10000 : null,
         age_minutes: ageMinutes,
