@@ -321,3 +321,31 @@ export async function handleLogs(req, res, url) {
     err(res, e.message);
   }
 }
+
+export async function handleActions(req, res, url) {
+  try {
+    const params = url.searchParams;
+    const date   = params.get("date") || new Date().toISOString().slice(0, 10);
+    const limit  = Math.min(parseInt(params.get("limit") || "100"), 500);
+    const tool   = params.get("tool") || null; // optional filter by tool name
+    const file   = path.join(LOGS_DIR, `actions-${date}.jsonl`);
+
+    if (!fs.existsSync(file)) {
+      json(res, { date, total: 0, actions: [] });
+      return;
+    }
+
+    const content = fs.readFileSync(file, "utf8");
+    let actions = content.split("\n").filter(Boolean).map(line => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+
+    if (tool) actions = actions.filter(a => a.tool === tool);
+
+    const total = actions.length;
+    const tail = actions.slice(-limit).reverse(); // newest first
+    json(res, { date, total, actions: tail });
+  } catch (e) {
+    err(res, e.message);
+  }
+}

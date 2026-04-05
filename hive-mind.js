@@ -37,6 +37,10 @@ const MIN_AGENTS_FOR_CONSENSUS = 3;
 const MAX_CONSENSUS_CHARS = 500;
 
 let _lastSyncTime = 0;
+let _consecutiveFailures = 0;
+let _circuitOpenUntil = 0;
+const MAX_FAILURES_BEFORE_CIRCUIT_OPEN = 3;
+const CIRCUIT_OPEN_DURATION_MS = 30 * 60 * 1000; // 30 min backoff
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -134,8 +138,11 @@ export async function syncToHive() {
     const cfg = readConfig();
     if (!cfg.hiveMindUrl || !cfg.hiveMindApiKey) return;
 
-    // Debounce
+    // Circuit breaker — skip if too many recent failures
     const now = Date.now();
+    if (now < _circuitOpenUntil) return;
+
+    // Debounce
     if (now - _lastSyncTime < SYNC_DEBOUNCE_MS) return;
     _lastSyncTime = now;
 
@@ -204,12 +211,23 @@ export async function syncToHive() {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       console.log("[hive]", `Sync failed (${res.status}): ${text}`);
+      _consecutiveFailures++;
+      if (_consecutiveFailures >= MAX_FAILURES_BEFORE_CIRCUIT_OPEN) {
+        _circuitOpenUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
+        console.log("[hive]", `Circuit breaker OPEN — ${_consecutiveFailures} consecutive failures, backing off 30 min`);
+      }
       return;
     }
 
+    _consecutiveFailures = 0; // reset on success
     const result = await res.json();
     console.log("[hive]", `Sync complete — ${result.lessons_upserted} lessons, ${result.deploys_upserted} deploys`);
   } catch (e) {
+    _consecutiveFailures++;
+    if (_consecutiveFailures >= MAX_FAILURES_BEFORE_CIRCUIT_OPEN) {
+      _circuitOpenUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
+      console.log("[hive]", `Circuit breaker OPEN — ${_consecutiveFailures} consecutive failures, backing off 30 min`);
+    }
     console.log("[hive]", `Sync error: ${e.message}`);
   }
 }
@@ -221,6 +239,7 @@ export async function syncToHive() {
  */
 export async function queryPoolConsensus(poolAddress) {
   try {
+    if (Date.now() < _circuitOpenUntil) return null;
     const cfg = readConfig();
     if (!cfg.hiveMindUrl || !cfg.hiveMindApiKey) return null;
 

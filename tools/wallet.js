@@ -60,6 +60,15 @@ function rotateHeliusKey() {
 // ─── Swap Failure Tracking ─────────────────────────────────────
 // Tracks tokens that repeatedly fail swaps to skip them temporarily.
 const _swapFailures = new Map(); // mint → { count, lastFailedAt }
+const SWAP_FAILURE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Periodic cleanup of stale swap failure entries (every 10 min)
+setInterval(() => {
+  const cutoff = Date.now() - SWAP_FAILURE_TTL_MS;
+  for (const [mint, f] of _swapFailures) {
+    if (f.lastFailedAt < cutoff) _swapFailures.delete(mint);
+  }
+}, 10 * 60 * 1000);
 
 function isConnectionError(msg) {
   return (

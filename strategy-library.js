@@ -21,7 +21,9 @@ function load() {
 }
 
 function save(data) {
-  fs.writeFileSync(STRATEGY_FILE, JSON.stringify(data, null, 2));
+  const tmp = STRATEGY_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, STRATEGY_FILE);
 }
 
 // ─── Default Strategies ─────────────────────────────────────────

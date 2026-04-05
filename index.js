@@ -2,7 +2,7 @@ import "dotenv/config";
 import cron from "node-cron";
 import readline from "readline";
 import { agentLoop } from "./agent.js";
-import { log } from "./logger.js";
+import { log, logSnapshot } from "./logger.js";
 import { getMyPositions, getPositionPnl } from "./tools/dlmm.js";
 import { getWalletBalances, sweepDustTokens, sweepAllTokensToSol } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
@@ -11,11 +11,11 @@ import fs from "fs";
 import { evolveThresholds, getPerformanceSummary, addLesson, updateLesson, listAllLessons, removeLesson } from "./lessons.js";
 import { registerCronRestarter, executeTool, resetDeployGuard } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
-import { startJournalPolling, stopJournalPolling, startJournalCrons } from "./telegram-journal.js";
+import { startJournalPolling, stopJournalPolling, startJournalCrons, notifyError } from "./telegram-journal.js";
 import { generateBriefing } from "./briefing.js";
 import { generateReport } from "./reports.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions } from "./state.js";
-import { getActiveStrategy } from "./strategy-library.js";
+import { getActiveStrategy, getStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { formatPoolConsensusForPrompt, syncToHive, isEnabled as hiveEnabled } from "./hive-mind.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
@@ -127,6 +127,7 @@ async function runBriefing() {
     setLastBriefingDate();
   } catch (error) {
     log("cron_error", `Morning briefing failed: ${error.message}`);
+    notifyError("Briefing", error.message);
   }
 }
 
@@ -267,6 +268,20 @@ async function runManagementCycle(tier = null) {
       return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd, volatility, variant };
     }));
 
+    // Log portfolio snapshot for equity curve tracking
+    try {
+      const totalValueUsd = positionData.reduce((s, p) => s + (p.pnl?.current_value_usd ?? 0), 0);
+      const totalPnlUsd = positionData.reduce((s, p) => s + (p.pnl?.pnl_usd ?? 0), 0);
+      const totalFeesUsd = positionData.reduce((s, p) => s + (p.pnl?.unclaimed_fee_usd ?? 0), 0);
+      logSnapshot({
+        positions: positionData.length,
+        total_value_usd: Math.round(totalValueUsd * 100) / 100,
+        total_pnl_usd: Math.round(totalPnlUsd * 100) / 100,
+        total_unclaimed_fees_usd: Math.round(totalFeesUsd * 100) / 100,
+        tier: tier?.name ?? "all",
+      });
+    } catch { /* non-fatal */ }
+
     // ── Pre-enforce instruction-based closes BEFORE the agent loop ──────────
     // Only handles "close at X%" patterns deterministically — no LLM involvement.
     instructionClosePrefix = [];
@@ -372,6 +387,7 @@ async function runManagementCycle(tier = null) {
       const lines = [
         `POSITION: ${p.pair} (${p.position})`,
         `  pool: ${p.pool}`,
+        `  strategy: ${p.strategy ?? "?"} | volatility: ${p.volatility ?? "?"}`,
         `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}` +
           (p.binsAbove != null ? ` | bins_above_range: ${p.binsAbove}` : ""),
         p.invested_sol != null ? `  invested: ${p.invested_sol} SOL${p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : ""}`
@@ -397,8 +413,8 @@ ${positionBlocks}
 HARD CLOSE RULES — apply in order, first match wins:
 1. instruction set AND condition met → CLOSE (highest priority)
 2. instruction set AND condition NOT met → HOLD, skip remaining rules
-3. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% AND pnl_pct >= 0 → CLOSE (yield too low; skip this rule if position is at any loss)
-4. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range)
+3. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% AND pnl_pct >= 0 → CLOSE (yield too low; skip this rule if position is at any loss). If fee_tvl_24h is only slightly below threshold (within 1%), consider HOLD if the position is profitable and trend shows recovery.
+4. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range). For high-volatility positions (volatility >= 5) that are young (< 60m), tolerate +2 extra bins OOR before closing — volatile pools often snap back.
 
 NOTE: Stop loss and take profit are handled automatically by the PnL checker — do NOT close positions for SL/TP reasons.
 
@@ -422,6 +438,7 @@ CRITICAL: When calling close_position, you MUST set close_reason to a descriptiv
   } catch (error) {
     _stats.errors++;
     log("cron_error", `Management cycle failed: ${error.message}`);
+    notifyError("Management", error.message);
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
     clearTimeout(_mgmtTimeout);
@@ -570,6 +587,7 @@ async function runScreeningCycle() {
     _flags.gasLowNotifiedAt = null;
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
+    notifyError("Screening pre-check", e.message);
     _screeningBusy = false;
     return;
   }
@@ -590,11 +608,21 @@ async function runScreeningCycle() {
       const deployAmount = computeDeployAmount(currentBalance.sol);
       log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
-      // Load active strategy
+      // Load active strategy — include full metadata so agent can enforce entry/exit rules
       const activeStrategy = getActiveStrategy();
-      const strategyBlock = activeStrategy
-        ? `ACTIVE STRATEGY: ${activeStrategy.name} — LP: ${activeStrategy.lp_strategy}, best for: ${activeStrategy.best_for}`
-        : `No active strategy — use default bid_ask.`;
+      let strategyBlock;
+      if (activeStrategy) {
+        const parts = [`ACTIVE STRATEGY: ${activeStrategy.name} — LP: ${activeStrategy.lp_strategy}, best for: ${activeStrategy.best_for}`];
+        if (activeStrategy.token_criteria?.notes) parts.push(`Token criteria: ${activeStrategy.token_criteria.notes}`);
+        if (activeStrategy.entry?.condition) parts.push(`Entry: ${activeStrategy.entry.condition}`);
+        if (activeStrategy.entry?.single_side) parts.push(`Side: ${activeStrategy.entry.single_side}-only`);
+        if (activeStrategy.range?.notes) parts.push(`Range: ${activeStrategy.range.notes}`);
+        if (activeStrategy.exit?.take_profit_pct) parts.push(`Exit TP: ${activeStrategy.exit.take_profit_pct}%`);
+        if (activeStrategy.exit?.notes) parts.push(`Exit notes: ${activeStrategy.exit.notes}`);
+        strategyBlock = parts.join("\n");
+      } else {
+        strategyBlock = `No active strategy — use default bid_ask.`;
+      }
 
       // Pre-load top candidates + all recon data in parallel (saves 4-6 LLM steps)
       const topCandidates = await getTopCandidates({ limit: 5 }).catch(() => null);
@@ -645,7 +673,7 @@ async function runScreeningCycle() {
             `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}`,
             pool.is_rugpull != null ? `  rugpull=${pool.is_rugpull ? "YES" : "NO"}` : null,
             pool.is_wash    != null ? `  wash=${pool.is_wash ? "YES" : "NO"}`       : null,
-            `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
+            `  smart_wallets: ${sw?.in_pool?.length ?? 0}/${sw?.tracked_wallets ?? 0} present${sw?.in_pool?.length ? ` → confidence ${((sw.confidence_score ?? 0) * 100).toFixed(0)}% (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
             h ? `  holders: top_10_pct=${h.top_10_real_holders_pct ?? "?"}%, bundlers_pct=${h.bundlers_pct_in_top_100 ?? "?"}%, global_fees_sol=${h.global_fees_sol ?? "?"}` : `  holders: fetch failed`,
             momentum ? `  momentum: ${momentum}` : null,
             n?.narrative ? `  narrative: ${n.narrative.slice(0, 500)}` : `  narrative: none`,
@@ -754,6 +782,7 @@ Do NOT write next steps, lessons, observations, or anything else.
     } catch (error) {
       _stats.errors++;
       log("cron_error", `Screening cycle failed: ${error.message}`);
+      notifyError("Screening", error.message);
       screenReport = `Screening cycle failed: ${error.message}`;
     } finally {
       clearTimeout(_screeningTimeout);
@@ -817,6 +846,14 @@ async function runPnlChecker() {
             expTrailActivate = expRules.trailingActivate      ?? expTrailActivate;
             expTrailFloor    = expRules.trailingFloor         ?? expTrailFloor;
             maxMinutesHeld   = expRules.maxMinutesHeld        ?? null;
+          }
+        } catch {}
+      } else if (tracked.strategy) {
+        // Per-strategy TP override from strategy library (non-experiment positions)
+        try {
+          const strat = getStrategy({ id: tracked.strategy });
+          if (strat && !strat.error && strat.exit?.take_profit_pct != null) {
+            TP_PCT = strat.exit.take_profit_pct;
           }
         } catch {}
       }
@@ -918,9 +955,10 @@ function dispatchManagement() {
     const lastRun = timers.managementLastRun[tierName];
     const intervalMs = tierCfg.intervalMin * 60 * 1000;
     if (!lastRun || now - lastRun >= intervalMs) {
-      runManagementCycle({ name: tierName, ...tierCfg }).catch(e =>
-        log("cron_error", `Management dispatch [${tierName}] error: ${e.message}`)
-      );
+      runManagementCycle({ name: tierName, ...tierCfg }).catch(e => {
+        log("cron_error", `Management dispatch [${tierName}] error: ${e.message}`);
+        notifyError(`Management [${tierName}]`, e.message);
+      });
       return; // one tier per dispatcher tick
     }
   }
@@ -949,6 +987,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       `, config.llm.maxSteps, [], "MANAGER");
     } catch (error) {
       log("cron_error", `Health check failed: ${error.message}`);
+      notifyError("Health check", error.message);
     } finally {
       _managementBusy = false;
     }
@@ -972,6 +1011,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (telegramEnabled()) await sendMessage(report);
     } catch (e) {
       log("cron_error", `Weekly report failed: ${e.message}`);
+      notifyError("Weekly report", e.message);
     }
   }, { timezone: 'UTC' });
 
@@ -983,6 +1023,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (telegramEnabled()) await sendMessage(report);
     } catch (e) {
       log("cron_error", `Monthly report failed: ${e.message}`);
+      notifyError("Monthly report", e.message);
     }
   }, { timezone: 'UTC' });
 
@@ -990,10 +1031,13 @@ Summarize the current portfolio health, total fees earned, and performance of al
   const lessonSummarizerTask = cron.schedule("59 23 * * *", () => {
     import("./scripts/claude-lesson-summarizer.js")
       .then(m => m.claudeSummarizeLessons())
-      .catch(e => log("lesson_summarizer_error", e.message));
+      .catch(e => { log("lesson_summarizer_error", e.message); notifyError("Lesson summarizer", e.message); });
   }, { timezone: "Asia/Bangkok" });
 
-  _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
+  _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(e => {
+    log("cron_error", `PnL checker failed: ${e.message}`);
+    notifyError("PnL checker", e.message);
+  }), 30_000);
 
   // Periodic dust sweep — every 10 minutes, retry any tokens still in wallet
   _dustSweepInterval = setInterval(async () => {
@@ -1004,6 +1048,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       }
     } catch (e) {
       log("cron_error", `Dust sweep failed: ${e.message}`);
+      notifyError("Dust sweep", e.message);
     }
   }, 10 * 60 * 1000);
 
@@ -1017,9 +1062,13 @@ Summarize the current portfolio health, total fees earned, and performance of al
 // ═══════════════════════════════════════════
 async function shutdown(signal) {
   log("shutdown", `Received ${signal}. Shutting down...`);
+  stopCronJobs();
   stopPolling();
-  const positions = await getMyPositions();
-  log("shutdown", `Open positions at shutdown: ${positions.total_positions}`);
+  stopJournalPolling();
+  try {
+    const positions = await getMyPositions();
+    log("shutdown", `Open positions at shutdown: ${positions.total_positions}`);
+  } catch { /* non-fatal */ }
   process.exit(0);
 }
 
@@ -1202,6 +1251,7 @@ if (isTTY) {
         "/start          Resume cron cycles",
         "/stop           Pause cron cycles",
         "/stats          Agent uptime, cycle counts, errors",
+        "/status         Wallet balance + open positions",
         "/withdraw       Close all positions, swap to SOL",
         "",
         "── Reports ──",
@@ -1256,6 +1306,22 @@ if (isTTY) {
       const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
       const msg = `📊 Agent Stats\n\nUptime: ${uptime}m\nMgmt cycles: ${_stats.managementCycles}\nScreening cycles: ${_stats.screeningCycles}\nDeployed: ${_stats.positionsDeployed}\nClosed: ${_stats.positionsClosed}\nFees claimed: ${_stats.feesClaimed}\nErrors: ${_stats.errors}\nStarted: ${_stats.startedAt}`;
       sendMessage(msg).catch(() => {});
+      return;
+    }
+
+    if (text === "/status") {
+      try {
+        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
+        const lines = [`💰 Wallet: ${wallet.sol.toFixed(4)} SOL ($${wallet.sol_usd?.toFixed(2) ?? "?"})`, `📂 Positions: ${positions.total_positions}`, ""];
+        for (const p of (positions.positions || []).slice(0, 10)) {
+          const status = p.in_range ? "✅" : "⚠️ OOR";
+          lines.push(`${p.pair} ${status} | fees: $${(p.unclaimed_fees_usd ?? 0).toFixed(2)}`);
+        }
+        if (positions.total_positions === 0) lines.push("No open positions.");
+        sendMessage(lines.join("\n")).catch(() => {});
+      } catch (e) {
+        sendMessage(`Status error: ${e.message}`).catch(() => {});
+      }
       return;
     }
 
@@ -1784,6 +1850,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
         "/start          Resume cron cycles",
         "/stop           Pause cron cycles",
         "/stats          Agent uptime, cycle counts, errors",
+        "/status         Wallet balance + open positions",
         "/withdraw       Close all positions, swap to SOL",
         "",
         "── Reports ──",
@@ -1828,6 +1895,22 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
       const msg = `📊 Agent Stats\n\nUptime: ${uptime}m\nMgmt cycles: ${_stats.managementCycles}\nScreening cycles: ${_stats.screeningCycles}\nDeployed: ${_stats.positionsDeployed}\nClosed: ${_stats.positionsClosed}\nFees claimed: ${_stats.feesClaimed}\nErrors: ${_stats.errors}\nStarted: ${_stats.startedAt}`;
       sendMessage(msg).catch(() => {});
+      return;
+    }
+
+    if (text === "/status") {
+      try {
+        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
+        const lines = [`💰 Wallet: ${wallet.sol.toFixed(4)} SOL ($${wallet.sol_usd?.toFixed(2) ?? "?"})`, `📂 Positions: ${positions.total_positions}`, ""];
+        for (const p of (positions.positions || []).slice(0, 10)) {
+          const status = p.in_range ? "✅" : "⚠️ OOR";
+          lines.push(`${p.pair} ${status} | fees: $${(p.unclaimed_fees_usd ?? 0).toFixed(2)}`);
+        }
+        if (positions.total_positions === 0) lines.push("No open positions.");
+        sendMessage(lines.join("\n")).catch(() => {});
+      } catch (e) {
+        sendMessage(`Status error: ${e.message}`).catch(() => {});
+      }
       return;
     }
 

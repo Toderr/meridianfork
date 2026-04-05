@@ -30,7 +30,9 @@ function loadRegular() {
 }
 
 function saveRegular(data) {
-  fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
+  const tmp = LESSONS_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, LESSONS_FILE);
 }
 
 function loadExperiment() {
@@ -40,7 +42,9 @@ function loadExperiment() {
 }
 
 function saveExperiment(data) {
-  fs.writeFileSync(EXPERIMENT_LESSONS_FILE, JSON.stringify(data, null, 2));
+  const tmp = EXPERIMENT_LESSONS_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, EXPERIMENT_LESSONS_FILE);
 }
 
 /** Merge both stores — lessons combined, performance from regular only. */
@@ -210,6 +214,29 @@ export async function recordPerformance(perf) {
       log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
     }
 
+    // Comparative lessons — aggregate strategy/volatility patterns
+    try {
+      const compLessons = derivComparativeLessons(data.performance);
+      for (const cl of compLessons) {
+        // Dedup: update existing comparative lesson with same strategy pair
+        const existingIdx = data.lessons.findIndex(
+          l => l.outcome === "comparative" && l.tags?.includes("comparative") &&
+               cl.tags.every(t => t === "comparative" || t === "strategy" || t === "volatility" || l.tags.includes(t))
+        );
+        if (existingIdx !== -1) {
+          data.lessons[existingIdx].rule = cl.rule;
+          data.lessons[existingIdx].created_at = cl.created_at;
+          log("lessons", `Updated comparative lesson: ${cl.rule}`);
+        } else {
+          data.lessons.push(cl);
+          log("lessons", `New comparative lesson: ${cl.rule}`);
+        }
+      }
+      if (compLessons.length > 0) saveRegular(data);
+    } catch (compErr) {
+      log("lessons_warn", `Comparative lesson derivation failed (non-fatal): ${compErr.message}`);
+    }
+
     // Claude lesson updater — fire-and-forget, runs after evolveThresholds
     import("./scripts/claude-lesson-updater.js")
       .then(m => m.claudeUpdateLessons())
@@ -230,7 +257,7 @@ function derivLesson(perf) {
     : perf.pnl_pct >= -5 ? "poor"
     : "bad";
 
-  if (outcome === "neutral") return null; // nothing interesting to learn
+  if (outcome === "neutral") return null; // 0-5%: marginal wins — not enough signal to learn from
 
   // Build context description
   const context = [
@@ -261,6 +288,20 @@ function derivLesson(perf) {
     } else {
       rule = `FAILED: ${context} → PnL ${perf.pnl_pct}%, range efficiency ${perf.range_efficiency}%. Reason: ${perf.close_reason}.`;
       tags.push("failed");
+    }
+  }
+
+  // Poor outcome (-5% to 0%): generate soft guidance lessons
+  if (outcome === "poor") {
+    if (perf.range_efficiency < 50) {
+      rule = `CAUTION: ${perf.pool_name}-type pools (volatility=${perf.volatility}, bin_step=${perf.bin_step}) with strategy="${perf.strategy}" — range_efficiency ${perf.range_efficiency}% too low, PnL ${perf.pnl_pct}%. Consider wider bins or different strategy.`;
+      tags.push("low_efficiency", perf.strategy);
+    } else if (perf.minutes_held < 30) {
+      rule = `CAUTION: Quick loss on ${perf.pool_name} (${perf.minutes_held}m held, PnL ${perf.pnl_pct}%). Pool conditions deteriorated fast — check momentum and volume before similar deploys.`;
+      tags.push("quick_loss");
+    } else {
+      rule = `NOTE: Marginal loss on ${context} → PnL ${perf.pnl_pct}%, range efficiency ${perf.range_efficiency}%. Reason: ${perf.close_reason}.`;
+      tags.push("marginal_loss");
     }
   }
 
@@ -296,6 +337,113 @@ function derivLesson(perf) {
     experiment_id: isExperiment ? perf.variant : null,
     created_at: new Date().toISOString(),
   };
+}
+
+// ─── Comparative Lessons ─────────────────────────────────────────
+
+const MIN_SAMPLES_PER_GROUP = 3;
+const VOLATILITY_BUCKETS = [
+  { name: "low", min: 0, max: 2 },
+  { name: "med", min: 2, max: 5 },
+  { name: "high", min: 5, max: Infinity },
+];
+
+function volBucket(v) {
+  if (v == null) return "unknown";
+  return (VOLATILITY_BUCKETS.find(b => v >= b.min && v < b.max) || {}).name || "unknown";
+}
+
+/**
+ * Derive comparative lessons by aggregating performance across positions.
+ * Groups by strategy + volatility bucket and compares.
+ * Called every 5 closes (alongside evolveThresholds). Only generates
+ * lessons when there are enough samples per group.
+ */
+function derivComparativeLessons(performance) {
+  if (!performance || performance.length < MIN_SAMPLES_PER_GROUP * 2) return [];
+
+  // Only use recent records (last 30 days)
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const recent = performance.filter(p => p.recorded_at >= cutoff && p.strategy && p.pnl_pct != null);
+  if (recent.length < MIN_SAMPLES_PER_GROUP * 2) return [];
+
+  // ── Group by strategy ────────────────────────────
+  const byStrategy = {};
+  for (const r of recent) {
+    if (!byStrategy[r.strategy]) byStrategy[r.strategy] = [];
+    byStrategy[r.strategy].push(r);
+  }
+
+  const lessons = [];
+
+  // Compare strategies with enough samples
+  const strategies = Object.entries(byStrategy).filter(([, arr]) => arr.length >= MIN_SAMPLES_PER_GROUP);
+  if (strategies.length >= 2) {
+    const ranked = strategies
+      .map(([strat, arr]) => {
+        const avgPnl = arr.reduce((s, r) => s + r.pnl_pct, 0) / arr.length;
+        const winRate = arr.filter(r => r.pnl_pct >= 0).length / arr.length;
+        return { strat, avgPnl: Math.round(avgPnl * 100) / 100, winRate: Math.round(winRate * 100), n: arr.length };
+      })
+      .sort((a, b) => b.avgPnl - a.avgPnl);
+
+    const best = ranked[0];
+    const worst = ranked[ranked.length - 1];
+    if (best.avgPnl - worst.avgPnl > 2) { // meaningful difference (>2% gap)
+      lessons.push({
+        id: Date.now(),
+        rule: `PREFER: strategy="${best.strat}" outperforms "${worst.strat}" — avg PnL +${best.avgPnl}% (${best.winRate}% win, ${best.n} trades) vs ${worst.avgPnl}% (${worst.winRate}% win, ${worst.n} trades) over last 30 days.`,
+        tags: ["comparative", "strategy", best.strat, worst.strat],
+        outcome: "comparative",
+        category: "strategy",
+        source: "regular",
+        created_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  // ── Group by strategy + volatility bucket ────────
+  const byStratVol = {};
+  for (const r of recent) {
+    const vb = volBucket(r.volatility);
+    const key = `${r.strategy}|${vb}`;
+    if (!byStratVol[key]) byStratVol[key] = { strategy: r.strategy, volBucket: vb, records: [] };
+    byStratVol[key].records.push(r);
+  }
+
+  // Find same-volatility comparisons
+  const volGroups = {};
+  for (const g of Object.values(byStratVol)) {
+    if (g.records.length < MIN_SAMPLES_PER_GROUP) continue;
+    if (!volGroups[g.volBucket]) volGroups[g.volBucket] = [];
+    volGroups[g.volBucket].push(g);
+  }
+
+  for (const [vb, groups] of Object.entries(volGroups)) {
+    if (groups.length < 2 || vb === "unknown") continue;
+    const ranked = groups
+      .map(g => {
+        const avgPnl = g.records.reduce((s, r) => s + r.pnl_pct, 0) / g.records.length;
+        return { strat: g.strategy, avgPnl: Math.round(avgPnl * 100) / 100, n: g.records.length };
+      })
+      .sort((a, b) => b.avgPnl - a.avgPnl);
+
+    const best = ranked[0];
+    const worst = ranked[ranked.length - 1];
+    if (best.avgPnl - worst.avgPnl > 2) {
+      lessons.push({
+        id: Date.now() + 1,
+        rule: `PREFER: On ${vb}-volatility pools, strategy="${best.strat}" beats "${worst.strat}" — avg PnL +${best.avgPnl}% (${best.n} trades) vs ${worst.avgPnl}% (${worst.n} trades).`,
+        tags: ["comparative", "strategy", "volatility", best.strat, worst.strat, `vol_${vb}`],
+        outcome: "comparative",
+        category: "strategy",
+        source: "regular",
+        created_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  return lessons;
 }
 
 /**

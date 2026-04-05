@@ -176,6 +176,25 @@ export async function generateReport(period = "daily") {
       const avgHold = closes.reduce((s, e) => s + (e.minutes_held || 0), 0) / closes.length;
       lines.push(`⏱ Avg Hold Time: ${Math.round(avgHold)}m`);
       lines.push("");
+
+      // Tail risk metrics
+      let maxConsecutiveLosses = 0, currentStreak = 0;
+      let maxDrawdownUsd = 0, runningPnl = 0, peakPnl = 0;
+      for (const e of closes) {
+        const pnl = totalPnl(e);
+        runningPnl += pnl;
+        if (runningPnl > peakPnl) peakPnl = runningPnl;
+        const dd = peakPnl - runningPnl;
+        if (dd > maxDrawdownUsd) maxDrawdownUsd = dd;
+        if (pnl <= 0) { currentStreak++; maxConsecutiveLosses = Math.max(maxConsecutiveLosses, currentStreak); }
+        else currentStreak = 0;
+      }
+      if (maxConsecutiveLosses > 0 || maxDrawdownUsd > 0) {
+        lines.push(`*Risk:*`);
+        if (maxDrawdownUsd > 0) lines.push(`📉 Max Drawdown: -$${maxDrawdownUsd.toFixed(2)}`);
+        if (maxConsecutiveLosses > 0) lines.push(`🔻 Max Consecutive Losses: ${maxConsecutiveLosses}`);
+        lines.push("");
+      }
     }
   }
 

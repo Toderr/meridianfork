@@ -91,13 +91,17 @@ export async function checkSmartWalletsOnPool({ pool_address }) {
     .filter((r) => r.positions.some((p) => p.pool === pool_address))
     .map((r) => ({ name: r.wallet.name, category: r.wallet.category, address: r.wallet.address }));
 
+  // Gradient confidence: 0.0 (none) → 1.0 (all tracked wallets in pool)
+  const confidenceScore = wallets.length > 0 ? Math.min(1, inPool.length / wallets.length) : 0;
+
   return {
     pool: pool_address,
     tracked_wallets: wallets.length,
     in_pool: inPool,
     confidence_boost: inPool.length > 0,
+    confidence_score: Math.round(confidenceScore * 100) / 100,
     signal: inPool.length > 0
-      ? `${inPool.length}/${wallets.length} smart wallet(s) are in this pool: ${inPool.map((w) => w.name).join(", ")} — STRONG signal`
+      ? `${inPool.length}/${wallets.length} smart wallet(s) are in this pool: ${inPool.map((w) => w.name).join(", ")} — confidence ${(confidenceScore * 100).toFixed(0)}%`
       : `0/${wallets.length} smart wallets in this pool — neutral, rely on fundamentals`,
   };
 }

@@ -17,7 +17,9 @@ function loadPersisted() {
 function savePersisted(obj) {
   try {
     const { startedAt: _, ...toSave } = obj; // don't persist startedAt — it's per-session
-    fs.writeFileSync(STATS_FILE, JSON.stringify(toSave));
+    const tmp = STATS_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(toSave));
+    fs.renameSync(tmp, STATS_FILE);
   } catch { /* ignore */ }
 }
 

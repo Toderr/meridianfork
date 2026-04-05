@@ -21,7 +21,9 @@ function load() {
 }
 
 function save(data) {
-  fs.writeFileSync(JOURNAL_FILE, JSON.stringify(data, null, 2));
+  const tmp = JOURNAL_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, JOURNAL_FILE);
 }
 
 function append(entry) {

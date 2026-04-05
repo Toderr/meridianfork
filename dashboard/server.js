@@ -22,6 +22,7 @@ import {
   handleUpdateLesson,
   handleDeleteLesson,
   handleLogs,
+  handleActions,
 } from "./api.js";
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
@@ -78,6 +79,7 @@ export function startDashboard(port = 3000, password = null) {
         if (req.method === "PUT"    && pathname.startsWith("/api/lessons/")) return await handleUpdateLesson(req, res, pathname);
         if (req.method === "DELETE" && pathname.startsWith("/api/lessons/")) return await handleDeleteLesson(req, res, pathname);
         if (pathname === "/api/logs")      return await handleLogs(req, res, url);
+        if (pathname === "/api/actions")   return await handleActions(req, res, url);
       } catch (e) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));

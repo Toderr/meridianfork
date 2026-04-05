@@ -20,7 +20,9 @@ function load() {
 }
 
 function save(data) {
-  fs.writeFileSync(POOL_MEMORY_FILE, JSON.stringify(data, null, 2));
+  const tmp = POOL_MEMORY_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, POOL_MEMORY_FILE);
 }
 
 // ─── Write ─────────────────────────────────────────────────────

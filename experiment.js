@@ -47,7 +47,9 @@ function load() {
 }
 
 function save(data) {
-  fs.writeFileSync(EXPERIMENTS_FILE, JSON.stringify(data, null, 2));
+  const tmp = EXPERIMENTS_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, EXPERIMENTS_FILE);
 }
 
 // ─── Public API ───────────────────────────────────────────────────
@@ -416,11 +418,18 @@ function paramKey(params) {
   return `${params.strategy}|${params.bins_below}|${params.bins_above}`;
 }
 
-/** Composite score: 60% pnl, 40% range efficiency (both normalized to [0,1]) */
+/** Composite score: 60% pnl, 40% range efficiency (both normalized to [0,1]).
+ *  Losses are penalized asymmetrically — a -10% loss scores much worse than a +10% gain. */
 function computeScore(result) {
   if (!result) return 0;
-  // pnl_pct normalized: -100 → 0, +100 → 1, clamp to [0,1]
-  const pnlNorm = Math.max(0, Math.min(1, (result.pnl_pct + 100) / 200));
+  const pnl = result.pnl_pct ?? 0;
+  // Asymmetric normalization: gains map linearly 0.5→1.0, losses are penalized 2x harder (0.5→0.0 faster)
+  let pnlNorm;
+  if (pnl >= 0) {
+    pnlNorm = 0.5 + Math.min(pnl, 100) / 200; // +100% → 1.0
+  } else {
+    pnlNorm = Math.max(0, 0.5 + pnl / 100);    // -50% → 0.0 (2x penalty vs gains)
+  }
   // range_efficiency: 0-100% → 0-1
   const effNorm = Math.max(0, Math.min(1, (result.range_efficiency || 0) / 100));
   return 0.6 * pnlNorm + 0.4 * effNorm;

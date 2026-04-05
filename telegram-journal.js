@@ -177,6 +177,20 @@ export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, 
   await sendMessage(parts.join("\n"));
 }
 
+// ─── Error notification (throttled: same source once per 15 min) ─
+const _errorNotifiedAt = new Map();
+
+export async function notifyError(source, message) {
+  if (!TOKEN || !chatId) return;
+  const now = Date.now();
+  const last = _errorNotifiedAt.get(source) || 0;
+  if (now - last < 15 * 60_000) return; // 15 min throttle per source
+  _errorNotifiedAt.set(source, now);
+  await sendMessage(
+    `🚨 ERROR — ${source}\n\n${String(message).slice(0, 3800)}`
+  );
+}
+
 // ─── RPC limit notice (throttled: once per hour) ─────────────────
 let _rpcLimitNotifiedAt = 0;
 

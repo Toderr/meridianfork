@@ -13,7 +13,7 @@ import { log } from "./logger.js";
 
 const STATE_FILE = "./state.json";
 
-const MAX_RECENT_EVENTS = 20;
+const MAX_RECENT_EVENTS = 50;
 
 function load() {
   if (!fs.existsSync(STATE_FILE)) {
@@ -30,7 +30,9 @@ function load() {
 function save(state) {
   try {
     state.lastUpdated = new Date().toISOString();
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    const tmp = STATE_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, STATE_FILE);
   } catch (err) {
     log("state_error", `Failed to write state.json: ${err.message}`);
   }

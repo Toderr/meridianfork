@@ -1114,6 +1114,7 @@ export async function addLiquidity({
     }
     log("add_liquidity", `SUCCESS txs: ${txHashes.join(", ")}`);
 
+    poolCache.delete(poolAddress.toString());
     _positionsCacheAt = 0;
 
     return {
