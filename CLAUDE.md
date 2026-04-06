@@ -37,8 +37,11 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `pool-memory.js` | Per-pool deploy history and notes |
 | `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
 | `scripts/claude-ask.js` | Telegram `/claude` Q&A agent via `claude --print` |
-| `scripts/claude-lesson-updater.js` | Auto lesson updater — runs every 5 closes |
+| `scripts/claude-lesson-updater.js` | Auto lesson updater — runs every 5 closes, enriched with autoresearch backtest |
 | `scripts/claude-lesson-summarizer.js` | Daily lesson cleanup at 23:59 UTC+7 |
+| `scripts/autoresearch-bridge.js` | Bridge to autoresearch-dlmm — pool selection, backtest runner, output parser |
+| `scripts/autoresearch-loop.js` | Daily research review — biggest win vs loss analysis at 23:30 UTC+7 |
+| `scripts/goals.js` | Goals system — progress tracking, prompt/notification formatting |
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
@@ -202,6 +205,32 @@ Strategy optimization loop (`experiment.js`): deploy → close → analyze → r
 - Bypasses: maxPositions, duplicate guards, confidence gate, lesson compliance, bin_step range, management pre-enforcement, prompt-level hard rules
 - Convergence: N iterations without improvement (default 3), max iterations (default 20), or all combinations exhausted
 
+## Autoresearch Integration
+
+External Python tool (`/home/ubuntu/autoresearch-dlmm`) backtests DLMM strategies against historical candle data and compares to top LP benchmarks.
+
+**Two integration points:**
+
+1. **Every-5-closes review** (`claude-lesson-updater.js`): Runs `prepare.py` + `backtest.py` for the most-traded pool from recent closes. Backtest metrics + benchmark comparison injected into the Claude review prompt. 3-min timeout; graceful skip on failure.
+
+2. **Daily 23:30 UTC+7** (`autoresearch-loop.js`): Finds today's biggest win and biggest loss. Fetches historical candle data + top LP benchmarks for both pools (via `prepare.py` + `backtest.py`). Claude compares: what made the win work, what went wrong with the loss, and derives 1-4 generalizable lessons. ~3 min runtime; runs before lesson summarizer (23:59).
+
+**Env bridging**: `LPAGENT_API_KEY` from Meridian's `.env` is mapped to `LPAGENT_API_KEYS` at spawn time. No duplicate config needed.
+
+**Graceful degradation**: If autoresearch dir missing, uv not installed, or any subprocess fails → review/loop skips silently, logs reason.
+
+## Goals System
+
+Trading goals in `user-config.json` direct lesson generation toward specific targets. Hot-reloadable via config or `/goals` Telegram command.
+
+```json
+"goals": { "win_rate_pct": 80, "max_loss_pct": -10, "profit_factor": 2, "lookback": 50 }
+```
+
+**How it works**: `scripts/goals.js` calculates current performance vs targets (✅/❌ per goal). Injected into both review prompts (every-5-closes + daily autoresearch) with instruction: "prioritize lessons that close the gap on UNMET goals, don't hurt goals already being met."
+
+**Key mapping** (Telegram shorthand → config key): `win_rate` → `win_rate_pct`, `max_loss` → `max_loss_pct`, `profit_factor` → `profit_factor`, `lookback` → `lookback`.
+
 ## Hive Mind
 
 Opt-in collective intelligence (`hive-mind.js`). Pool consensus injected into screening if 3+ agents. After close: sync lessons, deploys, thresholds. All fire-and-forget. Circuit breaker: 3 consecutive failures → 30 min backoff (skips sync and queries).
@@ -218,6 +247,7 @@ Opt-in collective intelligence (`hive-mind.js`). Pool consensus injected into sc
 | `/review` | Trigger Claude lesson updater |
 | `/update_lesson` / `/update_lesson <N> <rule>` | List or update lessons |
 | `/del_lesson <N>` | Delete lesson (pinned blocked) |
+| `/goals` | View progress, set (`/goals win_rate=80 max_loss=-10`), or clear (`/goals clear`) |
 | `/withdraw` | Close all, swap to SOL, report balance |
 
 ## VPS Deployment

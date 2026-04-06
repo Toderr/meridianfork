@@ -114,7 +114,9 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_s
   const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
   await sendMessage(
     `📍 ${pool_name}\n` +
-    `💰 ${sp}${(pnl_pct ?? 0).toFixed(2)}% | ${su}$${inclUsd.toFixed(2)} | ${ss}${inclSol.toFixed(4)} SOL\n\n` +
+    `💰 ${sp}${(pnl_pct ?? 0).toFixed(2)}% | ${su}$${inclUsd.toFixed(2)} | ${ss}${inclSol.toFixed(4)} SOL\n` +
+    (fees_earned_usd > 0 ? `🏦 Fees Earned: $${fees_earned_usd.toFixed(2)}\n` : ``) +
+    `\n` +
     (stratLine ? `📊 ${stratLine}\n` : ``) +
     `💵 Invested: ${(amount_sol ?? 0).toFixed(4)} SOL${usdPart}\n` +
     (close_reason ? `💡 ${close_reason}\n` : ``) +
@@ -154,7 +156,7 @@ export async function notifyJournalExperimentConverged({ poolName, experimentId,
   );
 }
 
-export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, rationale = "" }) {
+export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, rationale = "", autoresearchData = null }) {
   if (!TOKEN || !chatId) return;
   const parts = ["🧠 CLAUDE REVIEW"];
 
@@ -173,6 +175,15 @@ export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, 
   }
 
   if (rationale) parts.push(`\n💡 ${rationale}`);
+
+  if (autoresearchData) {
+    const m = autoresearchData.metrics || {};
+    parts.push(`\n📊 Backtest: ${autoresearchData.poolName || autoresearchData.pool} (${autoresearchData.horizon})`);
+    if (m.net_pnl_pct != null) parts.push(`• Net PnL: ${m.net_pnl_pct}%`);
+    if (m.win_rate_pct != null) parts.push(`• Win rate: ${m.win_rate_pct}%`);
+    if (m.time_in_range_pct != null) parts.push(`• Time in range: ${m.time_in_range_pct}%`);
+    if (m.net_apr != null) parts.push(`• APR: ${m.net_apr}%`);
+  }
 
   await sendMessage(parts.join("\n"));
 }

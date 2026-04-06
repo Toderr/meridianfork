@@ -1036,6 +1036,13 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, { timezone: 'UTC' });
 
+  // Daily autoresearch optimization — 23:30 UTC+7, before lesson summarizer
+  const autoresearchTask = cron.schedule("30 23 * * *", () => {
+    import("./scripts/autoresearch-loop.js")
+      .then(m => m.runDailyAutoresearch())
+      .catch(e => { log("autoresearch_error", e.message); notifyError("Autoresearch", e.message); });
+  }, { timezone: "Asia/Bangkok" });
+
   // Daily lesson cleanup — 23:59 UTC+7 (Asia/Bangkok), same time as journal daily report
   const lessonSummarizerTask = cron.schedule("59 23 * * *", () => {
     import("./scripts/claude-lesson-summarizer.js")
@@ -1061,7 +1068,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, 10 * 60 * 1000);
 
-  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, lessonSummarizerTask];
+  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, autoresearchTask, lessonSummarizerTask];
   const t = config.schedule.managementTiers;
   log("cron", `Cycles started — management: high=${t.high.intervalMin}m, med=${t.med.intervalMin}m, low=${t.low.intervalMin}m | screening every ${config.schedule.screeningIntervalMin}m | pnl-check every 30s`);
 }
@@ -1281,6 +1288,12 @@ if (isTTY) {
         "/del_lesson <N>             Delete lesson #N",
         "/review                     Claude lesson review (last 20 closes)",
         "",
+        "── Goals ──",
+        "/goals               Show current goals + progress",
+        "/goals win_rate=80 max_loss=-10 profit_factor=2",
+        "                     Set trading goals",
+        "/goals clear         Remove all goals",
+        "",
         "── Claude AI ──",
         "/claude <question>   Ask Claude about positions, lessons, journal",
         "",
@@ -1443,6 +1456,65 @@ if (isTTY) {
       } else {
         sendMessage(`❌ Failed to delete lesson ${n}.`).catch(() => {});
       }
+      return;
+    }
+
+    if (text.startsWith("/goals")) {
+      const arg = text.slice("/goals".length).trim();
+      const { loadGoals, calculateProgress, loadPerformance } = await import("./scripts/goals.js");
+      if (!arg) {
+        // Show current goals + progress
+        const goals = loadGoals();
+        if (!goals) {
+          sendMessage("No goals set. Usage:\n/goals win_rate=80 max_loss=-10 profit_factor=2\n/goals clear").catch(() => {});
+          return;
+        }
+        const perf = loadPerformance();
+        const result = calculateProgress(goals, perf);
+        if (!result) {
+          sendMessage(`📎 Goals: ${JSON.stringify(goals)}\n\nNot enough data to calculate progress.`).catch(() => {});
+          return;
+        }
+        const lines = ["📎 Trading Goals"];
+        for (const [key, data] of Object.entries(result.progress)) {
+          const icon = data.met ? "✅" : "❌";
+          const label = key.replace(/_/g, " ");
+          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
+        }
+        lines.push(`\nLookback: ${result.sampleSize} trades`);
+        sendMessage(lines.join("\n")).catch(() => {});
+        return;
+      }
+      if (arg === "clear") {
+        const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+        delete cfg.goals;
+        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+        sendMessage("🗑️ Goals cleared.").catch(() => {});
+        return;
+      }
+      // Parse: /goals win_rate=80 max_loss=-10 profit_factor=2 lookback=50
+      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      const goals = cfg.goals || {};
+      const keyMap = { win_rate: "win_rate_pct", max_loss: "max_loss_pct", profit_factor: "profit_factor", lookback: "lookback" };
+      for (const part of arg.split(/\s+/)) {
+        const [k, v] = part.split("=");
+        if (!k || v == null) continue;
+        const configKey = keyMap[k] || k;
+        goals[configKey] = parseFloat(v);
+      }
+      cfg.goals = goals;
+      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+      const perf = loadPerformance();
+      const result = calculateProgress(goals, perf);
+      const lines = ["✅ Goals updated"];
+      if (result) {
+        for (const [key, data] of Object.entries(result.progress)) {
+          const icon = data.met ? "✅" : "❌";
+          const label = key.replace(/_/g, " ");
+          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
+        }
+      }
+      sendMessage(lines.join("\n")).catch(() => {});
       return;
     }
 
@@ -1880,6 +1952,12 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
         "/del_lesson <N>             Delete lesson #N",
         "/review                     Claude lesson review (last 20 closes)",
         "",
+        "── Goals ──",
+        "/goals               Show current goals + progress",
+        "/goals win_rate=80 max_loss=-10 profit_factor=2",
+        "                     Set trading goals",
+        "/goals clear         Remove all goals",
+        "",
         "── Claude AI ──",
         "/claude <question>   Ask Claude about positions, lessons, journal",
         "",
@@ -2078,6 +2156,63 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
           busy = false;
         }
       })();
+      return;
+    }
+
+    if (text.startsWith("/goals")) {
+      const arg = text.slice("/goals".length).trim();
+      const { loadGoals, calculateProgress, loadPerformance } = await import("./scripts/goals.js");
+      if (!arg) {
+        const goals = loadGoals();
+        if (!goals) {
+          sendMessage("No goals set. Usage:\n/goals win_rate=80 max_loss=-10 profit_factor=2\n/goals clear").catch(() => {});
+          return;
+        }
+        const perf = loadPerformance();
+        const result = calculateProgress(goals, perf);
+        if (!result) {
+          sendMessage(`📎 Goals: ${JSON.stringify(goals)}\n\nNot enough data to calculate progress.`).catch(() => {});
+          return;
+        }
+        const lines = ["📎 Trading Goals"];
+        for (const [key, data] of Object.entries(result.progress)) {
+          const icon = data.met ? "✅" : "❌";
+          const label = key.replace(/_/g, " ");
+          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
+        }
+        lines.push(`\nLookback: ${result.sampleSize} trades`);
+        sendMessage(lines.join("\n")).catch(() => {});
+        return;
+      }
+      if (arg === "clear") {
+        const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+        delete cfg.goals;
+        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+        sendMessage("🗑️ Goals cleared.").catch(() => {});
+        return;
+      }
+      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      const goals = cfg.goals || {};
+      const keyMap = { win_rate: "win_rate_pct", max_loss: "max_loss_pct", profit_factor: "profit_factor", lookback: "lookback" };
+      for (const part of arg.split(/\s+/)) {
+        const [k, v] = part.split("=");
+        if (!k || v == null) continue;
+        const configKey = keyMap[k] || k;
+        goals[configKey] = parseFloat(v);
+      }
+      cfg.goals = goals;
+      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+      const perf = loadPerformance();
+      const result = calculateProgress(goals, perf);
+      const lines = ["✅ Goals updated"];
+      if (result) {
+        for (const [key, data] of Object.entries(result.progress)) {
+          const icon = data.met ? "✅" : "❌";
+          const label = key.replace(/_/g, " ");
+          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
+        }
+      }
+      sendMessage(lines.join("\n")).catch(() => {});
       return;
     }
 

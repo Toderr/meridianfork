@@ -16,6 +16,8 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { pickTargetPool, mapHorizon, runBacktestForPool } from "./autoresearch-bridge.js";
+import { loadGoals, formatGoalsForPrompt, formatGoalsForNotification, loadPerformance } from "./goals.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
@@ -25,7 +27,7 @@ const EXP_LESSONS_FILE = path.join(ROOT, "experiment-lessons.json");
 const USER_CONFIG_FILE = path.join(ROOT, "user-config.json");
 const SKILL_MD_PATH = path.join(
   process.env.HOME || "/home/ubuntu",
-  ".claude/plugins/cache/standalone/meteora-dlmm-lp/1.0.0/skills/meteora-dlmm-lp/SKILL.md"
+  ".claude/skills/meteora-dlmm-lp/SKILL.md"
 );
 
 function loadSkillPrompt() {
@@ -53,7 +55,7 @@ function loadJson(file) {
 
 // ─── Build prompt ─────────────────────────────────────────────────
 
-function buildPrompt(recentPerf, existingLessons, currentConfig) {
+function buildPrompt(recentPerf, existingLessons, currentConfig, autoresearchData = null, goalsSection = "") {
   const perfLines = recentPerf.map((p, i) => {
     const sign = (p.pnl_pct ?? 0) >= 0 ? "+" : "";
     return `${i + 1}. ${p.pool_name || "?"} | ${p.strategy || "?"} | pnl=${sign}${(p.pnl_pct ?? 0).toFixed(2)}% ($${(p.pnl_usd ?? 0).toFixed(2)}) | held=${p.minutes_held || 0}m | range_eff=${(p.range_efficiency ?? 0).toFixed(0)}% | vol=${p.volatility ?? "?"} | reason=${p.close_reason || "?"}`;
@@ -70,6 +72,24 @@ function buildPrompt(recentPerf, existingLessons, currentConfig) {
     outOfRangeBinsToClose: currentConfig.outOfRangeBinsToClose,
   };
 
+  // Build optional autoresearch section
+  let autoresearchSection = "";
+  if (autoresearchData) {
+    const m = autoresearchData.metrics || {};
+    const metricsLines = Object.entries(m).map(([k, v]) => `  ${k}: ${v}`).join("\n");
+    autoresearchSection = `
+BACKTEST ANALYSIS FOR ${autoresearchData.poolName || autoresearchData.pool} (horizon: ${autoresearchData.horizon}):
+${metricsLines || "  No metrics parsed — see raw output below."}
+${autoresearchData.rawOutput ? `\nRaw backtest output (last 1500 chars):\n${autoresearchData.rawOutput.slice(-1500)}` : ""}
+${autoresearchData.benchmarkComparison ? `\nBENCHMARK VS TOP LPERS:\n${autoresearchData.benchmarkComparison}` : ""}
+${autoresearchData.learningReport ? `\nLEARNING REPORT (prior experiments):\n${autoresearchData.learningReport}` : ""}
+
+Use this backtest data to validate patterns from live performance.
+If backtest shows a strategy/shape works better than what we're using, suggest it as a lesson.
+
+`;
+  }
+
   return `You are analyzing performance data for an autonomous Solana DLMM LP agent (Meteora).
 
 RECENT PERFORMANCE (last ${recentPerf.length} closed positions):
@@ -80,7 +100,7 @@ ${lessonLines}
 
 CURRENT STRATEGY CONFIG:
 ${JSON.stringify(cfgSubset, null, 2)}
-
+${goalsSection ? `\n${goalsSection}\n` : ""}${autoresearchSection}
 TASK:
 1. Identify 1-3 NEW patterns worth recording as lesson rules (only if genuinely new and backed by the data above).
 2. Suggest minor config adjustments (optional, only if clearly supported by data). Allowed keys: ${[...ALLOWED_CONFIG_KEYS].join(", ")}.
@@ -143,7 +163,7 @@ function applyConfigUpdates(updates) {
 
 // ─── Journal bot notification ─────────────────────────────────────
 
-function buildReviewMessage(newLessons, appliedConfig, rationale) {
+function buildReviewMessage(newLessons, appliedConfig, rationale, autoresearchData = null) {
   const parts = ["🧠 CLAUDE REVIEW"];
   if (newLessons.length > 0) {
     parts.push(`\n📚 New lessons (${newLessons.length}):`);
@@ -158,11 +178,19 @@ function buildReviewMessage(newLessons, appliedConfig, rationale) {
     }
   }
   if (rationale) parts.push(`\n💡 ${rationale}`);
+  if (autoresearchData) {
+    const m = autoresearchData.metrics || {};
+    parts.push(`\n📊 Backtest: ${autoresearchData.poolName || autoresearchData.pool} (${autoresearchData.horizon})`);
+    if (m.net_pnl_pct != null) parts.push(`• Net PnL: ${m.net_pnl_pct}%`);
+    if (m.win_rate_pct != null) parts.push(`• Win rate: ${m.win_rate_pct}%`);
+    if (m.time_in_range_pct != null) parts.push(`• Time in range: ${m.time_in_range_pct}%`);
+    if (m.net_apr != null) parts.push(`• APR: ${m.net_apr}%`);
+  }
   return parts.join("\n");
 }
 
-async function notifyBots(newLessons, appliedConfig, rationale) {
-  const msg = buildReviewMessage(newLessons, appliedConfig, rationale);
+async function notifyBots(newLessons, appliedConfig, rationale, autoresearchData = null) {
+  const msg = buildReviewMessage(newLessons, appliedConfig, rationale, autoresearchData);
 
   // Notify main Telegram bot
   try {
@@ -173,7 +201,7 @@ async function notifyBots(newLessons, appliedConfig, rationale) {
   // Notify journal bot
   try {
     const { isEnabled, notifyClaudeReview } = await import("../telegram-journal.js");
-    if (isEnabled()) await notifyClaudeReview({ newLessons, appliedConfig, rationale });
+    if (isEnabled()) await notifyClaudeReview({ newLessons, appliedConfig, rationale, autoresearchData });
   } catch { /* journal bot not available */ }
 }
 
@@ -196,12 +224,32 @@ export async function claudeUpdateLessons() {
       return;
     }
 
-    const prompt = buildPrompt(recentPerf, existingLessons, currentConfig);
+    // Run autoresearch backtest for the most-traded recent pool
+    let autoresearchData = null;
+    try {
+      const last5 = recentPerf.slice(-5);
+      const target = pickTargetPool(last5);
+      if (target) {
+        const hz = mapHorizon(target.avgMinutesHeld);
+        log("claude_review", `Running autoresearch for ${target.poolName} (${hz})`);
+        autoresearchData = await runBacktestForPool(target.poolAddress, hz);
+        if (autoresearchData) autoresearchData.poolName = target.poolName;
+      }
+    } catch (e) {
+      log("claude_review", `Autoresearch skipped: ${e.message}`);
+    }
+
+    // Build goals section
+    const goals = loadGoals();
+    const allPerf = loadPerformance();
+    const goalsSection = goals ? formatGoalsForPrompt(goals, allPerf) : "";
+
+    const prompt = buildPrompt(recentPerf, existingLessons, currentConfig, autoresearchData, goalsSection);
     const skillPrompt = loadSkillPrompt();
     const args = ["--print", "--output-format", "json", "--no-session-persistence", "--tools", ""];
     if (skillPrompt) args.push("--system-prompt", skillPrompt);
 
-    log("claude_review", `Spawning claude CLI (${recentPerf.length} records, ${existingLessons.length} existing lessons${skillPrompt ? ", meteora-dlmm-lp skill active" : ""})`);
+    log("claude_review", `Spawning claude CLI (${recentPerf.length} records, ${existingLessons.length} existing lessons${skillPrompt ? ", meteora-dlmm-lp skill active" : ""}${goals ? ", goals active" : ""})`);
 
     const stdout = await new Promise((resolve, reject) => {
       const child = spawn(CLAUDE_BIN, args, { env: { ...process.env } });
@@ -216,7 +264,7 @@ export async function claudeUpdateLessons() {
       child.on("error", reject);
       child.stdin.write(prompt);
       child.stdin.end();
-      setTimeout(() => { child.kill(); reject(new Error("claude subprocess timed out")); }, 5 * 60 * 1000);
+      setTimeout(() => { child.kill(); reject(new Error("claude subprocess timed out")); }, 8 * 60 * 1000);
     });
 
     // Parse outer claude JSON envelope
@@ -259,7 +307,12 @@ export async function claudeUpdateLessons() {
     const hasChanges = newLessons.length > 0 || Object.keys(applied).length > 0;
 
     if (hasChanges) {
-      await notifyBots(newLessons, applied, rationale);
+      // Append goals progress to rationale for notification
+      if (goals) {
+        const goalsNotif = formatGoalsForNotification(goals, allPerf);
+        if (goalsNotif) rationale = rationale ? rationale + goalsNotif : goalsNotif;
+      }
+      await notifyBots(newLessons, applied, rationale, autoresearchData);
       log("claude_review", `Done — ${newLessons.length} lesson(s), ${Object.keys(applied).length} config change(s)`);
     } else {
       log("claude_review", "Done — no changes (no new patterns found)");
