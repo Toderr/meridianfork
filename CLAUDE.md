@@ -35,6 +35,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `stats.js` | Shared in-memory counters + flags |
 | `strategy-library.js` | LP strategy template storage |
 | `pool-memory.js` | Per-pool deploy history and notes |
+| `management-rules.js` | Deterministic management rule engine — replaces LLM for position decisions |
 | `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
 | `scripts/claude-ask.js` | Telegram `/claude` Q&A agent via `claude --print` |
 | `scripts/claude-lesson-updater.js` | Auto lesson updater — runs every 5 closes, enriched with autoresearch backtest |
@@ -114,14 +115,20 @@ trailing active AND < trailingFloor  → CLOSE (trailing stop)
 
 Empty-position closes report `pnl_pct = 0` (not -100%). Thresholds hot-reload from config. Peak stored in-memory (`_trailingStops` Map, resets on restart). **Per-strategy TP**: if strategy library has `exit.take_profit_pct`, it overrides global `takeProfitFeePct` for non-experiment positions.
 
-### Management Decision Rules (priority order)
-1. instruction set AND condition met → CLOSE
-2. instruction set AND condition NOT met → HOLD
-3. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`)
-4. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
-5. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
+### Management Decision Rules (deterministic — no LLM)
+
+Handled by `management-rules.js` rule engine (`evaluateAll()`). LLM only called as fallback for positions with unparseable natural-language instructions.
+
+1. lesson force-hold → STAY (overrides everything)
+2. instruction "close at X%" parseable AND condition met → CLOSE
+3. instruction set AND condition NOT met → HOLD
+4. unparseable instruction → **LLM fallback** (only these positions, max 3 steps)
+5. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
+6. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
+7. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
 
 NOTE: Stop loss / take profit handled by PnL checker, not management cycle.
+NOTE: Health check is also deterministic (no LLM) — logs portfolio summary hourly.
 
 ## Confidence-Based Position Sizing
 
@@ -167,13 +174,13 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
 - **Experiment separation**: Regular in `lessons.json`, experiment in `experiment-lessons.json`. Experiment lessons excluded from prompt injection, threshold evolution, rule extraction, summarization.
 - **Threshold evolution**: Every 5 closes, auto-adjusts screening/strategy/TP-SL/sizing params. Max 20% change per step.
 - **Lesson dedup**: Same structural type → updates in place (no duplicates). Multi-variant types discriminated by strategy name, token, field.
-- **Injection**: ALL lessons injected. Priority: pinned → role-matched → recent. Good > bad > manual > neutral. Max 10 pinned.
+- **Injection**: Capped at 35 lessons (10 pinned + 15 role-matched + 10 recent fill). Priority: pinned → role-matched → recent. Good > bad > manual > neutral.
 - **Enforcement (3-layer)**:
   1. **Prompt** — HARD RULES (AVOID/NEVER/SKIP) as numbered checklist. GUIDANCE (PREFER/WORKED) shown separately.
   2. **Pre-agent** — screening filters violating candidates; management force-closes/holds matching positions.
   3. **Executor** — `checkDeployCompliance()` blocks deploy on-chain.
 - **Rule types** (`lesson-rules.js`): `block_strategy`, `block_high_volatility`, `block_low_fees`, `block_concentration`, `oor_grace_period`, `force_close_aged_losing`, `protect_null_volatility`, `max_deploy_sol`, `max_loss_pct`, `min_profit_pct`, `reserve_slot`. Unmatched → prompt-only.
-- **Daily summarization**: Two phases — batch cleanup (delete superseded, merge similar) → policy consolidation (consolidate AVOID/PREFER groups into parseable rules). Never deletes pinned or experiment lessons.
+- **Daily summarization**: Two phases — batch cleanup (aggressive: delete duplicates/noise, merge into <120 char rules, max 70% reduction) → policy consolidation (consolidate AVOID/PREFER groups into short parseable rules). Never deletes pinned or experiment lessons.
 - **Comparative lessons**: Every 5 closes, aggregates performance by strategy + volatility bucket. Generates PREFER lessons when one strategy outperforms another by >2% avg PnL (min 3 samples per group). Deduped by strategy pair.
 - **Claude lesson updater**: Every 5 closes. Analyzes recent closes, adds lessons, applies config tweaks (limited keys).
 - **Constraint persistence**: Verbal constraints must be saved via `add_lesson` or `set_position_note` tool calls. Verbal-only instructions are NOT persisted.

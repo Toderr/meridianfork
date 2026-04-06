@@ -1246,10 +1246,9 @@ export function getLessonsForPrompt(opts = {}) {
   const allLessons = data.lessons;
   if (allLessons.length === 0) return null;
 
-  // No caps — inject all lessons so the agent always applies everything it has learned
-  const PINNED_CAP  = Infinity;
-  const ROLE_CAP    = Infinity;
-  const RECENT_CAP  = maxLessons ?? Infinity;
+  const PINNED_CAP  = 10;
+  const ROLE_CAP    = 15;
+  const RECENT_CAP  = maxLessons ?? 10;
 
   const outcomePriority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
   const byPriority = (a, b) => (outcomePriority[a.outcome] ?? 3) - (outcomePriority[b.outcome] ?? 3);

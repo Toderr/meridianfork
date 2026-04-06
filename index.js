@@ -21,6 +21,7 @@ import { formatPoolConsensusForPrompt, syncToHive, isEnabled as hiveEnabled } fr
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { studyTopLPers } from "./tools/study.js";
 import { getFullTokenAnalysis } from "./tools/okx.js";
+import { evaluateAll } from "./management-rules.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { _stats, _flags } from "./stats.js";
 import { startDashboard } from "./dashboard/server.js";
@@ -387,60 +388,72 @@ async function runManagementCycle(tier = null) {
       log("mgmt_rules", `${p.pair}: ${rules.join(" | ")}`);
     }
 
-    // Build pre-loaded position blocks for the LLM
-    const positionBlocks = positionData.map((p) => {
-      const pnl = p.pnl;
-      const lines = [
-        `POSITION: ${p.pair} (${p.position})`,
-        `  pool: ${p.pool}`,
-        `  strategy: ${p.strategy ?? "?"} | volatility: ${p.volatility ?? "?"}`,
-        `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}` +
-          (p.binsAbove != null ? ` | bins_above_range: ${p.binsAbove}` : ""),
-        p.invested_sol != null ? `  invested: ${p.invested_sol} SOL${p.initial_value_usd != null ? ` | $${p.initial_value_usd.toFixed(2)}` : ""}`
-          : p.initial_value_usd != null && p.initial_value_usd > 0 ? `  invested: ~$${p.initial_value_usd.toFixed(2)}` : null,
-        pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
-        pnl && p.feeTvl24h != null ? `  fee_tvl_24h: ${p.feeTvl24h.toFixed(1)}%${(p.age_minutes||0) < config.management.minAgeForYieldExit ? " (rule inactive — position too young)" : ""}` : null,
-        pnl && (p.feeTvl24h != null || p.binsAbove != null) ? `  ` +
-          (p.feeTvl24h != null && (p.age_minutes||0) >= config.management.minAgeForYieldExit ? `to_yield: ${(p.feeTvl24h - config.management.minFeeTvl24h).toFixed(1)}%` : "") +
-          (p.binsAbove != null ? `${p.feeTvl24h != null && (p.age_minutes||0) >= config.management.minAgeForYieldExit ? " | " : ""}to_bin_exit: ${Math.max(0, config.management.outOfRangeBinsToClose - p.binsAbove)}` : "") : null,
-        p.instruction ? `  instruction: "${p.instruction}"` : null,
-        p._lesson_force_hold ? `  LESSON_FORCE_HOLD: "${p._lesson_force_hold}" — do NOT close this position` : null,
-        p.recall ? `  memory: ${p.recall}` : null,
-      ].filter(Boolean);
-      return lines.join("\n");
-    }).join("\n\n");
+    // ── Deterministic rule engine — replaces LLM for management decisions ──
+    const ruleResult = evaluateAll(positionData);
+    const reportParts = [instructionClosePrefix.length > 0 ? instructionClosePrefix.join("\n") : null];
 
-    const { content } = await agentLoop(`
-MANAGEMENT CYCLE — ${positionData.length} position(s)
+    // Execute closes
+    for (const p of ruleResult.closes) {
+      const reason = p._ruleResult.reason;
+      try {
+        await executeTool("close_position", { position_address: p.position, close_reason: reason });
+        log("mgmt_rule", `CLOSE ${p.pair}: ${reason}`);
+      } catch (err) {
+        log("cron_error", `Rule-engine close failed for ${p.pair}: ${err.message}`);
+      }
+    }
 
-PRE-LOADED POSITION DATA (no fetching needed):
+    // Execute fee claims
+    for (const p of ruleResult.claims) {
+      try {
+        await executeTool("claim_fees", { position_address: p.position });
+        log("mgmt_rule", `CLAIM ${p.pair}: ${p._ruleResult.reason}`);
+      } catch (err) {
+        log("cron_error", `Rule-engine claim failed for ${p.pair}: ${err.message}`);
+      }
+    }
+
+    // Fall back to LLM ONLY for positions with unparseable instructions
+    if (ruleResult.needsLlm.length > 0) {
+      const llmPositions = ruleResult.needsLlm;
+      const positionBlocks = llmPositions.map((p) => {
+        const pnl = p.pnl;
+        const lines = [
+          `POSITION: ${p.pair} (${p.position})`,
+          `  pool: ${p.pool}`,
+          `  strategy: ${p.strategy ?? "?"} | volatility: ${p.volatility ?? "?"}`,
+          `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}` +
+            (p.binsAbove != null ? ` | bins_above_range: ${p.binsAbove}` : ""),
+          pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | fees: $${pnl.unclaimed_fee_usd} | value: $${pnl.current_value_usd}` : `  pnl: fetch failed`,
+          p.instruction ? `  instruction: "${p.instruction}"` : null,
+        ].filter(Boolean);
+        return lines.join("\n");
+      }).join("\n\n");
+
+      try {
+        const { content: llmReport } = await agentLoop(`
+MANAGEMENT — ${llmPositions.length} position(s) with custom instructions needing interpretation.
+
 ${positionBlocks}
 
-HARD CLOSE RULES — apply in order, first match wins:
-1. instruction set AND condition met → CLOSE (highest priority)
-2. instruction set AND condition NOT met → HOLD, skip remaining rules
-3. age >= ${config.management.minAgeForYieldExit}m AND fee_tvl_24h < ${config.management.minFeeTvl24h}% AND pnl_pct >= 0 → CLOSE (yield too low; skip this rule if position is at any loss). If fee_tvl_24h is only slightly below threshold (within 1%), consider HOLD if the position is profitable and trend shows recovery.
-4. bins_above_range >= ${config.management.outOfRangeBinsToClose} → CLOSE (price pumped above range). For high-volatility positions (volatility >= 5) that are young (< 60m), tolerate +2 extra bins OOR before closing — volatile pools often snap back.
-
-NOTE: Stop loss and take profit are handled automatically by the PnL checker — do NOT close positions for SL/TP reasons.
-
-When closing: call close_position only — it handles fee claiming internally, do NOT call claim_fees first.
-
-CLAIM RULE: If unclaimed_fee_usd >= ${config.management.minClaimAmount}, call claim_fees. Do not use any other threshold.
-
-INSTRUCTIONS:
-All data is pre-loaded above — do NOT call get_my_positions or get_position_pnl.
-Apply the rules to each position and write your report immediately.
-Only call tools if a position needs to be CLOSED or fees need to be CLAIMED.
-If all positions STAY and no fees to claim, just write the report with no tool calls.
+These positions have instructions that couldn't be parsed automatically.
+Evaluate each instruction against the position's current state.
+If the instruction's condition is met → call close_position with a descriptive close_reason.
+If not met → STAY.
 
 REPORT FORMAT (one line per position, no markdown):
-[PAIR]: STAY — [reason, max 10 words]
-[PAIR]: CLOSE — [reason, max 10 words]
+[PAIR]: STAY — [reason]
+[PAIR]: CLOSE — [reason]
+        `, 3, [], "MANAGER", config.llm.managementModel, 2048);
+        reportParts.push(llmReport);
+      } catch (err) {
+        log("cron_error", `LLM fallback for instructions failed: ${err.message}`);
+        reportParts.push(ruleResult.needsLlm.map(p => `${p.pair}: STAY — LLM fallback failed`).join("\n"));
+      }
+    }
 
-CRITICAL: When calling close_position, you MUST set close_reason to a descriptive exit condition (e.g. "Yield-exit: fee_tvl 2.1% < 7% min", "OOR 12 bins above range", "Instruction: hold until 5% met"). NEVER leave close_reason empty or generic.
-    `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
-    mgmtReport = content;
+    reportParts.push(ruleResult.report);
+    mgmtReport = reportParts.filter(Boolean).join("\n");
   } catch (error) {
     _stats.errors++;
     log("cron_error", `Management cycle failed: ${error.message}`);
@@ -987,13 +1000,32 @@ export function startCronJobs() {
   const healthTask = cron.schedule(`0 * * * *`, async () => {
     if (_managementBusy) return;
     _managementBusy = true;
-    log("cron", "Starting health check");
+    log("cron", "Starting health check (deterministic)");
     try {
-      await agentLoop(`
-HEALTH CHECK
-
-Summarize the current portfolio health, total fees earned, and performance of all open positions. Recommend any high-level adjustments if needed.
-      `, config.llm.maxSteps, [], "MANAGER");
+      const positions = await getMyPositions({ force: true });
+      if (!positions?.length) { log("health", "No open positions"); return; }
+      const wallet = await getWalletBalances();
+      let totalValue = 0, totalFees = 0, totalPnlUsd = 0;
+      const lines = [];
+      for (const p of positions) {
+        try {
+          const pnl = await getPositionPnl({ pool_address: p.pool_address, position_address: p.position_address });
+          if (pnl) {
+            const val = parseFloat(pnl.current_value_usd) || 0;
+            const fees = parseFloat(pnl.unclaimed_fee_usd) || 0;
+            const pnlUsd = parseFloat(pnl.pnl_usd) || 0;
+            totalValue += val; totalFees += fees; totalPnlUsd += pnlUsd;
+            lines.push(`${p.pair || p.pool_address.slice(0,8)}: $${val.toFixed(2)} | pnl ${pnl.pnl_pct}% ($${pnlUsd.toFixed(2)}) | fees $${fees.toFixed(2)}`);
+          }
+        } catch { /* skip failed pnl fetch */ }
+      }
+      const solBal = wallet?.sol?.toFixed(3) ?? "?";
+      const summary = [
+        `Health Check — ${positions.length} positions`,
+        `SOL: ${solBal} | Total value: $${totalValue.toFixed(2)} | Unclaimed fees: $${totalFees.toFixed(2)} | Net PnL: $${totalPnlUsd.toFixed(2)}`,
+        ...lines,
+      ].join("\n");
+      log("health", summary);
     } catch (error) {
       log("cron_error", `Health check failed: ${error.message}`);
       notifyError("Health check", error.message);

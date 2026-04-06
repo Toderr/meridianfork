@@ -8,7 +8,7 @@
  * Safety guarantees:
  *   - Never deletes pinned lessons
  *   - Never touches experiment lessons
- *   - Max 40% reduction per run
+ *   - Max 70% reduction per run
  *   - Skips silently on malformed Claude response
  *
  * Fire-and-forget from index.js — never throws past its own error boundary.
@@ -42,49 +42,57 @@ function buildPrompt(lessons) {
     `ID:${l.id} [${l.category||"general"}/${l.outcome||"manual"}${l.pinned?" PINNED":""}] ${l.rule}`
   ).join("\n");
 
-  const maxDelete = Math.floor(lessons.length * 0.4);
+  const maxDelete = Math.floor(lessons.length * 0.7);
 
-  return `You are cleaning up the lesson library of an autonomous Solana DLMM LP trading agent.
+  return `You are aggressively cleaning the lesson library of an autonomous Solana DLMM LP trading agent.
+The goal is MAXIMUM CONCISENESS — every lesson must be a short, actionable rule. No stories, no examples, no verbose explanations.
 
 CURRENT LESSONS (${lessons.length} total):
 ${lessonLines}
 
-TASK:
-Reduce lesson bloat by identifying:
-1. SUPERSEDED: A lesson that is strictly replaced by a newer, more specific lesson covering the same rule. Delete the older/vaguer one.
-2. CONTRADICTED: Two lessons that directly conflict (e.g., one says AVOID bid_ask, another says PREFER bid_ask). Delete the weaker/older one.
-3. MERGEABLE: 3+ lessons that are all variations of the same underlying rule. Replace them with one concise merged rule.
+TASK — Be aggressive:
+1. DELETE duplicates: Multiple "CAUTION: Quick loss on X-SOL" with same template → keep ZERO, merge into one short rule.
+2. DELETE noise: AUTO-EVOLVED, SELF-TUNED, FORMAT lessons that don't affect trading decisions.
+3. DELETE superseded: Old rule replaced by newer/better one.
+4. MERGE similar lessons into ONE short rule. Examples of good merged rules:
+   - "CAUTION: 15 quick losses (<20m) — check momentum/volume before deploy" (replaces 15 individual CAUTION lessons)
+   - "PREFER bid_ask over spot — avg PnL +4.5% vs -24% over 1000 trades"
+   - "AVOID volatility=null + spot strategy — goes OOR 100%"
+   - "PREFER single_sided_reseed on med-vol — avg PnL +2.55% vs bid_ask -0.13%"
 
-HARD CONSTRAINTS (you MUST follow these):
-- NEVER delete or merge lessons marked PINNED
-- NEVER suggest deleting more than ${maxDelete} lessons total (max 40% reduction)
-- Do NOT merge lessons from different categories
-- Only merge if the lessons are truly redundant — when in doubt, leave them
-- The merged rule must follow the LESSON FORMAT below so it gets auto-enforced
+CONCISENESS RULES (CRITICAL):
+- Each new_rule MUST be under 120 characters. No exceptions.
+- No raw JSON, no bin_range objects, no long token lists in rules.
+- No "Pool conditions deteriorated fast — check momentum and volume before similar deploys" boilerplate.
+- Strip specific token names from merged rules — generalize the pattern.
+- One fact per rule. If a lesson has 5 bullet points, split into 5 short rules or pick the most important one.
 
-LESSON FORMAT (merged rules must match one of these patterns):
+STRUCTURED FORMATS (prefer these — they get auto-enforced by the rule parser):
   "AVOID strategy=X"
   "AVOID strategy=X when volatility > Y"
-  "AVOID volatility > X"
   "SKIP: global_fees_sol < X"
-  "AVOID top_10_pct > X"
   "NEVER deploy more than X SOL"
   "AVOID holding > Xm when pnl < Y%"
   "DO NOT close OOR < Xm"
   "NEVER hold position below -X%"
   "TAKE PROFIT at X%"
-  (or freeform AVOID/NEVER/SKIP/PREFER/WORKED/FAILED rules if no pattern fits)
+  "PREFER strategy=X when volatility < Y"
 
-Respond ONLY with valid JSON, no markdown, no explanation:
+HARD CONSTRAINTS:
+- NEVER delete or merge lessons marked PINNED
+- Max ${maxDelete} deletions (40% cap)
+- Do NOT merge lessons from different categories
+
+Respond ONLY with valid JSON:
 {
   "delete": [id1, id2, ...],
   "merge": [
-    { "ids": [id1, id2, id3], "new_rule": "MERGED RULE TEXT", "reason": "one sentence why" }
+    { "ids": [id1, id2, id3], "new_rule": "SHORT RULE <120 chars", "reason": "why" }
   ],
-  "rationale": "1-2 sentence summary of what was cleaned up"
+  "rationale": "summary"
 }
 
-If nothing needs cleanup, respond with: { "delete": [], "merge": [], "rationale": "No redundant lessons found" }`;
+If nothing needs cleanup: { "delete": [], "merge": [], "rationale": "Clean" }`;
 }
 
 // ─── Notify journal bot ───────────────────────────────────────────
@@ -189,52 +197,48 @@ async function consolidatePolicyLessons(lessons, { removeLesson, addLesson, log 
     `ID:${l.id} [${l.category||"general"}] ${l.rule}`
   ).join("\n");
 
-  const prompt = `You are consolidating the AVOID/PREFER trading rules of an autonomous Solana DLMM LP agent.
-These rules are auto-enforced by a rule parser. Each consolidated rule MUST use one of the STRUCTURED FORMATS below or it will be IGNORED by the system.
+  const prompt = `You are consolidating AVOID/PREFER trading rules of an autonomous Solana DLMM LP agent into a CONCISE policy digest.
+Goal: Replace verbose/duplicate lessons with SHORT actionable rules (<120 chars each).
 
 CURRENT POLICY LESSONS (${unique.length}):
 ${lessonLines}
 
 TASK:
-Group lessons by topic, then consolidate each group into ONE structured rule that captures the best threshold from the originals. Output one consolidation per group.
+Group by topic → consolidate each group into ONE short rule. Be aggressive — the fewer lessons, the better.
 
-STRUCTURED FORMATS (each new_rule MUST match exactly one of these — the rule parser uses regex):
-  "AVOID strategy=X"                              → blocks strategy X in screening
-  "AVOID strategy=X when volatility > Y"          → blocks strategy X above volatility Y
-  "AVOID volatility > X"                          → blocks pools with volatility above X
-  "SKIP: global_fees_sol < X"                     → blocks pools with fees below X SOL
-  "AVOID top_10_pct > X"                          → blocks concentrated holder pools
-  "AVOID bundlers > X%"                           → blocks high-bundler pools
-  "NEVER deploy more than X SOL"                  → caps deploy sizing
-  "AVOID holding > Xm when pnl < Y%"             → force-close aged losers
-  "DO NOT close OOR < Xm"                        → grace period for OOR positions
-  "NEVER hold position below -X%"                 → stop loss enforcement
-  "TAKE PROFIT at X%"                             → take profit enforcement
-  "Reserve N slot for TOKEN-SOL"                  → slot reservation
-  "PREFER strategy=X when volatility < Y"         → guidance (prompt-only, not hard-enforced)
-  "WORKED: [description of what worked]"          → guidance (prompt-only)
+Categories to consolidate into:
+- TAKE PROFIT: what % to close at
+- STOP LOSS: what % to cut losses
+- STRATEGY SELECTION: when to use bid_ask vs spot vs single_sided_reseed
+- SIZING: max deploy amount
+- ENTRY FILTERS: what pools to skip
+- MANAGEMENT: OOR grace, hold time limits
+
+FORMATS (rule parser uses regex — MUST match one):
+  "TAKE PROFIT at X%"
+  "NEVER hold position below -X%"
+  "PREFER strategy=X when volatility < Y"
+  "AVOID strategy=X when volatility > Y"
+  "AVOID strategy=X"
+  "SKIP: global_fees_sol < X"
+  "NEVER deploy more than X SOL"
+  "AVOID holding > Xm when pnl < Y%"
+  "DO NOT close OOR < Xm"
 
 RULES:
-- Each new_rule must be a SINGLE rule matching ONE format above. Do NOT combine multiple formats in one rule.
-- Preserve the most conservative numeric threshold from the originals (e.g., if lessons say AVOID vol > 8 and AVOID vol > 10, keep AVOID volatility > 8)
-- Only consolidate lessons covering the SAME topic. 3+ lessons minimum per consolidation.
+- Each new_rule: SINGLE rule, ONE format, under 120 characters
+- Keep most conservative threshold from originals
+- 3+ lessons minimum per consolidation
 - NEVER touch PINNED lessons
-- PREFER/WORKED lessons can only be consolidated with other PREFER/WORKED lessons
-- AVOID/NEVER/SKIP lessons can only be consolidated with other AVOID/NEVER/SKIP lessons
+- Strip token-specific names — generalize patterns
 
 Respond ONLY with valid JSON:
 {
   "consolidations": [
-    {
-      "delete_ids": [id1, id2, id3, ...],
-      "new_rule": "AVOID volatility > 8",
-      "category": "strategy|general|stop loss|take profit|sizing"
-    }
+    { "delete_ids": [id1, id2, ...], "new_rule": "SHORT RULE", "category": "strategy|general|stop loss|take profit|sizing" }
   ],
-  "rationale": "1-2 sentence summary"
-}
-
-If nothing can be meaningfully consolidated, respond: { "consolidations": [], "rationale": "..." }`;
+  "rationale": "summary"
+}`;
 
   const args = ["--print", "--output-format", "json", "--no-session-persistence", "--tools", ""];
 
@@ -265,7 +269,7 @@ If nothing can be meaningfully consolidated, respond: { "consolidations": [], "r
   try { parsed = JSON.parse(cleaned); } catch { return null; }
 
   const consolidations = Array.isArray(parsed.consolidations)
-    ? parsed.consolidations.filter(c => Array.isArray(c.delete_ids) && c.delete_ids.length >= 3 && typeof c.new_rule === "string" && c.new_rule.trim())
+    ? parsed.consolidations.filter(c => Array.isArray(c.delete_ids) && c.delete_ids.length >= 2 && typeof c.new_rule === "string" && c.new_rule.trim())
     : [];
 
   if (consolidations.length === 0) return null;
@@ -280,7 +284,7 @@ If nothing can be meaningfully consolidated, respond: { "consolidations": [], "r
 
   for (const { delete_ids, new_rule, category } of consolidations) {
     const safeIds = delete_ids.filter(id => validIds.has(id) && !pinnedIds.has(id));
-    if (safeIds.length < 3) continue;
+    if (safeIds.length < 2) continue;
 
     // Add consolidated lesson
     const cat = category || "general";
@@ -404,8 +408,8 @@ async function processBatch(batch, { removeLesson, addLesson, log }) {
   const pinnedIds = new Set(batch.filter(l => l.pinned).map(l => l.id));
   const safeDelete = toDelete.filter(id => !pinnedIds.has(id));
 
-  // Safety: max 50% reduction per batch
-  const maxDelete = Math.floor(batch.length * 0.5);
+  // Safety: max 70% reduction per batch (aggressive cleanup)
+  const maxDelete = Math.floor(batch.length * 0.7);
   const mergeDeleteCount = toMerge.reduce((n, m) => n + m.ids.filter(id => !pinnedIds.has(id)).length, 0);
   const totalDeletes = safeDelete.length + mergeDeleteCount;
   if (totalDeletes > maxDelete) {
