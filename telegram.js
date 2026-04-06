@@ -158,6 +158,7 @@ export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, fees
     `📍 ${pair}\n` +
     (strategy ? `📊 Strategy: ${strategy}\n` : ``) +
     `💰 PnL: ${su}$${inclUsd.toFixed(2)} | ${ss}${inclSol.toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
+    (feesUsd > 0 ? `\n🏦 Fees Earned: $${feesUsd.toFixed(2)}` : "") +
     (reason ? `\n💡 ${reason}` : "")
   );
 }

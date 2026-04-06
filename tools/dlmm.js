@@ -436,7 +436,7 @@ function mapLpAgentToEconomics(lp) {
   const collectedFeeUsd = parseFloat(lp.collectedFee ?? 0);
   const pnlUsd = lp.pnl?.value ?? null;
   const pnlSol = lp.pnl?.valueNative ?? null;
-  const pnlPct = lp.pnl?.percent != null ? lp.pnl.percent * 100 : null;
+  const pnlPct = lp.pnl?.percent ?? null;
 
   return {
     current_value_usd: Math.round(currentValueUsd * 100) / 100,
