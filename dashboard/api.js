@@ -11,7 +11,8 @@ import { getJournalEntries, removeJournalEntry, updateJournalEntry } from "../jo
 import { getMyPositions } from "../tools/dlmm.js";
 import { getWalletBalances } from "../tools/wallet.js";
 import { getTrackedPositions, getStateSummary } from "../state.js";
-import { getPerformanceSummary, listLessons, removeLesson, updateLessonFields, getLessonRuleType } from "../lessons.js";
+import { getPerformanceSummary, listLessons, removeLesson, updateLessonFields, getLessonRuleType, addLesson } from "../lessons.js";
+import { extractRules } from "../lesson-rules.js";
 import { _stats } from "../stats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -231,7 +232,15 @@ export async function handleLessons(req, res, url) {
       lessons.push(...(raw.lessons || []));
     }
     lessons.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")); // newest first
-    const enriched = lessons.map(l => ({ ...l, rule_type: getLessonRuleType(l.rule) }));
+    // Attach extracted rule enforcement info per lesson
+    let enforcedMap = {};
+    try {
+      const { screening, management } = extractRules("MANAGER");
+      for (const r of [...screening, ...management]) {
+        if (r.lesson_id) enforcedMap[r.lesson_id] = { type: r.type, ...(r.threshold_pct != null ? { threshold_pct: r.threshold_pct } : {}), ...(r.strategy ? { strategy: r.strategy } : {}) };
+      }
+    } catch {}
+    const enriched = lessons.map(l => ({ ...l, rule_type: getLessonRuleType(l.rule), enforced: enforcedMap[l.id] || null }));
     json(res, { total: enriched.length, lessons: enriched });
   } catch (e) {
     err(res, e.message);
@@ -259,6 +268,30 @@ export async function handleDeleteLesson(req, res, pathname) {
     const removed = removeLesson(id);
     if (!removed) { err(res, "Lesson not found", 404); return; }
     json(res, { ok: true, removed });
+  } catch (e) {
+    err(res, e.message);
+  }
+}
+
+export async function handleCreateLesson(req, res) {
+  try {
+    const body = await readBody(req);
+    const { rule, tags, pinned, role, category } = JSON.parse(body);
+    if (!rule?.trim()) { err(res, "Rule text is required", 400); return; }
+    addLesson(rule.trim(), tags || [], { pinned: !!pinned, role: role || null, category: category || null });
+    json(res, { ok: true });
+  } catch (e) {
+    err(res, e.message);
+  }
+}
+
+export async function handleBulkDeleteLessons(req, res) {
+  try {
+    const body = await readBody(req);
+    const { ids } = JSON.parse(body);
+    if (!Array.isArray(ids) || !ids.length) { err(res, "ids array is required", 400); return; }
+    const results = ids.map(id => ({ id, removed: !!removeLesson(id) }));
+    json(res, { ok: true, results });
   } catch (e) {
     err(res, e.message);
   }

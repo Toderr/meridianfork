@@ -180,6 +180,7 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
   2. **Pre-agent** — screening filters violating candidates; management force-closes/holds matching positions.
   3. **Executor** — `checkDeployCompliance()` blocks deploy on-chain.
 - **Rule types** (`lesson-rules.js`): `block_strategy`, `block_high_volatility`, `block_low_fees`, `block_concentration`, `oor_grace_period`, `force_close_aged_losing`, `protect_null_volatility`, `max_deploy_sol`, `max_loss_pct`, `min_profit_pct`, `reserve_slot`. Unmatched → prompt-only.
+- **`max_loss_pct` extraction**: Only matches explicit stop-loss intent patterns (`NEVER hold position below X%`, `stop loss at X%`, `cut losses at X%`). Does NOT match incidental `pnl < X%` in descriptive lessons. Keywords: `NEVER`, `DO NOT`, `STOP LOSS`, `CUT LOSS` (not `AVOID` — too broad).
 - **Daily summarization**: Two phases — batch cleanup (aggressive: delete duplicates/noise, merge into <120 char rules, max 70% reduction) → policy consolidation (consolidate AVOID/PREFER groups into short parseable rules). Never deletes pinned or experiment lessons.
 - **Comparative lessons**: Every 5 closes, aggregates performance by strategy + volatility bucket. Generates PREFER lessons when one strategy outperforms another by >2% avg PnL (min 3 samples per group). Deduped by strategy pair.
 - **Claude lesson updater**: Every 5 closes. Analyzes recent closes, adds lessons, applies config tweaks (limited keys).
@@ -291,6 +292,7 @@ Python CLI (`cli-anything-meridian`) for inspecting/configuring the agent. Group
 - **Error notifications**: `notifyError(source, message)` in `telegram-journal.js` sends `🚨 ERROR` to journal bot. Throttled per source (15 min). Covers: management, screening, PnL checker, reports, dust sweep, lesson summarizer.
 - **Portfolio snapshots**: `logSnapshot()` called every management cycle → `logs/snapshots-{date}.jsonl`. Tracks positions count, total value, PnL, unclaimed fees per tier.
 - **Dashboard API**: `/api/actions?date=YYYY-MM-DD&limit=100&tool=deploy_position` — queries `actions-*.jsonl` for tool execution timeline.
+- **Dashboard lesson management**: Full CRUD — add (POST `/api/lessons`), edit (PUT), delete (DELETE), bulk delete (POST `/api/lessons/bulk-delete`). Each lesson card shows enforcement badge (red `ENFORCED: type @ threshold`) when the rule engine actively enforces it. Bulk select mode for multi-delete.
 - **Reports tail risk**: Weekly/monthly reports include max drawdown ($) and max consecutive losses.
 
 ## Roadmap

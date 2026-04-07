@@ -404,6 +404,9 @@ td.nv { color: var(--red); }
 .lesson-edit { position: absolute; top: 8px; right: 32px; background: none; border: none; color: var(--muted); opacity: 0; cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 4px; transition: opacity 0.15s, background 0.15s; }
 .lesson-card:hover .lesson-edit { opacity: 0.5; }
 .lesson-edit:hover { opacity: 1 !important; background: rgba(100,180,255,0.15); color: var(--accent); }
+.lesson-enforced { display:inline-block; padding:2px 7px; border-radius:4px; font-size:10px; font-weight:600; margin-top:4px; background:rgba(255,80,80,0.12); color:var(--cn); border:1px solid rgba(255,80,80,0.3); }
+.lesson-bulk-cb { position:absolute; top:10px; left:10px; width:auto; accent-color:var(--cn); }
+.lesson-card.bulk-selected { outline:2px solid var(--cn); outline-offset:-2px; }
 .lmeta { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
 .lrule { font-size: 12px; line-height: 1.6; color: var(--text); margin-bottom: 8px; }
 .ltags { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -732,7 +735,14 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 
       <!-- ═══ LESSONS ══════════════════════════════════ -->
       <section class="section" id="section-lessons">
-        <div class="sh"><div class="sh-title">Derived Lessons</div><input type="text" id="lesson-search" placeholder="Search lessons…" class="log-input" style="width:180px;font-size:11px;margin-left:12px"><div class="sh-line"></div></div>
+        <div class="sh">
+          <div class="sh-title">Derived Lessons</div>
+          <input type="text" id="lesson-search" placeholder="Search lessons…" class="log-input" style="width:180px;font-size:11px;margin-left:12px">
+          <button class="lesson-filter" style="margin-left:8px;background:var(--accent);border-color:var(--accent);color:#fff" onclick="addLessonModal()">+ Add</button>
+          <button class="lesson-filter" id="bulk-delete-btn" style="margin-left:4px;display:none;background:var(--cn);border-color:var(--cn);color:#fff" onclick="bulkDeleteLessons()">Delete Selected</button>
+          <label style="margin-left:8px;display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);cursor:pointer"><input type="checkbox" id="bulk-mode-toggle" style="width:auto" onchange="toggleBulkMode(this.checked)"> Select</label>
+          <div class="sh-line"></div>
+        </div>
         <div class="lesson-filters" id="lesson-filters"></div>
         <div class="lessons-grid" id="lessons-grid"><div class="empty">Loading...</div></div>
       </section>
@@ -758,7 +768,7 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
 // ── State ──────────────────────────────────────────────
 let _stats = null, _wallet = null, _positions = null, _portfolio = null;
 let _history = [], _journal = [], _lessons = [];
-let _lessonSearch = "", _lessonCatFilter = "all";
+let _lessonSearch = "", _lessonCatFilter = "all", _bulkMode = false, _bulkSelected = new Set();
 let _hsort = { col: "timestamp", dir: "desc" };
 let _jsort = { col: "timestamp", dir: "desc" };
 let _jfilter = "";
@@ -1513,11 +1523,15 @@ function renderLessons() {
     const rtBadge = rtype?`<span class="badge b-cls" style="opacity:0.7">${rtype}</span>`:"";
     const expBadge = l.source==="experiment"?`<span class="badge b-clm" style="font-size:9px;padding:1px 5px">🧪 EXP</span>`:"";
     const pin  = l.pinned?`<svg class="lpin" width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`:"";
-    return `<div class="card lesson-card" style="animation-delay:${lIdx*0.04}s">
-      <button class="lesson-edit" title="Edit lesson" onclick="editLesson(${l.id})">&#9998;</button>
-      <button class="lesson-del" title="Delete lesson" onclick="deleteLesson(${l.id})">✕</button>
+    const enforcedHtml = l.enforced ? `<div class="lesson-enforced">ENFORCED: ${l.enforced.type}${l.enforced.threshold_pct!=null?" @ "+l.enforced.threshold_pct+"%":""}${l.enforced.strategy?" ("+l.enforced.strategy+")":""}</div>` : "";
+    const bulkCb = _bulkMode ? `<input type="checkbox" class="lesson-bulk-cb" ${_bulkSelected.has(l.id)?"checked":""} onchange="toggleBulkSelect(${l.id},this.checked)">` : "";
+    return `<div class="card lesson-card${_bulkSelected.has(l.id)?" bulk-selected":""}" style="animation-delay:${lIdx*0.04}s"${_bulkMode?` onclick="toggleBulkSelect(${l.id});renderLessons()"`:""}>
+      ${bulkCb}
+      ${_bulkMode?"":`<button class="lesson-edit" title="Edit lesson" onclick="editLesson(${l.id})">&#9998;</button>
+      <button class="lesson-del" title="Delete lesson" onclick="deleteLesson(${l.id})">✕</button>`}
       <div class="lmeta"><span class="badge ${bc}">${(l.outcome||"—").toUpperCase()}</span>${role}${rtBadge}${expBadge}${pin}</div>
       <div class="lrule">${l.rule||"—"}</div>
+      ${enforcedHtml}
       <div class="ltags">${tags}</div>
     </div>`;
   }
@@ -1644,6 +1658,72 @@ function editLesson(id) {
       overlay.remove();
       await fetchLessons();
     } catch { alert("Failed to update lesson."); }
+  };
+}
+function toggleBulkMode(on) {
+  _bulkMode = on;
+  _bulkSelected.clear();
+  $("bulk-delete-btn").style.display = "none";
+  renderLessons();
+}
+function toggleBulkSelect(id, checked) {
+  if (checked === undefined) checked = !_bulkSelected.has(id);
+  if (checked) _bulkSelected.add(id); else _bulkSelected.delete(id);
+  $("bulk-delete-btn").style.display = _bulkSelected.size > 0 ? "" : "none";
+  $("bulk-delete-btn").textContent = `Delete Selected (${_bulkSelected.size})`;
+  renderLessons();
+}
+async function bulkDeleteLessons() {
+  if (!_bulkSelected.size) return;
+  if (!confirm(`Delete ${_bulkSelected.size} lesson(s)?`)) return;
+  try {
+    await fetch("/api/lessons/bulk-delete", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ids:[..._bulkSelected]}) });
+    _bulkSelected.clear();
+    $("bulk-delete-btn").style.display = "none";
+    await fetchLessons();
+  } catch { alert("Failed to bulk delete."); }
+}
+function addLessonModal() {
+  const overlay = document.createElement("div");
+  overlay.className = "jour-modal-overlay";
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  const roleOpts = ["","SCREENER","MANAGER","GENERAL"].map(r =>
+    `<option value="${r}">${r||"(all roles)"}</option>`).join("");
+  const catOpts = ["","general","strategy","stop_loss","taking_profit","sizing"].map(c =>
+    `<option value="${c}">${c||"(auto)"}</option>`).join("");
+  overlay.innerHTML = `<div class="jour-modal" style="max-width:520px">
+    <h3>Add Lesson</h3>
+    <label>Rule</label>
+    <textarea id="al-rule" style="min-height:90px" placeholder="e.g. NEVER deploy when volume < $5000"></textarea>
+    <label>Tags (comma-separated)</label>
+    <input type="text" id="al-tags" placeholder="e.g. screening, risk"/>
+    <label>Role</label>
+    <select id="al-role" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">${roleOpts}</select>
+    <label>Category</label>
+    <select id="al-category" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">${catOpts}</select>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-direction:row">
+      <input type="checkbox" id="al-pinned" style="width:auto"/>
+      Pinned (always injected into prompts)
+    </label>
+    <div class="jour-modal-btns">
+      <button class="jour-cancel" onclick="this.closest('.jour-modal-overlay').remove()">Cancel</button>
+      <button class="jour-save" id="al-save">Add</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector("#al-save").onclick = async () => {
+    const rule = overlay.querySelector("#al-rule").value.trim();
+    if (!rule) { alert("Rule cannot be empty."); return; }
+    const tagsRaw = overlay.querySelector("#al-tags").value;
+    const tags = tagsRaw.split(",").map(t => t.trim()).filter(Boolean);
+    try {
+      await fetch("/api/lessons", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ rule, tags, pinned:overlay.querySelector("#al-pinned").checked, role:overlay.querySelector("#al-role").value||null, category:overlay.querySelector("#al-category").value||null }),
+      });
+      overlay.remove();
+      await fetchLessons();
+    } catch { alert("Failed to add lesson."); }
   };
 }
 async function fetchLessons()  { try { const d=await api("/api/lessons"); _lessons=d.lessons||[]; renderLessons(); } catch {} }

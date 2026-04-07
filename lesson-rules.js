@@ -192,8 +192,9 @@ export function extractRules(agentType = "GENERAL") {
     }
 
     // NEVER hold position below -X% pnl / stop loss at X%
-    const stopLossMatch = rule.match(/(?:hold(?:ing)?\s+(?:a\s+)?position[s]?\s+below\s+[-−]?|pnl[_\w]*\s*[<≤]\s*[-−]?|stop\s+loss\s+at\s+[-−]?|cut\s+(?:the\s+)?losses?\s+(?:at\s+)?[-−]?)(\d+(?:\.\d+)?)\s*%/i);
-    if (stopLossMatch && (upper.includes("NEVER") || upper.includes("AVOID") || upper.includes("DO NOT") || upper.includes("STOP LOSS") || upper.includes("CUT LOSS"))) {
+    // Only match explicit stop-loss intent — not incidental "pnl < X%" in descriptions
+    const stopLossMatch = rule.match(/(?:hold(?:ing)?\s+(?:a\s+)?position[s]?\s+below\s+[-−]?|stop\s+loss\s+at\s+[-−]?|cut\s+(?:the\s+)?losses?\s+(?:at\s+)?[-−]?)(\d+(?:\.\d+)?)\s*%/i);
+    if (stopLossMatch && (upper.includes("NEVER") || upper.includes("DO NOT") || upper.includes("STOP LOSS") || upper.includes("CUT LOSS"))) {
       const threshold = -Math.abs(parseFloat(stopLossMatch[1]));
       if (!isNaN(threshold)) {
         management.push({

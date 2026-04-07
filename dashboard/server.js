@@ -19,8 +19,10 @@ import {
   handleDeleteJournal,
   handleUpdateJournal,
   handleLessons,
+  handleCreateLesson,
   handleUpdateLesson,
   handleDeleteLesson,
+  handleBulkDeleteLessons,
   handleLogs,
   handleActions,
 } from "./api.js";
@@ -59,7 +61,7 @@ export function startDashboard(port = 3000, password = null) {
 
     // CORS preflight
     if (req.method === "OPTIONS") {
-      res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" });
+      res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" });
       res.end();
       return;
     }
@@ -75,6 +77,8 @@ export function startDashboard(port = 3000, password = null) {
         if (pathname === "/api/journal")   return await handleJournal(req, res, url);
         if (req.method === "DELETE" && pathname.startsWith("/api/journal/")) return await handleDeleteJournal(req, res, pathname);
         if (req.method === "PUT"    && pathname.startsWith("/api/journal/")) return await handleUpdateJournal(req, res, pathname);
+        if (req.method === "POST"   && pathname === "/api/lessons")              return await handleCreateLesson(req, res);
+        if (req.method === "POST"   && pathname === "/api/lessons/bulk-delete") return await handleBulkDeleteLessons(req, res);
         if (pathname === "/api/lessons")   return await handleLessons(req, res, url);
         if (req.method === "PUT"    && pathname.startsWith("/api/lessons/")) return await handleUpdateLesson(req, res, pathname);
         if (req.method === "DELETE" && pathname.startsWith("/api/lessons/")) return await handleDeleteLesson(req, res, pathname);
