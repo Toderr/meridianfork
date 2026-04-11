@@ -19,12 +19,47 @@ import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
-// OpenRouter uses the OpenAI-compatible API
-const client = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY,
-  timeout: 5 * 60 * 1000, // 5 min — free models can be slow (20 tok/s)
-});
+// Provider clients — lazily created on first use
+const providers = {
+  openrouter: () => new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: process.env.OPENROUTER_API_KEY,
+    timeout: 5 * 60 * 1000,
+  }),
+  minimax: () => new OpenAI({
+    baseURL: "https://api.minimax.io/v1",
+    apiKey: process.env.MINIMAX_API_KEY,
+    timeout: 5 * 60 * 1000,
+  }),
+};
+
+const clientCache = {};
+
+/**
+ * Resolve provider and model from a model string.
+ * Supports prefix syntax: "minimax:MiniMax-M2.7" → { provider: "minimax", model: "MiniMax-M2.7" }
+ * Without prefix, defaults to openrouter: "minimax/minimax-m2.7" → { provider: "openrouter", model: "minimax/minimax-m2.7" }
+ */
+function resolveProvider(modelStr) {
+  const colonIdx = modelStr.indexOf(":");
+  // Only treat as prefix if the part before ":" is a known provider name
+  if (colonIdx > 0) {
+    const prefix = modelStr.slice(0, colonIdx);
+    if (providers[prefix]) {
+      return { provider: prefix, model: modelStr.slice(colonIdx + 1) };
+    }
+  }
+  return { provider: "openrouter", model: modelStr };
+}
+
+function getClient(providerName) {
+  if (!clientCache[providerName]) {
+    const factory = providers[providerName];
+    if (!factory) throw new Error(`Unknown LLM provider: ${providerName}`);
+    clientCache[providerName] = factory();
+  }
+  return clientCache[providerName];
+}
 
 // Model resolved at call time from config, so hot-reload changes take effect immediately
 
@@ -55,19 +90,21 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
     try {
-      const activeModel = model || config.llm.generalModel;
+      const activeModelRaw = model || config.llm.generalModel;
+      const { provider: activeProvider, model: activeModel } = resolveProvider(activeModelRaw);
 
       // Retry up to 3 times on transient provider errors or empty responses.
       // After 3 failures, fall back to FALLBACK_MODEL for this turn only.
       const FALLBACK_MODEL = "z-ai/glm-5";
       let response;
       let usedModel = activeModel;
+      let usedClient = getClient(activeProvider);
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
       const toolChoice = (step === 0 && ACTION_INTENTS.test(goal)) ? "required" : "auto";
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          response = await client.chat.completions.create({
+          response = await usedClient.chat.completions.create({
             model: usedModel,
             messages,
             tools: getToolsForRole(agentType),
@@ -87,12 +124,13 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         await new Promise((r) => setTimeout(r, wait));
       }
 
-      // If primary model failed 3 times, try fallback model once for this turn
+      // If primary model failed 3 times, try fallback model once for this turn (via OpenRouter)
       if (!response.choices?.length && usedModel !== FALLBACK_MODEL) {
         log("agent", `Primary model failed 3 times — falling back to ${FALLBACK_MODEL} for this turn`);
         usedModel = FALLBACK_MODEL;
+        usedClient = getClient("openrouter");
         try {
-          response = await client.chat.completions.create({
+          response = await usedClient.chat.completions.create({
             model: usedModel,
             messages,
             tools: getToolsForRole(agentType),

@@ -15,7 +15,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `index.js` | Entry point — cron scheduler, Telegram bot, TTY REPL |
 | `agent.js` | Core ReAct agent loop (OpenRouter API) |
 | `config.js` | Config loader with hot-reload for `user-config.json` |
-| `tools/dlmm.js` | Meteora DLMM SDK — deploy/close/PnL/positions (LPAgent primary for economics) |
+| `tools/dlmm.js` | Meteora DLMM SDK — deploy/close/PnL/positions |
 | `tools/wallet.js` | Wallet balance, SOL price, Jupiter swaps |
 | `tools/screening.js` | Pool discovery and candidate scoring |
 | `tools/okx.js` | OKX DEX API — risk flags, advanced token intel, clusters, price/ATH |
@@ -77,19 +77,24 @@ Management runs on 3 volatility tiers via 1-minute dispatcher. Only one tier run
 - Telegram/TTY deploy requests auto-route to `screeningModel` (not generalModel)
 - Step 0 forces `tool_choice: "required"` for action intents (deploy/close/swap) to prevent hallucinated results
 
+### Multi-Provider LLM Routing
+Models default to OpenRouter. Use `provider:model` prefix syntax for direct API access:
+- `minimax:MiniMax-M2.7` → MiniMax API directly (`https://api.minimax.io/v1`, key: `MINIMAX_API_KEY`)
+- `minimax/minimax-m2.7` → OpenRouter (no prefix = OpenRouter)
+- Fallback model always routes to OpenRouter regardless of primary provider
+- New providers can be added to the `providers` map in `agent.js`
+
 ### Hot-reload
 `user-config.json` watched via `fs.watchFile` (2s). Most settings apply live. `rpcUrl`, `walletKey`, `dryRun`, schedule intervals require restart.
 
 ### Helius API Key Rotation
-Two keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`). On 429, rotates and retries. Both exhausted → RPC fallback for SOL-only balance. Post-close swap has full RPC fallback via `getAllTokenBalancesViaRpc()`.
+Three keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`, `HELIUS_API_KEY_3`). On 429, rotates and retries. All exhausted → RPC fallback for SOL-only balance. Post-close swap has full RPC fallback via `getAllTokenBalancesViaRpc()`.
 
 ## SOL PnL — Important
 
 **Never compute `pnl_sol` via USD conversion.** Meteora DLMM API returns native SOL fields: `pnlSol`, `balancesSol`, `amountSol`. Use these directly.
 
-**LPAgent as primary PnL source**: When `LPAGENT_API_KEY` is set, `getPositionPnl()` and `getMyPositions()` fetch live economics (value, PnL, fees) from LPAgent API (`/lp-positions/opening`), using Meteora only for structure (bins, range, OOR, age). 30s cache shared across PnL checker and management cycle. Falls back to Meteora automatically if LPAgent is unavailable or key is unset.
-
-**On-chain PnL fallback**: When both LPAgent and Meteora datapi fail (or Meteora returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
+**On-chain PnL fallback**: When Meteora datapi fails (or returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
 ## PnL Display — Fee Inclusion
 
@@ -97,7 +102,7 @@ Journal stores `pnl_usd` (price-only) and `fees_earned_usd` separately. **Fee in
 - Close notifications (both bots): fee-inclusive USD, SOL, and % in all three values
 - Management reports: price PnL (USD, SOL) on one line, unclaimed fees + total % separately
 - Dashboard & reports: fee-inclusive totals for net PnL, win/loss, best/worst trade
-- `pnl_pct` from `getPositionPnl()` is already fee-inclusive: LPAgent provides it directly when available, otherwise `(pnlUsd + unclaimedFees) / initial * 100`
+- `pnl_pct` from `getPositionPnl()` is already fee-inclusive: `(pnlUsd + unclaimedFees) / initial * 100`
 
 ## PnL Checker (every 30s, no LLM)
 
@@ -179,7 +184,7 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
   1. **Prompt** — HARD RULES (AVOID/NEVER/SKIP) as numbered checklist. GUIDANCE (PREFER/WORKED) shown separately.
   2. **Pre-agent** — screening filters violating candidates; management force-closes/holds matching positions.
   3. **Executor** — `checkDeployCompliance()` blocks deploy on-chain.
-- **Rule types** (`lesson-rules.js`): `block_strategy`, `block_high_volatility`, `block_low_fees`, `block_concentration`, `oor_grace_period`, `force_close_aged_losing`, `protect_null_volatility`, `max_deploy_sol`, `max_loss_pct`, `min_profit_pct`, `reserve_slot`. Unmatched → prompt-only.
+- **Rule types** (`lesson-rules.js`): `block_strategy`, `block_high_volatility`, `block_low_fees`, `block_concentration`, `oor_grace_period`, `protect_null_volatility`, `max_deploy_sol`, `max_loss_pct`, `min_profit_pct`, `reserve_slot`. Unmatched → prompt-only.
 - **`max_loss_pct` extraction**: Only matches explicit stop-loss intent patterns (`NEVER hold position below X%`, `stop loss at X%`, `cut losses at X%`). Does NOT match incidental `pnl < X%` in descriptive lessons. Keywords: `NEVER`, `DO NOT`, `STOP LOSS`, `CUT LOSS` (not `AVOID` — too broad).
 - **Daily summarization**: Two phases — batch cleanup (aggressive: delete duplicates/noise, merge into <120 char rules, max 70% reduction) → policy consolidation (consolidate AVOID/PREFER groups into short parseable rules). Never deletes pinned or experiment lessons.
 - **Comparative lessons**: Every 5 closes, aggregates performance by strategy + volatility bucket. Generates PREFER lessons when one strategy outperforms another by >2% avg PnL (min 3 samples per group). Deduped by strategy pair.
@@ -235,7 +240,14 @@ Trading goals in `user-config.json` direct lesson generation toward specific tar
 "goals": { "win_rate_pct": 80, "max_loss_pct": -10, "profit_factor": 2, "lookback": 50 }
 ```
 
-**How it works**: `scripts/goals.js` calculates current performance vs targets (✅/❌ per goal). Injected into both review prompts (every-5-closes + daily autoresearch) with instruction: "prioritize lessons that close the gap on UNMET goals, don't hurt goals already being met."
+**How it works**: `scripts/goals.js` calculates current performance vs targets (✅/❌ per goal). Goals are deeply integrated across the entire learning pipeline:
+
+- **System prompt** (`prompt.js`): Goals injected into all agent prompts (screener/manager/general) so every decision is goal-aligned.
+- **Lesson derivation** (`lessons.js` `derivLesson()`): Auto-derived lessons are goal-aware — losses exceeding `max_loss_pct` generate explicit stop-loss rules; unmet win rate appends entry filter guidance; unmet profit factor appends cut-losses-faster guidance. Tagged `goal_driven`.
+- **Threshold evolution** (`lessons.js` `evolveThresholds()`): When goals are unmet, thresholds evolve more aggressively toward the goal (tighter SL for max_loss, smaller sizing for win_rate, earlier TP for profit_factor).
+- **Lesson injection** (`getLessonsForPrompt()`): Goals progress section appended after all lessons — agents see which goals are met/unmet.
+- **Review prompts** (every-5-closes + daily autoresearch): Goals injected with instruction to prioritize unmet goals.
+- **Lesson summarizer** (`claude-lesson-summarizer.js`): Goals context injected into both batch cleanup and policy consolidation prompts — lessons tagged `GOAL` or addressing unmet goals are protected from deletion/merging.
 
 **Key mapping** (Telegram shorthand → config key): `win_rate` → `win_rate_pct`, `max_loss` → `max_loss_pct`, `profit_factor` → `profit_factor`, `lookback` → `lookback`.
 
