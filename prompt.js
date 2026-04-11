@@ -11,6 +11,7 @@
  */
 import { config } from "./config.js";
 import { getWikiSummary } from "./wiki.js";
+import { loadGoals, formatGoalsForPrompt, loadPerformance } from "./scripts/goals.js";
 
 export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null) {
   const s = config.screening;
@@ -52,6 +53,22 @@ ${(() => {
 ${wiki}
 `;
     return "";
+  } catch { return ""; }
+})()}${(() => {
+  try {
+    const goals = loadGoals();
+    if (!goals) return "";
+    const perf = loadPerformance();
+    const section = formatGoalsForPrompt(goals, perf);
+    if (!section) return "";
+    return `═══════════════════════════════════════════
+ TRADING GOALS
+═══════════════════════════════════════════
+${section}
+ALL decisions (deploy, close, hold) must move performance toward unmet goals.
+Lessons and rules exist to achieve these goals — follow them strictly.
+
+`;
   } catch { return ""; }
 })()}═══════════════════════════════════════════
  BEHAVIORAL CORE

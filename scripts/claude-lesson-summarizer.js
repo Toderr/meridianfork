@@ -22,6 +22,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { loadGoals, formatGoalsForPrompt, loadPerformance } from "./goals.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
@@ -39,14 +40,25 @@ function loadJson(file) {
 
 function buildPrompt(lessons) {
   const lessonLines = lessons.map(l =>
-    `ID:${l.id} [${l.category||"general"}/${l.outcome||"manual"}${l.pinned?" PINNED":""}] ${l.rule}`
+    `ID:${l.id} [${l.category||"general"}/${l.outcome||"manual"}${l.pinned?" PINNED":""}${l.tags?.includes("goal_driven")?" GOAL":""}] ${l.rule}`
   ).join("\n");
 
   const maxDelete = Math.floor(lessons.length * 0.7);
 
+  // Build goals context so summarizer preserves goal-relevant lessons
+  let goalsContext = "";
+  try {
+    const goals = loadGoals();
+    if (goals) {
+      const perf = loadPerformance();
+      const section = formatGoalsForPrompt(goals, perf);
+      if (section) goalsContext = `\n${section}\nLessons tagged GOAL or that directly address unmet goals (❌) must be PRESERVED — never delete or merge them away.\n`;
+    }
+  } catch { /* no-op */ }
+
   return `You are aggressively cleaning the lesson library of an autonomous Solana DLMM LP trading agent.
 The goal is MAXIMUM CONCISENESS — every lesson must be a short, actionable rule. No stories, no examples, no verbose explanations.
-
+${goalsContext}
 CURRENT LESSONS (${lessons.length} total):
 ${lessonLines}
 
@@ -194,12 +206,23 @@ async function consolidatePolicyLessons(lessons, { removeLesson, addLesson, log 
   });
 
   const lessonLines = unique.map(l =>
-    `ID:${l.id} [${l.category||"general"}] ${l.rule}`
+    `ID:${l.id} [${l.category||"general"}${l.tags?.includes("goal_driven")?" GOAL":""}] ${l.rule}`
   ).join("\n");
+
+  // Build goals context
+  let goalsContext = "";
+  try {
+    const goals = loadGoals();
+    if (goals) {
+      const perf = loadPerformance();
+      const section = formatGoalsForPrompt(goals, perf);
+      if (section) goalsContext = `\n${section}\nWhen consolidating, ensure the resulting rules STILL address unmet goals (❌). Never consolidate away goal-critical thresholds.\n`;
+    }
+  } catch { /* no-op */ }
 
   const prompt = `You are consolidating AVOID/PREFER trading rules of an autonomous Solana DLMM LP agent into a CONCISE policy digest.
 Goal: Replace verbose/duplicate lessons with SHORT actionable rules (<120 chars each).
-
+${goalsContext}
 CURRENT POLICY LESSONS (${unique.length}):
 ${lessonLines}
 

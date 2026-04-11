@@ -126,7 +126,6 @@ Screening rules (block bad deploys):
   "NEVER deploy more than X SOL"         → cap max deploy size
 
 Management rules (auto-close/hold positions):
-  "AVOID holding > Xm when pnl < Y%"    → force-close aged losing positions
   "DO NOT close OOR < Xm"               → grace period before closing out-of-range
   "NEVER hold position below -X%"        → stop loss at X%
   "TAKE PROFIT at X%"                    → auto take-profit at X%
@@ -285,7 +284,7 @@ export async function claudeUpdateLessons() {
 
     const newLessons = Array.isArray(parsed.lessons) ? parsed.lessons.filter(l => typeof l === "string" && l.trim()) : [];
     const configUpdates = (typeof parsed.config_updates === "object" && parsed.config_updates) ? parsed.config_updates : {};
-    const rationale = typeof parsed.rationale === "string" ? parsed.rationale.trim() : "";
+    let rationale = typeof parsed.rationale === "string" ? parsed.rationale.trim() : "";
 
     // Add new lessons
     if (newLessons.length > 0) {

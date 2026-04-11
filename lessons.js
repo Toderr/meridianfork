@@ -12,6 +12,7 @@ import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { recordJournalClose } from "./journal.js";
 import { notifyThresholdEvolved, isEnabled as telegramEnabled } from "./telegram.js";
+import { loadGoals, calculateProgress } from "./scripts/goals.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -312,6 +313,44 @@ function derivLesson(perf) {
   }
 
   if (!rule) return null;
+
+  // ── Goal-driven lesson reinforcement ──────────────────────────
+  // When a close violates an unmet goal, upgrade the lesson to be more actionable
+  try {
+    const goals = loadGoals();
+    if (goals) {
+      const data = loadRegular();
+      const progress = calculateProgress(goals, data.performance || []);
+      if (progress?.progress) {
+        const pg = progress.progress;
+
+        // max_loss_pct unmet AND this close breached it → strong stop-loss lesson
+        if (pg.max_loss_pct && !pg.max_loss_pct.met && perf.pnl_pct < pg.max_loss_pct.target) {
+          rule = `NEVER hold position below ${pg.max_loss_pct.target}% — goal requires max loss ≥ ${pg.max_loss_pct.target}%, this trade hit ${perf.pnl_pct}% (${perf.strategy}, volatility=${perf.volatility}).`;
+          tags.push("stop_loss", "goal_driven");
+        }
+
+        // win_rate unmet AND this is a loss → tighter entry filter
+        if (pg.win_rate_pct && !pg.win_rate_pct.met && perf.pnl_pct < 0 && (outcome === "bad" || outcome === "poor")) {
+          const needed = Math.round(pg.win_rate_pct.target);
+          const current = Math.round(pg.win_rate_pct.actual);
+          // Only add if the standard rule doesn't already have stronger guidance
+          if (!rule.startsWith("NEVER")) {
+            rule += ` [WIN RATE ${current}% < ${needed}% goal — raise confidence threshold or tighten entry filters]`;
+            tags.push("goal_driven");
+          }
+        }
+
+        // profit_factor unmet AND this is a big loss → emphasize cutting losses
+        if (pg.profit_factor && !pg.profit_factor.met && perf.pnl_pct < -5) {
+          if (!rule.startsWith("NEVER")) {
+            rule += ` [PROFIT FACTOR ${pg.profit_factor.actual} < ${pg.profit_factor.target} goal — cut losses faster]`;
+            tags.push("goal_driven");
+          }
+        }
+      }
+    }
+  } catch { /* goals not available — no-op */ }
 
   // Cross-role learning — tag screener-catchable failures
   if (
@@ -732,6 +771,53 @@ export function evolveThresholds(perfData, config) {
       }
     }
   }
+
+  // ── Goal-directed evolution bias ──────────────────────────────
+  // When goals are unmet, push thresholds harder toward achieving them
+  try {
+    const goals = loadGoals();
+    if (goals) {
+      const progress = calculateProgress(goals, perfData);
+      if (progress?.progress) {
+        const pg = progress.progress;
+
+        // max_loss_pct unmet → tighten stop loss more aggressively
+        if (pg.max_loss_pct && !pg.max_loss_pct.met) {
+          const current = changes.emergencyPriceDropPct ?? config.management.emergencyPriceDropPct;
+          const goalTarget = pg.max_loss_pct.target; // e.g. -10
+          // If current SL is looser than goal, push it toward goal
+          if (current < goalTarget) {
+            const newVal = clamp(parseFloat(nudge(current, goalTarget * 1.1, MAX_CHANGE_PER_STEP).toFixed(1)), -80, -5);
+            if (newVal !== current) {
+              changes.emergencyPriceDropPct = newVal;
+              rationale.emergencyPriceDropPct = `Goal: max_loss ≥ ${goalTarget}% (actual: ${pg.max_loss_pct.actual}%) — tightened SL ${current} → ${newVal}`;
+            }
+          }
+        }
+
+        // win_rate unmet → tighten screening (raise minFeeTvlRatio, lower maxVolatility)
+        if (pg.win_rate_pct && !pg.win_rate_pct.met && pg.win_rate_pct.gap < -5) {
+          // Shrink position size to reduce risk while win rate is low
+          const currentSize = changes.positionSizePct ?? config.management.positionSizePct;
+          const newSize = clamp(parseFloat((currentSize * 0.92).toFixed(3)), 0.15, 0.5);
+          if (newSize < currentSize) {
+            changes.positionSizePct = newSize;
+            rationale.positionSizePct = `Goal: win_rate ≥ ${pg.win_rate_pct.target}% (actual: ${pg.win_rate_pct.actual}%) — reduced sizing ${currentSize} → ${newSize}`;
+          }
+        }
+
+        // profit_factor unmet → tighten TP (take profits earlier to lock in wins)
+        if (pg.profit_factor && !pg.profit_factor.met) {
+          const currentTp = changes.takeProfitFeePct ?? config.management.takeProfitFeePct;
+          const newTp = clamp(parseFloat((currentTp * 0.92).toFixed(1)), 2, 20);
+          if (newTp < currentTp) {
+            changes.takeProfitFeePct = newTp;
+            rationale.takeProfitFeePct = `Goal: profit_factor ≥ ${pg.profit_factor.target} (actual: ${pg.profit_factor.actual}) — lowered TP ${currentTp} → ${newTp}`;
+          }
+        }
+      }
+    }
+  } catch { /* goals not available — no-op */ }
 
   if (Object.keys(changes).length === 0) return { changes: {}, rationale: {} };
 
@@ -1344,6 +1430,29 @@ export function getLessonsForPrompt(opts = {}) {
       }
     }
   }
+
+  // ── Goals section — show progress toward trading goals ──────
+  try {
+    const goals = loadGoals();
+    if (goals) {
+      const progress = calculateProgress(goals, data.performance || []);
+      if (progress?.progress) {
+        const goalLines = [];
+        for (const [key, d] of Object.entries(progress.progress)) {
+          const icon = d.met ? "✅" : "❌";
+          const label = key.replace(/_/g, " ");
+          goalLines.push(`${icon} ${label}: ${d.actual} (target: ${d.target})`);
+        }
+        if (goalLines.length > 0) {
+          sections.push(
+            `── TRADING GOALS (last ${progress.sampleSize} trades) ──\n` +
+            goalLines.join("\n") + "\n" +
+            "All lessons above exist to achieve these goals. Prioritize unmet goals (❌) in every decision."
+          );
+        }
+      }
+    }
+  } catch { /* goals not available */ }
 
   return sections.join("\n\n");
 }

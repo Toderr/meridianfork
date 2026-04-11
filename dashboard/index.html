@@ -395,7 +395,7 @@ td.nv { color: var(--red); }
 .lesson-group-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; }
 .lesson-group-count { font-size:10px; color:var(--muted); }
 .lesson-group-line  { flex:1; height:1px; background:var(--border); }
-.lessons-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+.lessons-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 8px; }
 .lesson-card { padding: 14px; animation: scaleIn 0.3s ease-out both; transition: transform 0.18s; position: relative; }
 .lesson-card:hover { transform: translateY(-1px); }
 .lesson-del { position: absolute; top: 8px; right: 8px; background: none; border: none; color: var(--cn); opacity: 0; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 4px; transition: opacity 0.15s, background 0.15s; }
@@ -408,7 +408,7 @@ td.nv { color: var(--red); }
 .lesson-bulk-cb { position:absolute; top:10px; left:10px; width:auto; accent-color:var(--cn); }
 .lesson-card.bulk-selected { outline:2px solid var(--cn); outline-offset:-2px; }
 .lmeta { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
-.lrule { font-size: 12px; line-height: 1.6; color: var(--text); margin-bottom: 8px; }
+.lrule { font-size: 12px; line-height: 1.6; color: var(--text); margin-bottom: 8px; overflow-wrap: break-word; word-break: break-word; }
 .ltags { display: flex; gap: 4px; flex-wrap: wrap; }
 .ltag  { font-size: 9px; padding: 2px 6px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 3px; color: var(--muted2); }
 .lpin  { margin-left: auto; color: var(--yellow); }
@@ -518,6 +518,14 @@ tbody tr { animation: fadeIn 0.25s ease-out both; }
   .pos-grid { grid-template-columns: 1fr; }
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
   .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* Lessons: always show edit/delete buttons on mobile (no hover) */
+  .lesson-card { overflow: hidden; }
+  .lesson-del, .lesson-edit { opacity: 1 !important; z-index: 2; -webkit-tap-highlight-color: rgba(255,255,255,0.1); }
+  .lesson-del { font-size: 18px; padding: 8px 10px; min-width: 40px; min-height: 40px; background: rgba(255,80,80,0.15); top: 6px; right: 6px; }
+  .lesson-edit { font-size: 17px; padding: 8px 10px; min-width: 40px; min-height: 40px; background: rgba(100,180,255,0.1); top: 6px; right: 48px; }
+  .lessons-grid { grid-template-columns: 1fr; }
+  #section-lessons .sh { flex-wrap: wrap; gap: 8px; }
+  #section-lessons .sh .sh-line { width: 100%; }
 }
 </style>
 </head>
@@ -1527,8 +1535,8 @@ function renderLessons() {
     const bulkCb = _bulkMode ? `<input type="checkbox" class="lesson-bulk-cb" ${_bulkSelected.has(l.id)?"checked":""} onchange="toggleBulkSelect(${l.id},this.checked)">` : "";
     return `<div class="card lesson-card${_bulkSelected.has(l.id)?" bulk-selected":""}" style="animation-delay:${lIdx*0.04}s"${_bulkMode?` onclick="toggleBulkSelect(${l.id});renderLessons()"`:""}>
       ${bulkCb}
-      ${_bulkMode?"":`<button class="lesson-edit" title="Edit lesson" onclick="editLesson(${l.id})">&#9998;</button>
-      <button class="lesson-del" title="Delete lesson" onclick="deleteLesson(${l.id})">✕</button>`}
+      ${_bulkMode?"":`<button class="lesson-edit" title="Edit lesson" onclick="event.stopPropagation();editLesson(${l.id})">&#9998;</button>
+      <button class="lesson-del" title="Delete lesson" onclick="event.stopPropagation();deleteLesson(${l.id})">✕</button>`}
       <div class="lmeta"><span class="badge ${bc}">${(l.outcome||"—").toUpperCase()}</span>${role}${rtBadge}${expBadge}${pin}</div>
       <div class="lrule">${l.rule||"—"}</div>
       ${enforcedHtml}
@@ -1593,12 +1601,28 @@ async function fetchPos()      { try { _positions = await api("/api/positions");
 async function fetchPortfolio(){ try { _portfolio = await api("/api/portfolio"); updateTopbar(); renderOverview(); renderPortfolio(); } catch {} }
 async function fetchHistory()  { try { const d=await api("/api/history"); _history=d.entries||[]; renderHistory(); } catch {} }
 async function fetchJournal()  { try { const d=await api("/api/journal"); _journal=d.entries||[]; renderJournal(); } catch {} }
-async function deleteLesson(id) {
-  if (!confirm("Delete this lesson?")) return;
-  try {
-    await fetch(`/api/lessons/${id}`, { method: "DELETE" });
-    await fetchLessons();
-  } catch { alert("Failed to delete lesson."); }
+function deleteLesson(id) {
+  // Use custom modal instead of confirm() — confirm() is unreliable on mobile
+  const overlay = document.createElement("div");
+  overlay.className = "jour-modal-overlay";
+  overlay.innerHTML = `<div class="jour-modal" style="min-width:auto;max-width:320px;text-align:center">
+    <h3 style="margin:0 0 12px;font-size:14px">Delete this lesson?</h3>
+    <div style="display:flex;gap:8px;justify-content:center">
+      <button id="del-confirm-yes" style="padding:8px 24px;background:var(--cn);color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;min-height:40px">Delete</button>
+      <button id="del-confirm-no" style="padding:8px 24px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;cursor:pointer;min-height:40px">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  document.getElementById("del-confirm-no").onclick = () => overlay.remove();
+  document.getElementById("del-confirm-yes").onclick = async () => {
+    overlay.remove();
+    try {
+      const res = await fetch(`/api/lessons/${id}`, { method: "DELETE" });
+      if (!res.ok) { const d = await res.json().catch(()=>({})); alert(d.error || "Delete failed"); return; }
+      await fetchLessons();
+    } catch(e) { alert("Failed to delete: " + e.message); }
+  };
 }
 function editLesson(id) {
   const lesson = _lessons.find(l => l.id === id);

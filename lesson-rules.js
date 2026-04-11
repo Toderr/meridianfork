@@ -162,22 +162,6 @@ export function extractRules(agentType = "GENERAL") {
 
     // ── Management rules ─────────────────────────────────────
 
-    // AVOID holding ... > Xm/Xmin ... pnl < 0  →  force close
-    const holdAgeMatch = rule.match(/(?:holding|hold).*?(\d+)\s*m(?:in)?/i);
-    const holdPnlMatch = rule.match(/pnl[_\w]*\s*[<≤]\s*([+-]?\d+(?:\.\d+)?)/i);
-    if (holdAgeMatch && holdPnlMatch && (upper.includes("AVOID") || upper.includes("NEVER"))) {
-      const maxAge = parseInt(holdAgeMatch[1]);
-      const maxPnl = parseFloat(holdPnlMatch[1]);
-      management.push({
-        type: "force_close_aged_losing",
-        max_age_minutes: maxAge,
-        max_pnl_pct: maxPnl,
-        source: rule,
-        lesson_id: lesson.id,
-      });
-      matched = true;
-    }
-
     // OOR < Xm ... do NOT close / AVOID closing OOR < Xm
     const oorGraceMatch = rule.match(/(?:oor|out.of.range)[^<>]*[<≤]\s*(\d+)\s*m(?:in)?/i);
     if (oorGraceMatch && (upper.includes("DO NOT") || upper.includes("AVOID CLOS") || upper.includes("NOT AUTO-CLOSE") || upper.includes("OFTEN RECOVERS"))) {
@@ -364,18 +348,6 @@ export function checkPositionCompliance(position, rules) {
 
   for (const rule of rules) {
     switch (rule.type) {
-      case "force_close_aged_losing":
-        if (
-          pnlPct !== null &&
-          ageMinutes > rule.max_age_minutes &&
-          pnlPct <= rule.max_pnl_pct
-        ) {
-          return {
-            action: "force_close",
-            reason: `Lesson rule: ${rule.source}`,
-          };
-        }
-        break;
 
       case "oor_grace_period":
         if (!inRange && minutesOOR > 0 && minutesOOR < rule.grace_minutes) {
