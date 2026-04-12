@@ -606,11 +606,9 @@ async function runSafetyChecks(name, args) {
           };
         }
 
-        // Enforce minimum deploy amount.
-        // When confidence_level is provided, the amount is already scaled (confidence/10 × deployAmount),
-        // so we only enforce the absolute 0.1 SOL floor.
-        // Without confidence, enforce deployAmountSol or 0.1 SOL (whichever is higher).
-        const minDeploy = args.confidence_level != null ? 0.1 : Math.max(0.1, config.management.deployAmountSol);
+        // Enforce minimum deploy amount — always use deployAmountSol as floor.
+        // LLM may send a small amount_y even with valid confidence; enforce the configured minimum.
+        const minDeploy = Math.max(0.1, config.management.deployAmountSol);
         if (amountY < minDeploy) {
           return {
             pass: false,

@@ -180,7 +180,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           organic_score: { type: "number", description: "Base token organic score at deploy time" },
           initial_value_usd: { type: "number", description: "USD value being deployed — REQUIRED for accurate PnL tracking" },
           variant: { type: "string", description: "Optional A/B test label (e.g. 'A', 'B', 'conservative', 'aggressive'). Used to compare strategy performance." },
-          confidence_level: { type: "number", description: "Your confidence in this deploy opportunity, 0-10. Required. Deploys are blocked if <= 7. Scale amount_y = deployAmount × (confidence/10), minimum 0.1 SOL." }
+          confidence_level: { type: "number", description: "Your confidence in this deploy opportunity, 8-10. Required. Deploys are blocked if <= 7. Scale amount_y linearly: 8 = deployAmountSol, 10 = maxDeployAmount. Formula: deployAmountSol + ((confidence - 8) / 2) * (maxDeployAmount - deployAmountSol). Example with deploy=2, max=5: conf 8 → 2 SOL, conf 9 → 3.5 SOL, conf 10 → 5 SOL." }
         },
         required: ["pool_address", "initial_value_usd"]
       }
