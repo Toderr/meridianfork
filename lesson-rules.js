@@ -93,8 +93,10 @@ export function extractRules(agentType = "GENERAL") {
     }
 
     // AVOID high volatility deploys — block pool with volatility above threshold
+    // Skip if this lesson is a conditional max_deploy_sol (volatility is a condition, not a block target)
+    const isConditionalDeployCap = /(?:more\s+than|cap|max|deploy)\s+.*sol/i.test(rule) && /(?:when|if|for)\s+volatility/i.test(rule);
     const highVolMatch = rule.match(/volatility[=\s]*([>≥])\s*(\d+(?:\.\d+)?)/i);
-    if (highVolMatch && (upper.includes("AVOID") || upper.includes("SKIP") || upper.includes("NEVER"))) {
+    if (highVolMatch && !isConditionalDeployCap && (upper.includes("AVOID") || upper.includes("SKIP") || upper.includes("NEVER"))) {
       const threshold = parseFloat(highVolMatch[2]);
       screening.push({
         type: "block_high_volatility",
@@ -146,13 +148,25 @@ export function extractRules(agentType = "GENERAL") {
     }
 
     // NEVER deploy more than X SOL / cap sizing at X SOL
+    // Supports optional condition: "when volatility > Y"
     const maxSolMatch = rule.match(/(?:more\s+than|cap(?:ped)?\s+(?:sizing|deploy)?\s*at|max(?:imum)?\s+(?:deploy\s+)?|deploy\s+max\s+)\s*(\d+(?:\.\d+)?)\s*sol/i);
     if (maxSolMatch && (upper.includes("NEVER") || upper.includes("AVOID") || upper.includes("DO NOT") || upper.includes("CAP") || upper.includes("MAX"))) {
       const maxSol = parseFloat(maxSolMatch[1]);
       if (!isNaN(maxSol) && maxSol > 0) {
+        // Parse optional volatility condition: "when volatility > 5", "if volatility >= 3"
+        const volCondMatch = rule.match(/(?:when|if|for)\s+volatility\s*([><≥≤]=?|>=|<=)\s*(\d+(?:\.\d+)?)/i);
+        let volOp = null, volVal = null;
+        if (volCondMatch) {
+          volVal = parseFloat(volCondMatch[2]);
+          const rawOp = volCondMatch[1];
+          if (rawOp === ">" || rawOp === "≥" || rawOp === ">=") volOp = rawOp === ">" ? "gt" : "gte";
+          else if (rawOp === "<" || rawOp === "≤" || rawOp === "<=") volOp = rawOp === "<" ? "lt" : "lte";
+        }
         screening.push({
           type: "max_deploy_sol",
           max_sol: maxSol,
+          volatility_op: volOp,
+          volatility_val: volVal,
           source: rule,
           lesson_id: lesson.id,
         });
@@ -319,6 +333,16 @@ export function checkDeployCompliance(args, poolData, rules) {
         break;
 
       case "max_deploy_sol": {
+        // Skip if rule has a volatility condition that doesn't match
+        if (rule.volatility_val !== null && rule.volatility_op) {
+          if (volatility === null) break; // unknown volatility — don't enforce conditional rule
+          let conditionMet = false;
+          if (rule.volatility_op === "gt" && volatility > rule.volatility_val) conditionMet = true;
+          else if (rule.volatility_op === "gte" && volatility >= rule.volatility_val) conditionMet = true;
+          else if (rule.volatility_op === "lt" && volatility < rule.volatility_val) conditionMet = true;
+          else if (rule.volatility_op === "lte" && volatility <= rule.volatility_val) conditionMet = true;
+          if (!conditionMet) break; // volatility doesn't match condition — rule doesn't apply
+        }
         const sol = args.amount_y ?? args.amount_sol ?? 0;
         if (sol > rule.max_sol) {
           violations.push(`Deploy amount ${sol} SOL exceeds lesson cap (${rule.max_sol} SOL): ${rule.source}`);
