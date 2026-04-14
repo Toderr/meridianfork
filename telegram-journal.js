@@ -188,6 +188,28 @@ export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, 
   await sendMessage(parts.join("\n"));
 }
 
+// ─── Config change notification ─────────────────────────────────
+
+/**
+ * Notify journal bot when screening/config parameters are changed by the agent.
+ * @param {Object} applied - key→value of applied changes
+ * @param {Object} before  - key→previousValue
+ * @param {string} reason  - why the change was made
+ * @param {string} source  - who made the change ("agent", "claude-review", "user")
+ */
+export async function notifyConfigChange({ applied = {}, before = {}, reason = "", source = "agent" }) {
+  if (!TOKEN || !chatId) return;
+  const keys = Object.keys(applied);
+  if (keys.length === 0) return;
+  const lines = [`⚙️ CONFIG CHANGED (${source})`];
+  for (const k of keys) {
+    const prev = before[k] !== undefined ? JSON.stringify(before[k]) : "?";
+    lines.push(`• ${k}: ${prev} → ${JSON.stringify(applied[k])}`);
+  }
+  if (reason) lines.push(`\n💡 ${reason}`);
+  await sendMessage(lines.join("\n"));
+}
+
 // ─── Error notification (throttled: same source once per 15 min) ─
 const _errorNotifiedAt = new Map();
 
