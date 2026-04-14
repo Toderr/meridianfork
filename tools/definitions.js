@@ -668,6 +668,9 @@ Use this immediately whenever the user gives a specific instruction about a posi
 - "don't close before fees hit $10"
 - "close if it goes out of range"
 - "hold for at least 2 hours"
+- "do not manage" / "manual" / "hands off" — blocks ALL automated management (no close, no claim, no LLM)
+
+IMPORTANT: If the user says "do not manage X" or "leave X alone" or "I'll manage X myself", you MUST call this tool with instruction "manual management" for that position. Verbal instructions are NOT persisted — only this tool call persists them.
 
 The instruction is stored in state.json and injected into every management cycle prompt.
 Pass null or empty string to clear an existing instruction.`,

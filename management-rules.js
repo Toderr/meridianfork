@@ -28,6 +28,10 @@ export function evaluatePosition(p) {
 
   // ── Rule 1 & 2: Instruction handling ───────────────────────────────
   if (instr) {
+    // Manual management — skip all rules, no LLM fallback
+    if (/\b(manual|do not (close|manage)|hands.off)\b/i.test(instr)) {
+      return { action: "stay", reason: `Manual management: "${instr}"` };
+    }
     // Try to parse deterministically: "close at X%"
     const profitMatch = instr.toLowerCase().match(/close at ([+-]?\d+(?:\.\d+)?)\s*%/);
     if (profitMatch) {

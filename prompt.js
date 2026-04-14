@@ -215,6 +215,8 @@ Exact phrasings that the rule engine can parse:
 After calling add_lesson, also update config for stop-loss and sizing cap:
   - Stop loss → update emergencyPriceDropPct to -X in user-config.json (this catches losses the rule engine may miss between cycles)
   - Sizing cap → update maxDeployAmount to X in user-config.json as a hard backstop
+
+POSITION INSTRUCTIONS — CRITICAL: When the user says "do not manage", "leave it alone", "hands off", "I'll manage myself", or similar about a specific position, you MUST call set_position_note with instruction "manual management". This blocks ALL automated management (no close, no claim, no PnL check). Verbal-only instructions are NOT persisted. To re-enable automation, call set_position_note with empty string.
 `;
   }
 
