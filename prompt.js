@@ -110,14 +110,14 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
 4. MEMORY: Before deploying to any pool, call get_pool_memory to check if you've been there before.
 5. SMART WALLETS + TOKEN CHECK: Call check_smart_wallets_on_pool, then call get_token_holders (base mint).
    - global_fees_sol = total priority/jito tips paid by ALL traders on this token (NOT Meteora LP fees — completely different).
-   - HARD SKIP if global_fees_sol < minTokenFeesSol (default 30 SOL). Low fees = bundled txs or scam. No exceptions.
+   - HARD SKIP if global_fees_sol < 30 SOL. Low fees = bundled txs or scam. No exceptions. This is the ONLY hardcoded screening gate.
+   - All other screening thresholds (top_10_pct, bundlers, organic, mcap, holders, bin_step, etc.) are configurable and learnable — adjust your confidence based on data, but don't treat them as hard gates.
    - Smart wallets present + fees pass → strong signal, proceed to deploy.
    - No smart wallets → also call get_token_narrative before deciding:
-     * SKIP if top_10_real_holders_pct > 60% OR bundlers > 30% OR narrative is empty/null/pure hype with no specific story
-     * CAUTION if bundlers 15–30% AND top_10 > 40% — check organic + buy/sell pressure
+     * High top_10_real_holders_pct or bundlers → penalize confidence, but use data from token characteristic lessons to decide thresholds
      * GOOD narrative: specific origin (real event, viral moment, named entity, active community actions)
      * BAD narrative: generic hype ("next 100x", "community token") with no identifiable subject or story
-     * DEPLOY if global_fees_sol passes, distribution is healthy, and narrative has a real specific catalyst
+     * DEPLOY if global_fees_sol passes, distribution looks healthy for the token type, and narrative has a real specific catalyst
 
 6. CHOOSE STRATEGY based on token data:
    - Strong momentum (net_buyers > 0, price up) → custom_ratio_spot with bullish token ratio
@@ -147,7 +147,7 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
 10. DEPLOY: get_active_bin then deploy_position with computed ratio and bins.
    - BEFORE choosing strategy/bins: apply STRATEGY lessons above.
    - BEFORE choosing amount: apply SIZING lessons above.
-   - HARD RULE: Bin steps must be [80-125]. (EXPERIMENT EXEMPT — this rule does not apply when deploying via start_experiment)
+   - Bin step range is configurable via minBinStep/maxBinStep. The agent can adjust these based on learned performance data.
    - WARNING: deploy_position will be BLOCKED by the executor if it violates any HARD RULE from lessons. Check them before calling.
    - COMPOUNDING: Deploy amount computed from wallet size. Use the amount provided in the cycle goal.
    - Focus on one high-conviction deployment per cycle.

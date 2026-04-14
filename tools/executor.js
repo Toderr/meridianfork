@@ -216,12 +216,19 @@ const toolMap = {
       return { success: false, unknown, reason };
     }
 
-    // Apply to live config immediately
+    // Hardcoded floor: minTokenFeesSol can never go below 30 (anti-scam gate)
+    if (applied.minTokenFeesSol != null && applied.minTokenFeesSol < 30) {
+      log("config", `update_config: minTokenFeesSol clamped to 30 (requested ${applied.minTokenFeesSol})`);
+      applied.minTokenFeesSol = 30;
+    }
+
+    // Apply to live config immediately, track before-values for notification
+    const beforeValues = {};
     for (const [key, val] of Object.entries(applied)) {
       const [section, field] = CONFIG_MAP[key];
-      const before = config[section][field];
+      beforeValues[key] = config[section][field];
       config[section][field] = val;
-      log("config", `update_config: config.${section}.${field} ${before} → ${val} (verify: ${config[section][field]})`);
+      log("config", `update_config: config.${section}.${field} ${beforeValues[key]} → ${val} (verify: ${config[section][field]})`);
     }
 
     // Persist to user-config.json
@@ -252,6 +259,12 @@ const toolMap = {
     }
 
     log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
+
+    // Notify journal bot (fire-and-forget)
+    import("../telegram-journal.js")
+      .then(m => m.notifyConfigChange({ applied, before: beforeValues, reason, source: "agent" }))
+      .catch(() => {});
+
     return { success: true, applied, unknown, reason };
   },
 

@@ -130,12 +130,9 @@ PRIORITY ORDER for strategy and bins:
 1. User explicitly specifies → always follow exactly (user override is absolute)
 2. No user spec → use active strategy's lp_strategy and choose bins based on volatility
 
-HARD RULES:
-- Never use 'curve'.
-- Bin Step: Only deploy in pools with bin_step between 80 and 125.
-
 Guidelines (only when user hasn't specified):
-- Strategy: use the active strategy's lp_strategy field (bid_ask or spot)
+- Strategy: use the active strategy's lp_strategy field (bid_ask or spot). Curve is allowed if data supports it.
+- Bin step range is configurable (check config). The agent can adjust minBinStep/maxBinStep based on learned data.
 - Bins: choose 35–69 for standard volatility; up to 350 for wide-range strategies. Max 1400 total.
 - Deposit: Can be single-sided (SOL only or Base only) or dual-sided.
 
@@ -161,8 +158,8 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           strategy: {
             type: "string",
-            enum: ["bid_ask", "spot"],
-            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise leave unset — the executor will auto-select based on pool volatility (spot for low volatility < 2, bid_ask for medium/high volatility >= 2)."
+            enum: ["bid_ask", "spot", "curve"],
+            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise leave unset — the executor will auto-select based on pool volatility (spot for low volatility < 2, bid_ask for medium/high volatility >= 2). Curve distributes liquidity in a bell curve around active bin."
           },
           bins_below: {
             type: "number",
@@ -504,7 +501,7 @@ is_pool=true means it's a liquidity pool address, not a real holder — filter t
 
 Also returns global_fees_sol — total priority/jito tips paid by ALL traders on this token (NOT Meteora LP fees).
 This is a key signal: low global_fees_sol means transactions are bundled or the token is a scam.
-HARD GATE: if global_fees_sol < config.screening.minTokenFeesSol (default 30), do NOT deploy.
+HARD GATE: if global_fees_sol < 30, do NOT deploy. This is hardcoded and cannot be lowered.
 
 NOTE: Requires mint address. If you only have a symbol/name, call get_token_info first to resolve the mint.`,
       parameters: {
