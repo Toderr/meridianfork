@@ -8,6 +8,7 @@ import BN from "bn.js";
 import bs58 from "bs58";
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { getTokenProfile } from "../screening-cache.js";
 import {
   trackPosition,
   updatePoolName,
@@ -265,6 +266,9 @@ export async function deployPosition({
   // Compute tracked strategy early so it's available for both wide-range and standard tracking
   const trackedStrategy = activeStrategy;
 
+  // Look up cached token characteristics from screening enrichment
+  const tokenProfile = getTokenProfile(pool_address);
+
   const trackData = {
     position: newPosition.publicKey.toString(),
     pool: pool_address,
@@ -281,6 +285,7 @@ export async function deployPosition({
     initial_value_usd,
     variant,
     base_mint: pool.lbPair.tokenXMint.toString(),
+    token_profile: tokenProfile,
   };
 
   log("deploy", `Pool: ${pool_address}`);
@@ -917,6 +922,7 @@ export async function closePosition({ position_address, close_reason }) {
         minutes_held: minutesHeld,
         close_reason: close_reason || "agent decision",
         variant: tracked.variant || null,
+        token_profile: tracked.token_profile || null,
       });
 
       return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, fees_earned_usd: feesUsd, base_mint: pool.lbPair.tokenXMint.toString() };

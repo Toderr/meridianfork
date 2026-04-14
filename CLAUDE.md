@@ -35,6 +35,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `stats.js` | Shared in-memory counters + flags |
 | `strategy-library.js` | LP strategy template storage |
 | `pool-memory.js` | Per-pool deploy history and notes |
+| `screening-cache.js` | In-memory cache of token characteristics from screening → used at close for lesson derivation |
 | `management-rules.js` | Deterministic management rule engine — replaces LLM for position decisions |
 | `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
 | `scripts/claude-ask.js` | Telegram `/claude` Q&A agent via `claude --print` |
@@ -148,13 +149,13 @@ All on-chain calls go through `sendWithRetry()` — 5 attempts with exponential 
 - **Sizing**: `(wallet - gasReserve) × positionSizePct`, clamped between `deployAmountSol` and `maxDeployAmount`
 - **Max positions**: `config.risk.maxPositions` (default 10)
 - **Gas reserve**: `gasReserve` SOL (default 0.2) always kept
-- **Anti-scam**: Skip if `global_fees_sol < minTokenFeesSol`, top_10_pct > 60%, bundlers > 30%
+- **Anti-scam**: Only hardcoded gate: `global_fees_sol < 30` (cannot be lowered). All other screening thresholds (top_10_pct, bundlers, organic, mcap, bin_step, etc.) are configurable and learnable — the agent can adjust them via `update_config` or lessons.
 - **OKX hard filters**: honeypot → auto-reject, dev_rug_count > 0 → auto-reject (pre-LLM)
 - **Known-mints allowlist**: Only swap tokens from positions the bot deployed into. `getKnownMints()` builds Set from ALL positions (open + closed). Unknown tokens never touched — prevents wallet drain from airdropped tokens. `/withdraw` bypasses filter.
 
 ## Screening Enrichment
 
-All recon data is pre-loaded per candidate in parallel (`Promise.allSettled`) before the screener agent runs — no LLM tool calls needed for these:
+All recon data is pre-loaded per candidate in parallel (`Promise.allSettled`) before the screener agent runs — no LLM tool calls needed for these. All enrichment data is also cached via `screening-cache.js` (`cacheTokenProfile`) so it persists through deploy → close → lesson derivation:
 
 | Source | Data | Signal |
 |--------|------|--------|
@@ -188,7 +189,8 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
 - **`max_loss_pct` extraction**: Only matches explicit stop-loss intent patterns (`NEVER hold position below X%`, `stop loss at X%`, `cut losses at X%`). Does NOT match incidental `pnl < X%` in descriptive lessons. Keywords: `NEVER`, `DO NOT`, `STOP LOSS`, `CUT LOSS` (not `AVOID` — too broad).
 - **Daily summarization**: Two phases — batch cleanup (aggressive: delete duplicates/noise, merge into <120 char rules, max 70% reduction) → policy consolidation (consolidate AVOID/PREFER groups into short parseable rules). Never deletes pinned or experiment lessons.
 - **Comparative lessons**: Every 5 closes, aggregates performance by strategy + volatility bucket. Generates PREFER lessons when one strategy outperforms another by >2% avg PnL (min 3 samples per group). Deduped by strategy pair.
-- **Claude lesson updater**: Every 5 closes. Analyzes recent closes, adds lessons, applies config tweaks (limited keys).
+- **Token characteristic lessons**: Every 5 closes, `analyzeTokenCharacteristics()` groups performance by token traits (mcap bucket, holder count, volume, smart wallets, OKX smart money, 1h momentum, ATH proximity). Generates PREFER lessons like "For mcap<$50k tokens, use strategy=bid_ask". Summary also injected into Claude lesson updater prompt for richer analysis.
+- **Claude lesson updater**: Every 5 closes. Analyzes recent closes + token characteristic patterns, adds lessons, applies config tweaks (all screening/strategy/management/sizing keys). Includes token profile data per close and aggregated characteristic→strategy analysis.
 - **Constraint persistence**: Verbal constraints must be saved via `add_lesson` or `set_position_note` tool calls. Verbal-only instructions are NOT persisted.
 
 ## Knowledge Wiki

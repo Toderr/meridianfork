@@ -26,6 +26,7 @@ import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.
 import { _stats, _flags } from "./stats.js";
 import { startDashboard } from "./dashboard/server.js";
 import { extractRules, checkPositionCompliance, filterCandidatesByRules } from "./lesson-rules.js";
+import { cacheTokenProfile } from "./screening-cache.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
 import { fileURLToPath } from "url";
@@ -709,6 +710,33 @@ async function runScreeningCycle() {
             okx?.clusters?.length > 0 ? `  okx_clusters: ${okx.clusters.slice(0, 3).map(c => `[${c.trend ?? "?"} hold=${c.avg_hold_days}d pnl=${c.pnl_pct}%${c.has_kol ? " KOL" : ""}]`).join(", ")}` : null,
           ].filter(Boolean);
 
+          // Cache token characteristics for lesson derivation at close time
+          cacheTokenProfile(pool.pool, {
+            mcap: pool.mcap ?? null,
+            holders: pool.holders ?? null,
+            volume: pool.volume_window ?? null,
+            tvl: pool.active_tvl ?? null,
+            swap_count: pool.swap_count ?? null,
+            unique_traders: pool.unique_traders ?? null,
+            top_10_pct: h?.top_10_real_holders_pct ?? null,
+            bundlers_pct: h?.bundlers_pct_in_top_100 ?? null,
+            global_fees_sol: h?.global_fees_sol ?? null,
+            smart_wallet_count: sw?.in_pool?.length ?? 0,
+            smart_wallet_confidence: sw?.confidence_score ?? null,
+            momentum_1h: ti?.stats_1h?.price_change ?? null,
+            momentum_buyers_1h: ti?.stats_1h?.buyers ?? null,
+            momentum_net_buyers_1h: ti?.stats_1h?.net_buyers ?? null,
+            bot_holders_pct: ti?.audit?.bot_holders_pct ?? null,
+            okx_smart_money_buy: okx?.advanced?.smart_money_buy ?? null,
+            okx_risk_level: okx?.advanced?.risk_level ?? null,
+            okx_bundle_pct: okx?.advanced?.bundle_pct ?? null,
+            okx_sniper_pct: okx?.advanced?.sniper_pct ?? null,
+            okx_lp_burned_pct: okx?.advanced?.lp_burned_pct ?? null,
+            okx_price_vs_ath_pct: okx?.price?.price_vs_ath_pct ?? null,
+            okx_price_change_1h: okx?.price?.price_change_1h ?? null,
+            narrative: n?.narrative?.slice(0, 200) ?? null,
+          });
+
           return {
             block: lines.join("\n"),
             botHoldersPct: ti?.audit?.bot_holders_pct ?? null,
@@ -752,12 +780,11 @@ ${strategyBlock}
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
 ${candidateContext}${hiveBlock}
 DECISION RULES (apply to the pre-loaded candidates above, no re-fetching needed):
-- HARD SKIP if global_fees_sol < ${config.screening.minTokenFeesSol} SOL (bundled/scam)
-- HARD SKIP if top_10_pct > 60% OR bundlers_pct > 30%
+- HARD SKIP if global_fees_sol < 30 SOL (bundled/scam) — this is the ONLY hardcoded gate, non-negotiable
+- All other thresholds (top_10_pct, bundlers, organic, mcap, bin_step, etc.) are soft — use learned lessons and token characteristic data to decide. Penalize confidence proportionally, don't hard-skip.
 - rugpull=YES → default to SKIP; treat as disqualifying unless overwhelming evidence otherwise
 - wash=YES → treat as disqualifying even if other metrics look attractive
 - SKIP if narrative is empty/null or pure hype with no specific story (unless smart wallets present)
-- Bundlers 5–15% are normal, not a skip reason on their own
 - Smart wallets present → strong confidence boost
 
 OKX TOKEN INTELLIGENCE (pre-loaded per candidate):

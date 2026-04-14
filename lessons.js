@@ -244,6 +244,28 @@ export async function recordPerformance(perf) {
       log("lessons_warn", `Comparative lesson derivation failed (non-fatal): ${compErr.message}`);
     }
 
+    // Token characteristic lessons — "mcap X tokens work best with strategy Y"
+    try {
+      const { lessons: tokenLessons } = analyzeTokenCharacteristics(data.performance);
+      for (const tl of tokenLessons) {
+        const existingIdx = data.lessons.findIndex(
+          l => l.outcome === "comparative" && l.tags?.includes("token_characteristic") &&
+               tl.tags.filter(t => !["comparative", "token_characteristic"].includes(t)).every(t => l.tags.includes(t))
+        );
+        if (existingIdx !== -1) {
+          data.lessons[existingIdx].rule = tl.rule;
+          data.lessons[existingIdx].created_at = tl.created_at;
+          log("lessons", `Updated token-characteristic lesson: ${tl.rule}`);
+        } else {
+          data.lessons.push(tl);
+          log("lessons", `New token-characteristic lesson: ${tl.rule}`);
+        }
+      }
+      if (tokenLessons.length > 0) saveRegular(data);
+    } catch (tokenErr) {
+      log("lessons_warn", `Token characteristic lesson derivation failed (non-fatal): ${tokenErr.message}`);
+    }
+
     // Claude lesson updater — fire-and-forget, runs after evolveThresholds
     import("./scripts/claude-lesson-updater.js")
       .then(m => m.claudeUpdateLessons())
@@ -267,7 +289,8 @@ function derivLesson(perf) {
   if (outcome === "neutral") return null; // 0-5%: marginal wins — not enough signal to learn from
 
   // Build context description
-  const context = [
+  const tp = perf.token_profile;
+  const contextParts = [
     `${perf.pool_name}`,
     `strategy=${perf.strategy}`,
     `bin_step=${perf.bin_step}`,
@@ -275,7 +298,15 @@ function derivLesson(perf) {
     `fee_tvl_ratio=${perf.fee_tvl_ratio}`,
     `organic=${perf.organic_score}`,
     `bin_range=${typeof perf.bin_range === 'object' ? JSON.stringify(perf.bin_range) : perf.bin_range}`,
-  ].join(", ");
+  ];
+  if (tp) {
+    if (tp.mcap != null) contextParts.push(`mcap=$${tp.mcap}`);
+    if (tp.holders != null) contextParts.push(`holders=${tp.holders}`);
+    if (tp.smart_wallet_count) contextParts.push(`smart_wallets=${tp.smart_wallet_count}`);
+    if (tp.okx_smart_money_buy != null) contextParts.push(`sm_buy=${tp.okx_smart_money_buy}`);
+    if (tp.momentum_1h != null) contextParts.push(`mom_1h=${tp.momentum_1h}%`);
+  }
+  const context = contextParts.join(", ");
 
   let rule = "";
 
@@ -489,6 +520,155 @@ function derivComparativeLessons(performance) {
   }
 
   return lessons;
+}
+
+// ─── Token Characteristic Lessons ───────────────────────────────────
+
+const MCAP_BUCKETS = [
+  { name: "micro", label: "mcap<$50k", min: 0, max: 50_000 },
+  { name: "small", label: "$50k-$500k mcap", min: 50_000, max: 500_000 },
+  { name: "mid",   label: "$500k-$5M mcap",  min: 500_000, max: 5_000_000 },
+  { name: "large", label: "mcap>$5M", min: 5_000_000, max: Infinity },
+];
+
+const HOLDER_BUCKETS = [
+  { name: "few", label: "<500 holders", min: 0, max: 500 },
+  { name: "moderate", label: "500-2k holders", min: 500, max: 2000 },
+  { name: "many", label: ">2k holders", min: 2000, max: Infinity },
+];
+
+const VOLUME_BUCKETS = [
+  { name: "low_vol", label: "volume<$50k", min: 0, max: 50_000 },
+  { name: "mid_vol", label: "$50k-$500k volume", min: 50_000, max: 500_000 },
+  { name: "high_vol", label: "volume>$500k", min: 500_000, max: Infinity },
+];
+
+function findBucket(value, buckets) {
+  if (value == null) return null;
+  return buckets.find(b => value >= b.min && value < b.max) || null;
+}
+
+/**
+ * Build a summary of performance by token characteristics.
+ * Returns a compact text block for injection into lesson review prompts.
+ * Also derives automatic PREFER lessons when patterns are strong.
+ */
+export function analyzeTokenCharacteristics(performance) {
+  // Only use records that have token_profile data + last 30 days
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const recent = (performance || []).filter(
+    p => p.recorded_at >= cutoff && p.token_profile && p.strategy && p.pnl_pct != null
+  );
+  if (recent.length < 6) return { summary: null, lessons: [] };
+
+  const lessons = [];
+  const summaryLines = [];
+
+  // Helper: group records by bucket + strategy, find best strategy per bucket
+  function analyzeByDimension(dimName, dimLabel, getBucket) {
+    const groups = {};  // bucketName → { stratName → [records] }
+    for (const r of recent) {
+      const bucket = getBucket(r);
+      if (!bucket) continue;
+      if (!groups[bucket.name]) groups[bucket.name] = { label: bucket.label, byStrat: {} };
+      if (!groups[bucket.name].byStrat[r.strategy]) groups[bucket.name].byStrat[r.strategy] = [];
+      groups[bucket.name].byStrat[r.strategy].push(r);
+    }
+
+    for (const [bucketName, { label: bucketLabel, byStrat }] of Object.entries(groups)) {
+      const strategies = Object.entries(byStrat)
+        .filter(([, arr]) => arr.length >= 2) // min 2 samples
+        .map(([strat, arr]) => {
+          const avgPnl = arr.reduce((s, r) => s + r.pnl_pct, 0) / arr.length;
+          const winRate = arr.filter(r => r.pnl_pct >= 0).length / arr.length;
+          return { strat, avgPnl: Math.round(avgPnl * 100) / 100, winRate: Math.round(winRate * 100), n: arr.length };
+        })
+        .sort((a, b) => b.avgPnl - a.avgPnl);
+
+      if (strategies.length === 0) continue;
+
+      // Summary line for this bucket
+      const stratSummary = strategies.map(s => `${s.strat}:${s.avgPnl > 0 ? "+" : ""}${s.avgPnl}%/${s.winRate}%WR(${s.n})`).join(", ");
+      summaryLines.push(`  ${bucketLabel}: ${stratSummary}`);
+
+      // Generate lesson if clear winner (>2% gap, both have min 3 samples)
+      if (strategies.length >= 2) {
+        const best = strategies[0];
+        const worst = strategies[strategies.length - 1];
+        if (best.avgPnl - worst.avgPnl > 2 && best.n >= 3 && worst.n >= 3) {
+          lessons.push({
+            id: Date.now() + Math.random() * 1000 | 0,
+            rule: `PREFER: For ${bucketLabel} tokens, use strategy="${best.strat}" — avg PnL +${best.avgPnl}% (${best.winRate}% win, ${best.n} trades) vs "${worst.strat}" ${worst.avgPnl}% (${worst.n} trades).`,
+            tags: ["comparative", "token_characteristic", dimName, bucketName, best.strat, worst.strat],
+            outcome: "comparative",
+            category: "strategy",
+            source: "regular",
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  }
+
+  // Analyze by mcap
+  summaryLines.push("TOKEN CHARACTERISTICS → STRATEGY PERFORMANCE (last 30d):");
+  summaryLines.push("[Market Cap]");
+  analyzeByDimension("mcap", "mcap", r => findBucket(r.token_profile?.mcap, MCAP_BUCKETS));
+
+  summaryLines.push("[Holders]");
+  analyzeByDimension("holders", "holders", r => findBucket(r.token_profile?.holders, HOLDER_BUCKETS));
+
+  summaryLines.push("[Volume]");
+  analyzeByDimension("volume", "volume", r => findBucket(r.token_profile?.volume, VOLUME_BUCKETS));
+
+  // Smart wallet presence analysis
+  const withSW = recent.filter(r => (r.token_profile?.smart_wallet_count ?? 0) > 0);
+  const withoutSW = recent.filter(r => (r.token_profile?.smart_wallet_count ?? 0) === 0);
+  if (withSW.length >= 3 && withoutSW.length >= 3) {
+    const avgSW = withSW.reduce((s, r) => s + r.pnl_pct, 0) / withSW.length;
+    const avgNoSW = withoutSW.reduce((s, r) => s + r.pnl_pct, 0) / withoutSW.length;
+    const wrSW = Math.round(withSW.filter(r => r.pnl_pct >= 0).length / withSW.length * 100);
+    const wrNoSW = Math.round(withoutSW.filter(r => r.pnl_pct >= 0).length / withoutSW.length * 100);
+    summaryLines.push(`[Smart Wallets]`);
+    summaryLines.push(`  present: avg PnL ${avgSW > 0 ? "+" : ""}${avgSW.toFixed(2)}%, WR ${wrSW}% (${withSW.length} trades)`);
+    summaryLines.push(`  absent: avg PnL ${avgNoSW > 0 ? "+" : ""}${avgNoSW.toFixed(2)}%, WR ${wrNoSW}% (${withoutSW.length} trades)`);
+  }
+
+  // OKX smart money buy analysis
+  const smBuy = recent.filter(r => r.token_profile?.okx_smart_money_buy === true);
+  const smNoBuy = recent.filter(r => r.token_profile?.okx_smart_money_buy === false);
+  if (smBuy.length >= 3 && smNoBuy.length >= 3) {
+    const avgBuy = smBuy.reduce((s, r) => s + r.pnl_pct, 0) / smBuy.length;
+    const avgNoBuy = smNoBuy.reduce((s, r) => s + r.pnl_pct, 0) / smNoBuy.length;
+    summaryLines.push(`[OKX Smart Money]`);
+    summaryLines.push(`  smart_money_buy=true: avg PnL ${avgBuy > 0 ? "+" : ""}${avgBuy.toFixed(2)}% (${smBuy.length} trades)`);
+    summaryLines.push(`  smart_money_buy=false: avg PnL ${avgNoBuy > 0 ? "+" : ""}${avgNoBuy.toFixed(2)}% (${smNoBuy.length} trades)`);
+  }
+
+  // Momentum at entry analysis
+  const posMom = recent.filter(r => (r.token_profile?.momentum_1h ?? 0) > 0);
+  const negMom = recent.filter(r => (r.token_profile?.momentum_1h ?? 0) < 0);
+  if (posMom.length >= 3 && negMom.length >= 3) {
+    const avgPos = posMom.reduce((s, r) => s + r.pnl_pct, 0) / posMom.length;
+    const avgNeg = negMom.reduce((s, r) => s + r.pnl_pct, 0) / negMom.length;
+    summaryLines.push(`[1h Momentum at Entry]`);
+    summaryLines.push(`  positive: avg PnL ${avgPos > 0 ? "+" : ""}${avgPos.toFixed(2)}% (${posMom.length} trades)`);
+    summaryLines.push(`  negative: avg PnL ${avgNeg > 0 ? "+" : ""}${avgNeg.toFixed(2)}% (${negMom.length} trades)`);
+  }
+
+  // ATH proximity analysis
+  const nearATH = recent.filter(r => (r.token_profile?.okx_price_vs_ath_pct ?? 0) >= 70);
+  const farATH = recent.filter(r => r.token_profile?.okx_price_vs_ath_pct != null && r.token_profile.okx_price_vs_ath_pct < 70);
+  if (nearATH.length >= 3 && farATH.length >= 3) {
+    const avgNear = nearATH.reduce((s, r) => s + r.pnl_pct, 0) / nearATH.length;
+    const avgFar = farATH.reduce((s, r) => s + r.pnl_pct, 0) / farATH.length;
+    summaryLines.push(`[ATH Proximity]`);
+    summaryLines.push(`  near ATH (≥70%): avg PnL ${avgNear > 0 ? "+" : ""}${avgNear.toFixed(2)}% (${nearATH.length} trades)`);
+    summaryLines.push(`  far from ATH (<70%): avg PnL ${avgFar > 0 ? "+" : ""}${avgFar.toFixed(2)}% (${farATH.length} trades)`);
+  }
+
+  const summary = summaryLines.length > 1 ? summaryLines.join("\n") : null;
+  return { summary, lessons };
 }
 
 /**
@@ -833,20 +1013,21 @@ export function evolveThresholds(perfData, config) {
 
   fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
 
-  // Apply to live config object immediately
+  // Apply to live config object immediately — track before-values for journal notification
+  const beforeValues = {};
   const s = config.screening;
   if (changes.maxVolatility    != null) {
-    const oldVal = s.maxVolatility;
+    const oldVal = s.maxVolatility; beforeValues.maxVolatility = oldVal;
     s.maxVolatility = changes.maxVolatility;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "maxVolatility", oldVal, newVal: changes.maxVolatility, reason: rationale.maxVolatility }).catch(() => {});
   }
   if (changes.minFeeTvlRatio   != null) {
-    const oldVal = s.minFeeTvlRatio;
+    const oldVal = s.minFeeTvlRatio; beforeValues.minFeeTvlRatio = oldVal;
     s.minFeeTvlRatio = changes.minFeeTvlRatio;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "minFeeTvlRatio", oldVal, newVal: changes.minFeeTvlRatio, reason: rationale.minFeeTvlRatio }).catch(() => {});
   }
   if (changes.minOrganic       != null) {
-    const oldVal = s.minOrganic;
+    const oldVal = s.minOrganic; beforeValues.minOrganic = oldVal;
     s.minOrganic = changes.minOrganic;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "minOrganic", oldVal, newVal: changes.minOrganic, reason: rationale.minOrganic }).catch(() => {});
   }
@@ -854,41 +1035,52 @@ export function evolveThresholds(perfData, config) {
   const m  = config.management;
   const st = config.strategy;
   if (changes.strategyRules != null) {
+    beforeValues.strategyRules = { ...st.strategyRules };
     st.strategyRules = changes.strategyRules;
     // Single notification summarizing all rule changes
     const ruleChanges = Object.entries(rationale).filter(([k]) => k.startsWith("strategyRules.")).map(([, v]) => v).join("; ");
     if (telegramEnabled() && ruleChanges) notifyThresholdEvolved({ field: "strategyRules", oldVal: null, newVal: JSON.stringify(changes.strategyRules), reason: ruleChanges }).catch(() => {});
   }
   if (changes.binsBelow != null) {
-    const oldVal = st.binsBelow;
+    const oldVal = st.binsBelow; beforeValues.binsBelow = oldVal;
     st.binsBelow = changes.binsBelow;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "binsBelow", oldVal, newVal: changes.binsBelow, reason: rationale.binsBelow }).catch(() => {});
   }
   if (changes.takeProfitFeePct != null) {
-    const oldVal = m.takeProfitFeePct;
+    const oldVal = m.takeProfitFeePct; beforeValues.takeProfitFeePct = oldVal;
     m.takeProfitFeePct = changes.takeProfitFeePct;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "takeProfitFeePct", oldVal, newVal: changes.takeProfitFeePct, reason: rationale.takeProfitFeePct }).catch(() => {});
   }
   if (changes.fastTpPct != null) {
-    const oldVal = m.fastTpPct;
+    const oldVal = m.fastTpPct; beforeValues.fastTpPct = oldVal;
     m.fastTpPct = changes.fastTpPct;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "fastTpPct", oldVal, newVal: changes.fastTpPct, reason: rationale.fastTpPct }).catch(() => {});
   }
   if (changes.trailingFloor != null) {
-    const oldVal = m.trailingFloor;
+    const oldVal = m.trailingFloor; beforeValues.trailingFloor = oldVal;
     m.trailingFloor = changes.trailingFloor;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "trailingFloor", oldVal, newVal: changes.trailingFloor, reason: rationale.trailingFloor }).catch(() => {});
   }
   if (changes.emergencyPriceDropPct != null) {
-    const oldVal = m.emergencyPriceDropPct;
+    const oldVal = m.emergencyPriceDropPct; beforeValues.emergencyPriceDropPct = oldVal;
     m.emergencyPriceDropPct = changes.emergencyPriceDropPct;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "emergencyPriceDropPct", oldVal, newVal: changes.emergencyPriceDropPct, reason: rationale.emergencyPriceDropPct }).catch(() => {});
   }
   if (changes.positionSizePct != null) {
-    const oldVal = m.positionSizePct;
+    const oldVal = m.positionSizePct; beforeValues.positionSizePct = oldVal;
     m.positionSizePct = changes.positionSizePct;
     if (telegramEnabled()) notifyThresholdEvolved({ field: "positionSizePct", oldVal, newVal: changes.positionSizePct, reason: rationale.positionSizePct }).catch(() => {});
   }
+
+  // Notify journal bot of all evolved config changes (fire-and-forget)
+  import("./telegram-journal.js")
+    .then(m => m.notifyConfigChange({
+      applied: changes,
+      before: beforeValues,
+      reason: Object.values(rationale).join("; "),
+      source: "auto-evolve",
+    }))
+    .catch(() => {});
 
   // Log a lesson summarizing the evolution
   const data = load();

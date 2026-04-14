@@ -39,11 +39,21 @@ function loadSkillPrompt() {
   } catch { return null; }
 }
 
-// Config keys Claude is allowed to update (safe subset only — no risk/structural keys)
+// Config keys Claude is allowed to update
+// Screening params are fully tunable — the agent learns what works via token characteristic analysis.
+// Only minTokenFeesSol is hardcoded at 30 and cannot be lowered (anti-scam gate).
 const ALLOWED_CONFIG_KEYS = new Set([
+  // Screening
+  "minFeeActiveTvlRatio", "minTvl", "maxTvl", "minVolume", "minOrganic",
+  "minHolders", "minMcap", "maxMcap", "minBinStep", "maxBinStep",
+  "timeframe", "category", "maxBotHoldersPct",
+  // Strategy
   "binsBelow", "strategyRules",
+  // Management
   "minFeeTvl24h", "minAgeForYieldExit",
   "outOfRangeBinsToClose",
+  // Risk/sizing
+  "deployAmountSol", "positionSizePct", "maxDeployAmount",
 ]);
 
 // ─── File helpers ─────────────────────────────────────────────────
@@ -55,21 +65,43 @@ function loadJson(file) {
 
 // ─── Build prompt ─────────────────────────────────────────────────
 
-function buildPrompt(recentPerf, existingLessons, currentConfig, autoresearchData = null, goalsSection = "") {
+function buildPrompt(recentPerf, existingLessons, currentConfig, autoresearchData = null, goalsSection = "", tokenCharSummary = "") {
   const perfLines = recentPerf.map((p, i) => {
     const sign = (p.pnl_pct ?? 0) >= 0 ? "+" : "";
-    return `${i + 1}. ${p.pool_name || "?"} | ${p.strategy || "?"} | pnl=${sign}${(p.pnl_pct ?? 0).toFixed(2)}% ($${(p.pnl_usd ?? 0).toFixed(2)}) | held=${p.minutes_held || 0}m | range_eff=${(p.range_efficiency ?? 0).toFixed(0)}% | vol=${p.volatility ?? "?"} | reason=${p.close_reason || "?"}`;
+    const tp = p.token_profile;
+    const profileHint = tp
+      ? ` | mcap=${tp.mcap ?? "?"} holders=${tp.holders ?? "?"} sw=${tp.smart_wallet_count ?? 0} sm_buy=${tp.okx_smart_money_buy ?? "?"} mom1h=${tp.momentum_1h ?? "?"}`
+      : "";
+    return `${i + 1}. ${p.pool_name || "?"} | ${p.strategy || "?"} | pnl=${sign}${(p.pnl_pct ?? 0).toFixed(2)}% ($${(p.pnl_usd ?? 0).toFixed(2)}) | held=${p.minutes_held || 0}m | range_eff=${(p.range_efficiency ?? 0).toFixed(0)}% | vol=${p.volatility ?? "?"}${profileHint} | reason=${p.close_reason || "?"}`;
   }).join("\n");
 
   const lessonLines = existingLessons.map(l => `- [${l.type || "?"}] ${l.rule}`).join("\n") || "none";
 
   const cfgSubset = {
+    // Screening (all tunable — minTokenFeesSol=30 is hardcoded separately)
+    minFeeActiveTvlRatio: currentConfig.minFeeActiveTvlRatio,
+    minTvl: currentConfig.minTvl,
+    maxTvl: currentConfig.maxTvl,
+    minVolume: currentConfig.minVolume,
+    minOrganic: currentConfig.minOrganic,
+    minHolders: currentConfig.minHolders,
+    minMcap: currentConfig.minMcap,
+    maxMcap: currentConfig.maxMcap,
+    minBinStep: currentConfig.minBinStep,
+    maxBinStep: currentConfig.maxBinStep,
+    maxBotHoldersPct: currentConfig.maxBotHoldersPct,
+    // Strategy
     strategy: currentConfig.strategy,
     binsBelow: currentConfig.binsBelow,
     strategyRules: currentConfig.strategyRules,
+    // Management
     minFeeTvl24h: currentConfig.minFeeTvl24h,
     minAgeForYieldExit: currentConfig.minAgeForYieldExit,
     outOfRangeBinsToClose: currentConfig.outOfRangeBinsToClose,
+    // Risk/sizing
+    deployAmountSol: currentConfig.deployAmountSol,
+    positionSizePct: currentConfig.positionSizePct,
+    maxDeployAmount: currentConfig.maxDeployAmount,
   };
 
   // Build optional autoresearch section
@@ -100,7 +132,7 @@ ${lessonLines}
 
 CURRENT STRATEGY CONFIG:
 ${JSON.stringify(cfgSubset, null, 2)}
-${goalsSection ? `\n${goalsSection}\n` : ""}${autoresearchSection}
+${goalsSection ? `\n${goalsSection}\n` : ""}${tokenCharSummary ? `\n${tokenCharSummary}\n\nUse the token characteristic analysis above to derive strategy-matching lessons.\nFor example: "PREFER: For <mcap range> tokens, use strategy=<best>" or "AVOID: Tokens with <characteristic> — avg PnL <negative>%".\n\n` : ""}${autoresearchSection}
 TASK:
 1. Identify 1-3 NEW patterns worth recording as lesson rules (only if genuinely new and backed by the data above).
 2. Suggest minor config adjustments (optional, only if clearly supported by data). Allowed keys: ${[...ALLOWED_CONFIG_KEYS].join(", ")}.
@@ -243,7 +275,15 @@ export async function claudeUpdateLessons() {
     const allPerf = loadPerformance();
     const goalsSection = goals ? formatGoalsForPrompt(goals, allPerf) : "";
 
-    const prompt = buildPrompt(recentPerf, existingLessons, currentConfig, autoresearchData, goalsSection);
+    // Build token characteristic analysis from all performance data
+    let tokenCharSummary = "";
+    try {
+      const { analyzeTokenCharacteristics } = await import("../lessons.js");
+      const { summary } = analyzeTokenCharacteristics(data.performance || []);
+      tokenCharSummary = summary || "";
+    } catch { /* non-fatal */ }
+
+    const prompt = buildPrompt(recentPerf, existingLessons, currentConfig, autoresearchData, goalsSection, tokenCharSummary);
     const skillPrompt = loadSkillPrompt();
     const args = ["--print", "--output-format", "json", "--no-session-persistence", "--tools", ""];
     if (skillPrompt) args.push("--system-prompt", skillPrompt);
@@ -301,6 +341,18 @@ export async function claudeUpdateLessons() {
       const { reloadConfig } = await import("../config.js");
       reloadConfig();
       log("claude_review", `Config updates applied: ${JSON.stringify(applied)}`);
+
+      // Dedicated config change notification to journal bot
+      try {
+        const beforeValues = {};
+        const appliedValues = {};
+        for (const [k, v] of Object.entries(applied)) {
+          beforeValues[k] = v.old;
+          appliedValues[k] = v.new;
+        }
+        const { notifyConfigChange } = await import("../telegram-journal.js");
+        await notifyConfigChange({ applied: appliedValues, before: beforeValues, reason: rationale, source: "claude-review" });
+      } catch { /* journal bot not available */ }
     }
 
     const hasChanges = newLessons.length > 0 || Object.keys(applied).length > 0;
