@@ -112,6 +112,7 @@ export function recordJournalClose(d) {
       pnl_usd: Math.round(d.pnl_usd * 100) / 100,
       pnl_sol,
       pnl_pct: d.pnl_pct,
+      sol_price: d.sol_price || 0,
       minutes_held: d.minutes_held,
       range_efficiency: d.range_efficiency,
       close_reason: d.close_reason,
@@ -132,6 +133,7 @@ export function recordJournalClose(d) {
         pnl_sol,
         pnl_pct: d.pnl_pct,
         fees_earned_usd: d.fees_earned_usd ?? 0,
+        sol_price: d.sol_price || 0,
         minutes_held: d.minutes_held,
         close_reason: d.close_reason,
       }).catch(() => {});

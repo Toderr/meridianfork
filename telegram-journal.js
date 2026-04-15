@@ -102,10 +102,10 @@ function fmtBins(bin_range, bin_step) {
 }
 
 // ─── Notification ────────────────────────────────────────────────
-export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, minutes_held, close_reason }) {
+export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, sol_price = 0, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
   const inclUsd = (pnl_usd ?? 0) + fees_earned_usd;
-  const feesSol = (pnl_usd && pnl_sol != null) ? fees_earned_usd * (pnl_sol / pnl_usd) : 0;
+  const feesSol = sol_price > 0 ? fees_earned_usd / sol_price : 0;
   const inclSol = (pnl_sol ?? 0) + feesSol;
   const su = inclUsd >= 0 ? "+" : "";
   const ss = inclSol >= 0 ? "+" : "";

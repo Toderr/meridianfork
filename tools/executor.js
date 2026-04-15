@@ -410,7 +410,7 @@ export async function executeTool(name, args) {
         _stats.positionsClosed++;
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || result.pool_name || args.position_address?.slice(0, 8);
-        notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, reason: args.close_reason }).catch(() => {});
+        notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, solPrice: result.sol_price ?? 0, reason: args.close_reason }).catch(() => {});
         _flags.gasLowNotified = false;       // position closed — SOL may have returned, allow fresh gas warning
         _flags.maxPositionsNotified = false; // slot freed — allow next max-positions warning
         if (hiveEnabled()) syncToHive().catch(() => {});

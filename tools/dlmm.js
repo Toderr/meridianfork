@@ -397,6 +397,19 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
     if (positions.length === 0) {
       log("pnl_api", `No positions returned for pool ${poolAddress.slice(0, 8)} — keys: ${Object.keys(data).join(", ")}`);
     }
+    // Diagnostic: log raw datapi fields to verify pnlUsd semantics (fee-inclusive vs price-only)
+    const firstPos = positions[0];
+    if (firstPos) {
+      log("pnl_api_raw", JSON.stringify({
+        pos: (firstPos.positionAddress || "?").slice(0, 8),
+        pnlUsd: firstPos.pnlUsd,
+        pnlSol: firstPos.pnlSol,
+        balances: firstPos.unrealizedPnl?.balances,
+        feeX_usd: firstPos.unrealizedPnl?.unclaimedFeeTokenX?.usd,
+        feeY_usd: firstPos.unrealizedPnl?.unclaimedFeeTokenY?.usd,
+        allTimeFees: firstPos.allTimeFees?.total?.usd,
+      }));
+    }
     const byAddress = {};
     for (const p of positions) {
       const addr = p.positionAddress || p.address || p.position;
@@ -421,12 +434,13 @@ export async function getPositionPnl({ pool_address, position_address }) {
 
     const unclaimedUsd    = parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0);
     const currentValueUsd = parseFloat(p.unrealizedPnl?.balances || 0);
-    const pnlUsdRaw       = parseFloat(p.pnlUsd ?? 0);
-    const initialValueUsd = currentValueUsd - pnlUsdRaw;
-    const computedPnlPct  = initialValueUsd > 0 ? (pnlUsdRaw + unclaimedUsd) / initialValueUsd * 100 : 0;
+    const pnlUsdTotal     = parseFloat(p.pnlUsd ?? 0);   // fee-inclusive total PnL from Meteora datapi
+    const pnlUsdPrice     = pnlUsdTotal - unclaimedUsd;   // price-only (strip fees for separate tracking)
+    const initialValueUsd = currentValueUsd - pnlUsdPrice; // initial = current_value - price_change
+    const computedPnlPct  = initialValueUsd > 0 ? pnlUsdTotal / initialValueUsd * 100 : 0;
 
     // On-chain fallback: datapi returned balances=0 (pricing failure)
-    if (currentValueUsd === 0 && pnlUsdRaw < 0) {
+    if (currentValueUsd === 0 && pnlUsdTotal < 0) {
       log("pnl_fallback", `datapi balances=0 for ${position_address.slice(0,8)}, trying on-chain fallback`);
       try {
         const onchain = await Promise.race([
@@ -455,7 +469,8 @@ export async function getPositionPnl({ pool_address, position_address }) {
     }
 
     return {
-      pnl_usd:           Math.round(pnlUsdRaw * 100) / 100,
+      pnl_usd:           Math.round(pnlUsdPrice * 100) / 100,     // price-only (fees stripped)
+      pnl_usd_total:     Math.round(pnlUsdTotal * 100) / 100,     // fee-inclusive total (for reference)
       pnl_sol:           Math.round((parseFloat(p.pnlSol ?? 0)) * 10000) / 10000,
       pnl_pct:           Math.round(computedPnlPct * 100) / 100,
       current_value_usd: Math.round(currentValueUsd * 100) / 100,
@@ -540,13 +555,14 @@ export async function getMyPositions({ force = false } = {}) {
       let unclaimedFees = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0;
       let totalValue    = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0;
       const collectedFees = p ? parseFloat(p.allTimeFees?.total?.usd || 0) : 0;
-      let pnlUsd          = parseFloat(p?.pnlUsd ?? 0);
+      const pnlUsdTotal   = parseFloat(p?.pnlUsd ?? 0);  // fee-inclusive from Meteora datapi
+      let pnlUsd          = pnlUsdTotal - unclaimedFees;  // price-only (strip fees)
 
       // Resolve pair name: tracked state > PnL API > address slice (moved up for fallback access)
       const tracked = getTrackedPosition(r.position);
 
       // On-chain fallback: datapi returned balances=0 (pricing failure)
-      if (p && totalValue === 0 && pnlUsd < 0) {
+      if (p && totalValue === 0 && pnlUsdTotal < 0) {
         try {
           const onchain = await Promise.race([
             getOnChainPositionValue(r.pool, r.position),
@@ -555,7 +571,8 @@ export async function getMyPositions({ force = false } = {}) {
           totalValue    = onchain.current_value_usd;
           unclaimedFees = onchain.unclaimed_fee_usd;
           const initUsd = tracked?.initial_value_usd || 0;
-          pnlUsd = initUsd > 0 ? (totalValue - initUsd) : 0;
+          // On-chain totalValue includes fees (totalXAmount + feeX), so subtract for price-only
+          pnlUsd = initUsd > 0 ? (totalValue - unclaimedFees - initUsd) : 0;
           log("pnl_fallback", `On-chain fallback for ${r.position.slice(0,8)}: value=$${totalValue}`);
         } catch (e) {
           log("pnl_fallback", `On-chain fallback failed for ${r.position.slice(0,8)}: ${e.message}`);
@@ -677,8 +694,8 @@ export async function getWalletPositions({ wallet_address }) {
         in_range:           p ? !p.isOutOfRange : null,
         unclaimed_fees_usd: Math.round((p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0) * 100) / 100,
         total_value_usd:    Math.round((p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0) * 100) / 100,
-        pnl_usd:            Math.round(parseFloat(p?.pnlUsd ?? 0) * 100) / 100,
-        pnl_pct:            (() => { const pU = parseFloat(p?.pnlUsd ?? 0); const tV = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0; const uF = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0; const iV = tV - pU; return Math.round((iV > 0 ? (pU + uF) / iV * 100 : 0) * 100) / 100; })(),
+        pnl_usd:            (() => { const pT = parseFloat(p?.pnlUsd ?? 0); const uF = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0; return Math.round((pT - uF) * 100) / 100; })(),
+        pnl_pct:            (() => { const pT = parseFloat(p?.pnlUsd ?? 0); const tV = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0; const uF = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0; const iV = tV - (pT - uF); return Math.round((iV > 0 ? pT / iV * 100 : 0) * 100) / 100; })(),
         age_minutes:        p?.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
       };
     });
@@ -822,6 +839,14 @@ export async function closePosition({ position_address, close_reason }) {
     // agent from seeing zero balance when attempting post-close swap
     await new Promise(r => setTimeout(r, 5000));
 
+    // Fetch current SOL price for accurate fee→SOL conversion in notifications
+    let solPrice = 0;
+    try {
+      const { getWalletBalances } = await import("./wallet.js");
+      const bal = await getWalletBalances();
+      solPrice = bal?.sol_price || 0;
+    } catch (_) {}
+
     // Resolve pool name — prefer state, then PnL API, then Meteora pool API
     const trackedPre = getTrackedPosition(position_address);
     let poolName = trackedPre?.pool_name || freshPnl?.pair_name || null;
@@ -863,20 +888,23 @@ export async function closePosition({ position_address, close_reason }) {
       let feesUsd = tracked.total_fees_claimed_usd || 0;
       if (freshPnl && !freshPnl.error && freshPnl.fallback) {
         // On-chain fallback: compute PnL from tracked initial value
+        // Note: current_value_usd includes fees (totalXAmount + feeX), so subtract for price-only
         finalValueUsd = freshPnl.current_value_usd ?? 0;
-        feesUsd       = freshPnl.unclaimed_fee_usd ?? feesUsd;
+        feesUsd       = (freshPnl.unclaimed_fee_usd ?? 0) + (tracked.total_fees_claimed_usd || 0);
         const initUsd = tracked.initial_value_usd || 0;
-        pnlUsd  = initUsd > 0 ? finalValueUsd - initUsd : 0;
-        pnlPct  = initUsd > 0 ? (pnlUsd + feesUsd) / initUsd * 100 : 0;
+        pnlUsd  = initUsd > 0 ? finalValueUsd - feesUsd - initUsd : 0;  // price-only
+        pnlPct  = initUsd > 0 ? (finalValueUsd - initUsd) / initUsd * 100 : 0;  // fee-inclusive %
       } else if (freshPnl && !freshPnl.error) {
-        pnlUsd        = freshPnl.pnl_usd          ?? 0;
-        pnlPct        = freshPnl.pnl_pct          ?? 0;
-        pnlSolNative  = freshPnl.pnl_sol          ?? null;
+        pnlUsd        = freshPnl.pnl_usd          ?? 0;   // price-only (fees already stripped in getPositionPnl)
+        pnlPct        = freshPnl.pnl_pct          ?? 0;   // fee-inclusive % (correctly computed)
         finalValueUsd = freshPnl.current_value_usd ?? 0;
-        // allTimeFees.total.usd often missing from Meteora datapi — fall back to unclaimed fees snapshot taken before close
-        feesUsd = freshPnl.all_time_fees_usd > 0
-          ? freshPnl.all_time_fees_usd
-          : (freshPnl.unclaimed_fee_usd ?? feesUsd);
+        // Use fresh unclaimed snapshot + locally tracked mid-life claims
+        feesUsd = (freshPnl.unclaimed_fee_usd ?? 0) + (tracked.total_fees_claimed_usd || 0);
+        // pnlSol from datapi is fee-inclusive (same as pnlUsd) — strip fees for price-only storage
+        const pnlSolRaw = freshPnl.pnl_sol ?? null;
+        pnlSolNative = (pnlSolRaw != null && solPrice > 0)
+          ? pnlSolRaw - (freshPnl.unclaimed_fee_usd ?? 0) / solPrice
+          : pnlSolRaw;
       } else {
         const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
         if (cachedPos) {
@@ -893,6 +921,18 @@ export async function closePosition({ position_address, close_reason }) {
         pnlPct = 0;
         pnlUsd = 0;
       }
+
+      // Validation logging — compare computed values for future Meteora UI reconciliation
+      log("pnl_close", JSON.stringify({
+        pos: position_address.slice(0, 8),
+        pnl_usd: Math.round(pnlUsd * 100) / 100,
+        pnl_pct: Math.round(pnlPct * 100) / 100,
+        fees_usd: Math.round(feesUsd * 100) / 100,
+        final_value: Math.round(finalValueUsd * 100) / 100,
+        initial_tracked: tracked.initial_value_usd || 0,
+        sol_price: solPrice,
+        source: freshPnl?.fallback ? "on-chain" : (freshPnl && !freshPnl?.error ? "datapi" : "cache"),
+      }));
 
       _positionsCacheAt = 0; // invalidate cache
       let initialUsd = tracked.initial_value_usd || 0;
@@ -915,9 +955,10 @@ export async function closePosition({ position_address, close_reason }) {
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
         initial_value_usd: initialUsd,
-        pnl_usd: pnlUsd,       // Meteora's authoritative value — avoids formula error when initial_value_usd is missing
-        pnl_pct: pnlPct,       // pass API value so journal matches what agent saw
+        pnl_usd: pnlUsd,       // price-only (fees stripped) — avoids formula error when initial_value_usd is missing
+        pnl_pct: pnlPct,       // fee-inclusive % so journal matches what agent saw
         pnl_sol: pnlSolNative,
+        sol_price: solPrice,
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
         close_reason: close_reason || "agent decision",
@@ -925,7 +966,7 @@ export async function closePosition({ position_address, close_reason }) {
         token_profile: tracked.token_profile || null,
       });
 
-      return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, fees_earned_usd: feesUsd, base_mint: pool.lbPair.tokenXMint.toString() };
+      return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, fees_earned_usd: feesUsd, sol_price: solPrice, base_mint: pool.lbPair.tokenXMint.toString() };
     }
 
     return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };

@@ -148,6 +148,7 @@ export async function recordPerformance(perf) {
       pnl_usd: entry.pnl_usd,
       pnl_sol: perf.pnl_sol ?? null,
       pnl_pct: entry.pnl_pct,
+      sol_price: perf.sol_price ?? 0,
       minutes_held: entry.minutes_held,
       range_efficiency: entry.range_efficiency,
       close_reason: entry.close_reason,

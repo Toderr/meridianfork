@@ -146,9 +146,9 @@ export async function notifyDeploy({ pair, amountSol, strategy, position, tx }) 
   );
 }
 
-export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, feesUsd = 0, reason }) {
+export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, feesUsd = 0, solPrice = 0, reason }) {
   const inclUsd = (pnlUsd ?? 0) + feesUsd;
-  const feesSol = (pnlUsd && pnlSol != null) ? feesUsd * (pnlSol / pnlUsd) : 0;
+  const feesSol = solPrice > 0 ? feesUsd / solPrice : 0;
   const inclSol = (pnlSol ?? 0) + feesSol;
   const su = inclUsd >= 0 ? "+" : "";
   const ss = inclSol >= 0 ? "+" : "";

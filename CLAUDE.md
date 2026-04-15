@@ -93,17 +93,20 @@ Three keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`, `HELIUS_API_KEY_3`). On 429, r
 
 ## SOL PnL — Important
 
-**Never compute `pnl_sol` via USD conversion.** Meteora DLMM API returns native SOL fields: `pnlSol`, `balancesSol`, `amountSol`. Use these directly.
+**Never compute `pnl_sol` via USD conversion.** Meteora DLMM API returns native SOL fields: `pnlSol`, `balancesSol`, `amountSol`. Use these directly. Exception: `feesSol` in notifications uses `fees_earned_usd / sol_price` (fees only, not pnl_sol itself).
 
 **On-chain PnL fallback**: When Meteora datapi fails (or returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
 ## PnL Display — Fee Inclusion
 
+**Meteora datapi `p.pnlUsd` is fee-inclusive** (total PnL including earned fees). `getPositionPnl()` strips fees to derive price-only `pnl_usd` for storage: `pnlUsdPrice = pnlUsdTotal - unclaimedUsd`.
+
 Journal stores `pnl_usd` (price-only) and `fees_earned_usd` separately. **Fee inclusion is done at the display/aggregation layer only:**
 - Close notifications (both bots): fee-inclusive USD, SOL, and % in all three values
 - Management reports: price PnL (USD, SOL) on one line, unclaimed fees + total % separately
 - Dashboard & reports: fee-inclusive totals for net PnL, win/loss, best/worst trade
-- `pnl_pct` from `getPositionPnl()` is already fee-inclusive: `(pnlUsd + unclaimedFees) / initial * 100`
+- `pnl_pct` from `getPositionPnl()` is already fee-inclusive: `pnlUsdTotal / initial * 100` (no double-add of fees)
+- `feesSol` uses `fees_earned_usd / sol_price` (SOL price threaded from `closePosition` through the notification chain)
 
 ## PnL Checker (every 30s, no LLM)
 

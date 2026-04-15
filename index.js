@@ -338,6 +338,8 @@ async function runManagementCycle(tier = null) {
         for (const p of positionData) {
           if (skippedByInstruction.has(p.position)) continue;
           if (p.variant?.startsWith("exp_")) continue;  // experiments use own rules
+          // Respect manual management — skip lesson enforcement
+          if (p.instruction && /\b(manual|do not (close|manage)|hands.off)\b/i.test(p.instruction)) continue;
           const { action, reason } = checkPositionCompliance(p, mgmtRules);
           if (action === "force_close") {
             log("lesson_enforce", `Force-closing ${p.pair} (${p.position}) — ${reason}`);
