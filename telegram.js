@@ -147,17 +147,14 @@ export async function notifyDeploy({ pair, amountSol, strategy, position, tx }) 
 }
 
 export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, feesUsd = 0, solPrice = 0, reason }) {
-  const inclUsd = (pnlUsd ?? 0) + feesUsd;
-  const feesSol = solPrice > 0 ? feesUsd / solPrice : 0;
-  const inclSol = (pnlSol ?? 0) + feesSol;
-  const su = inclUsd >= 0 ? "+" : "";
-  const ss = inclSol >= 0 ? "+" : "";
+  const su = (pnlUsd ?? 0) >= 0 ? "+" : "";
+  const ss = (pnlSol ?? 0) >= 0 ? "+" : "";
   const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
   await sendMessage(
     `🔒 CLOSE\n\n` +
     `📍 ${pair}\n` +
     (strategy ? `📊 Strategy: ${strategy}\n` : ``) +
-    `💰 PnL: ${su}$${inclUsd.toFixed(2)} | ${ss}${inclSol.toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
+    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${ss}${(pnlSol ?? 0).toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
     (feesUsd > 0 ? `\n🏦 Fees Earned: $${feesUsd.toFixed(2)}` : "") +
     (reason ? `\n💡 ${reason}` : "")
   );

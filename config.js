@@ -63,6 +63,7 @@ export const config = {
   strategy: {
     strategy:  u.strategy  ?? "bid_ask",
     binsBelow: u.binsBelow ?? 69,
+    forceSolSingleSided: u.forceSolSingleSided ?? false,
     strategyRules: u.strategyRules ?? {
       highVol: "bid_ask",   // volatility >= 5
       medVol:  "bid_ask",   // volatility 2-5
@@ -107,6 +108,11 @@ export const config = {
     port:     u.dashboardPort     ?? 3000,
     enabled:  u.dashboardEnabled  !== false, // default: true
     password: u.dashboardPassword ?? null,   // null = no auth
+  },
+
+  // ─── Learning System ─────────────────────
+  learning: {
+    freezeLessons: u.freezeLessons ?? false, // true = block all auto-generated lessons
   },
 
   // ─── Experiment Settings ────────────────
@@ -232,7 +238,11 @@ export function reloadConfig() {
     const st = config.strategy;
     if (f.strategy      != null) st.strategy      = f.strategy;
     if (f.binsBelow     != null) st.binsBelow     = f.binsBelow;
+    if (f.forceSolSingleSided != null) st.forceSolSingleSided = f.forceSolSingleSided;
     if (f.strategyRules != null) st.strategyRules = f.strategyRules;
+
+    const le = config.learning;
+    if (f.freezeLessons != null) le.freezeLessons = f.freezeLessons;
 
     const l = config.llm;
     if (f.managementModel != null) l.managementModel = f.managementModel;

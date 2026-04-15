@@ -97,15 +97,15 @@ Three keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`, `HELIUS_API_KEY_3`). On 429, r
 
 **On-chain PnL fallback**: When Meteora datapi fails (or returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
-## PnL Display — Fee Inclusion
+## PnL Display — Price-Only + Fees Separate
 
-**Meteora datapi `p.pnlUsd` is fee-inclusive** (total PnL including earned fees). `getPositionPnl()` strips fees to derive price-only `pnl_usd` for storage: `pnlUsdPrice = pnlUsdTotal - unclaimedUsd`.
+**Meteora datapi `p.pnlUsd` is fee-inclusive** (total PnL including earned fees). `getPositionPnl()` strips fees to derive price-only values: `pnlUsdPrice = pnlUsdTotal - unclaimedUsd`, `pnl_pct = pnlUsdPrice / initial * 100`.
 
-Journal stores `pnl_usd` (price-only) and `fees_earned_usd` separately. **Fee inclusion is done at the display/aggregation layer only:**
-- Close notifications (both bots): fee-inclusive USD, SOL, and % in all three values
-- Management reports: price PnL (USD, SOL) on one line, unclaimed fees + total % separately
-- Dashboard & reports: fee-inclusive totals for net PnL, win/loss, best/worst trade
-- `pnl_pct` from `getPositionPnl()` is already fee-inclusive: `pnlUsdTotal / initial * 100` (no double-add of fees)
+**All stored/displayed PnL values (USD, SOL, %) are price-only**, matching Meteora UI. Fees shown separately:
+- Journal stores `pnl_usd`, `pnl_sol`, `pnl_pct` (all price-only) and `fees_earned_usd` separately
+- Close notifications (both bots): price-only PnL line + separate "Fees Earned" line
+- Dashboard & reports: add `fees_earned_usd` to `pnl_usd` for fee-inclusive aggregates (net PnL, win/loss)
+- PnL checker: adds `unclaimed_fee_usd / initial * 100` to price-only `pnl_pct` for TP/SL threshold comparisons (total return)
 - `feesSol` uses `fees_earned_usd / sol_price` (SOL price threaded from `closePosition` through the notification chain)
 
 ## PnL Checker (every 30s, no LLM)
@@ -132,9 +132,10 @@ Handled by `management-rules.js` rule engine (`evaluateAll()`). LLM only called 
 2. instruction "close at X%" parseable AND condition met → CLOSE
 3. instruction set AND condition NOT met → HOLD
 4. unparseable instruction → **LLM fallback** (only these positions, max 3 steps)
-5. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
-6. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
-7. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
+5. hold-time cut: age ≥15m AND pnl < -0.3% → CLOSE; age ≥30m AND pnl < 0% → CLOSE
+6. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
+7. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
+8. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
 
 NOTE: Stop loss / take profit handled by PnL checker, not management cycle.
 NOTE: Health check is also deterministic (no LLM) — logs portfolio summary hourly.
@@ -152,6 +153,9 @@ All on-chain calls go through `sendWithRetry()` — 5 attempts with exponential 
 - **Sizing**: `(wallet - gasReserve) × positionSizePct`, clamped between `deployAmountSol` and `maxDeployAmount`
 - **Max positions**: `config.risk.maxPositions` (default 10)
 - **Gas reserve**: `gasReserve` SOL (default 0.2) always kept
+- **Single-sided SOL**: `forceSolSingleSided: true` forces `bins_above=0` on all deploys (downside-only). Prevents whipsaw IL from upside bin exposure on volatile meme tokens.
+- **Hold-time cut**: Deterministic early-exit in management-rules.js: ≥15m at <-0.3% → close, ≥30m at <0% → close. Prevents small losses from becoming big ones.
+- **Evolution guardrails**: `emergencyPriceDropPct` clamped [-15, -3], `takeProfitFeePct` [2, 5], `fastTpPct` [5, 15], `positionSizePct` [0.15, 0.3]. Prevents threshold evolution from drifting to dangerous values.
 - **Anti-scam**: Only hardcoded gate: `global_fees_sol < 30` (cannot be lowered). All other screening thresholds (top_10_pct, bundlers, organic, mcap, bin_step, etc.) are configurable and learnable — the agent can adjust them via `update_config` or lessons.
 - **OKX hard filters**: honeypot → auto-reject, dev_rug_count > 0 → auto-reject (pre-LLM)
 - **Known-mints allowlist**: Only swap tokens from positions the bot deployed into. `getKnownMints()` builds Set from ALL positions (open + closed). Unknown tokens never touched — prevents wallet drain from airdropped tokens. `/withdraw` bypasses filter.
@@ -178,6 +182,7 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
 
 ## Learning System
 
+- **Freeze mode**: `freezeLessons: true` in config blocks ALL auto-generated lessons: derivation, evolution, comparative, token-characteristic, Claude updater, Claude summarizer, autoresearch. Manual lessons via Dashboard/CLI still allowed (`bypassFreeze`). Toggle via `/freeze` and `/unfreeze` Telegram commands. Hot-reloadable.
 - **Unit-mix guard**: `recordPerformance()` skips records where `final_value_usd` looks like a SOL amount (e.g. 2.0 when initial was $20+). Prevents bad lessons from unit-mixed data.
 - **Derivation**: Auto after close — good (≥5%), neutral (0-5% → no lesson), poor (-5%–0% → CAUTION guidance), bad (<-5%)
 - **Experiment separation**: Regular in `lessons.json`, experiment in `experiment-lessons.json`. Experiment lessons excluded from prompt injection, threshold evolution, rule extraction, summarization.
@@ -190,7 +195,7 @@ OKX honeypot and dev-rugger tokens are hard-filtered before reaching the LLM. Al
   3. **Executor** — `checkDeployCompliance()` blocks deploy on-chain.
 - **Rule types** (`lesson-rules.js`): `block_strategy`, `block_high_volatility`, `block_low_fees`, `block_concentration`, `oor_grace_period`, `protect_null_volatility`, `max_deploy_sol`, `max_loss_pct`, `min_profit_pct`, `reserve_slot`. Unmatched → prompt-only.
 - **`max_loss_pct` extraction**: Only matches explicit stop-loss intent patterns (`NEVER hold position below X%`, `stop loss at X%`, `cut losses at X%`). Does NOT match incidental `pnl < X%` in descriptive lessons. Keywords: `NEVER`, `DO NOT`, `STOP LOSS`, `CUT LOSS` (not `AVOID` — too broad).
-- **Daily summarization**: Two phases — batch cleanup (aggressive: delete duplicates/noise, merge into <120 char rules, max 70% reduction) → policy consolidation (consolidate AVOID/PREFER groups into short parseable rules). Never deletes pinned or experiment lessons.
+- **Daily summarization**: Two phases — batch cleanup (aggressive: delete duplicates/noise, merge into <120 char rules, max 70% reduction) → policy consolidation (consolidate AVOID/PREFER groups into short parseable rules). Never deletes pinned or experiment lessons. Protected keywords: "AVOID holding" (hold-time rules), "bins_above" (range asymmetry).
 - **Comparative lessons**: Every 5 closes, aggregates performance by strategy + volatility bucket. Generates PREFER lessons when one strategy outperforms another by >2% avg PnL (min 3 samples per group). Deduped by strategy pair.
 - **Token characteristic lessons**: Every 5 closes, `analyzeTokenCharacteristics()` groups performance by token traits (mcap bucket, holder count, volume, smart wallets, OKX smart money, 1h momentum, ATH proximity). Generates PREFER lessons like "For mcap<$50k tokens, use strategy=bid_ask". Summary also injected into Claude lesson updater prompt for richer analysis.
 - **Claude lesson updater**: Every 5 closes. Analyzes recent closes + token characteristic patterns, adds lessons, applies config tweaks (all screening/strategy/management/sizing keys). Includes token profile data per close and aggregated characteristic→strategy analysis.
@@ -273,6 +278,7 @@ Opt-in collective intelligence (`hive-mind.js`). Pool consensus injected into sc
 | `/update_lesson` / `/update_lesson <N> <rule>` | List or update lessons |
 | `/del_lesson <N>` | Delete lesson (pinned blocked) |
 | `/goals` | View progress, set (`/goals win_rate=80 max_loss=-10`), or clear (`/goals clear`) |
+| `/freeze` / `/unfreeze` | Stop/resume all auto-lesson generation |
 | `/withdraw` | Close all, swap to SOL, report balance |
 
 ## VPS Deployment

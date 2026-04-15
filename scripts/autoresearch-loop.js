@@ -254,6 +254,16 @@ async function notifyBots(message) {
 export async function runDailyAutoresearch() {
   const { log } = await import("../logger.js");
 
+  // Check freeze flag
+  try {
+    const ucPath = path.join(ROOT, "user-config.json");
+    const uc = JSON.parse(fs.readFileSync(ucPath, "utf8"));
+    if (uc.freezeLessons) {
+      log("autoresearch", "Skipping — lessons are frozen");
+      return;
+    }
+  } catch { /* not frozen if unreadable */ }
+
   try {
     // Load performance data
     const data = loadJson(LESSONS_FILE) || { performance: [] };

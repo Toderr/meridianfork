@@ -536,7 +536,7 @@ switch (subcommand) {
       const text = argv.filter(a => !a.startsWith("-")).slice(2).join(" ");
       if (!text) die("Usage: meridian lessons add <text>");
       const { addLesson } = await import("./lessons.js");
-      addLesson(text, [], { pinned: false, role: null });
+      addLesson(text, [], { pinned: false, role: null, bypassFreeze: true });
       out({ saved: true, rule: text, outcome: "manual", role: null });
     } else {
       const { listLessons } = await import("./lessons.js");

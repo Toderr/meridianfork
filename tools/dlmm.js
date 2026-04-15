@@ -205,7 +205,8 @@ export async function deployPosition({
   const activeStrategy = strategy || config.strategy.strategy;
 
   const activeBinsBelow = bins_below ?? config.strategy.binsBelow;
-  const activeBinsAbove = bins_above ?? 0;
+  // Force single-sided SOL (downside-only) — bins_above=0 unless explicitly allowed via config
+  const activeBinsAbove = config.strategy.forceSolSingleSided ? 0 : (bins_above ?? 0);
 
   if (process.env.DRY_RUN === "true") {
     const totalBins = activeBinsBelow + activeBinsAbove;
@@ -437,7 +438,7 @@ export async function getPositionPnl({ pool_address, position_address }) {
     const pnlUsdTotal     = parseFloat(p.pnlUsd ?? 0);   // fee-inclusive total PnL from Meteora datapi
     const pnlUsdPrice     = pnlUsdTotal - unclaimedUsd;   // price-only (strip fees for separate tracking)
     const initialValueUsd = currentValueUsd - pnlUsdPrice; // initial = current_value - price_change
-    const computedPnlPct  = initialValueUsd > 0 ? pnlUsdTotal / initialValueUsd * 100 : 0;
+    const computedPnlPct  = initialValueUsd > 0 ? pnlUsdPrice / initialValueUsd * 100 : 0;
 
     // On-chain fallback: datapi returned balances=0 (pricing failure)
     if (currentValueUsd === 0 && pnlUsdTotal < 0) {
@@ -580,7 +581,7 @@ export async function getMyPositions({ force = false } = {}) {
       }
 
       let initialValueUsd = totalValue - pnlUsd;
-      const pnlPct          = initialValueUsd > 0 ? (pnlUsd + unclaimedFees) / initialValueUsd * 100 : 0;
+      const pnlPct          = initialValueUsd > 0 ? pnlUsd / initialValueUsd * 100 : 0;
       const pnlPairName = p?.pairName || (p?.tokenName0 && p?.tokenName1 ? `${p.tokenName0}-${p.tokenName1}` : null);
       const resolvedPair = tracked?.pool_name || pnlPairName || r.pair;
 
@@ -695,7 +696,7 @@ export async function getWalletPositions({ wallet_address }) {
         unclaimed_fees_usd: Math.round((p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0) * 100) / 100,
         total_value_usd:    Math.round((p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0) * 100) / 100,
         pnl_usd:            (() => { const pT = parseFloat(p?.pnlUsd ?? 0); const uF = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0; return Math.round((pT - uF) * 100) / 100; })(),
-        pnl_pct:            (() => { const pT = parseFloat(p?.pnlUsd ?? 0); const tV = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0; const uF = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0; const iV = tV - (pT - uF); return Math.round((iV > 0 ? pT / iV * 100 : 0) * 100) / 100; })(),
+        pnl_pct:            (() => { const pT = parseFloat(p?.pnlUsd ?? 0); const tV = p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0; const uF = p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0; const priceOnly = pT - uF; const iV = tV - priceOnly; return Math.round((iV > 0 ? priceOnly / iV * 100 : 0) * 100) / 100; })(),
         age_minutes:        p?.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
       };
     });
@@ -893,10 +894,10 @@ export async function closePosition({ position_address, close_reason }) {
         feesUsd       = (freshPnl.unclaimed_fee_usd ?? 0) + (tracked.total_fees_claimed_usd || 0);
         const initUsd = tracked.initial_value_usd || 0;
         pnlUsd  = initUsd > 0 ? finalValueUsd - feesUsd - initUsd : 0;  // price-only
-        pnlPct  = initUsd > 0 ? (finalValueUsd - initUsd) / initUsd * 100 : 0;  // fee-inclusive %
+        pnlPct  = initUsd > 0 ? pnlUsd / initUsd * 100 : 0;  // price-only % (pnlUsd already excludes fees)
       } else if (freshPnl && !freshPnl.error) {
         pnlUsd        = freshPnl.pnl_usd          ?? 0;   // price-only (fees already stripped in getPositionPnl)
-        pnlPct        = freshPnl.pnl_pct          ?? 0;   // fee-inclusive % (correctly computed)
+        pnlPct        = freshPnl.pnl_pct          ?? 0;   // price-only %
         finalValueUsd = freshPnl.current_value_usd ?? 0;
         // Use fresh unclaimed snapshot + locally tracked mid-life claims
         feesUsd = (freshPnl.unclaimed_fee_usd ?? 0) + (tracked.total_fees_claimed_usd || 0);
@@ -956,7 +957,7 @@ export async function closePosition({ position_address, close_reason }) {
         final_value_usd: finalValueUsd,
         initial_value_usd: initialUsd,
         pnl_usd: pnlUsd,       // price-only (fees stripped) — avoids formula error when initial_value_usd is missing
-        pnl_pct: pnlPct,       // fee-inclusive % so journal matches what agent saw
+        pnl_pct: pnlPct,       // price-only % (fees tracked separately via fees_earned_usd)
         pnl_sol: pnlSolNative,
         sol_price: solPrice,
         minutes_in_range: minutesHeld - minutesOOR,

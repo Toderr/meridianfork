@@ -278,7 +278,7 @@ export async function handleCreateLesson(req, res) {
     const body = await readBody(req);
     const { rule, tags, pinned, role, category } = JSON.parse(body);
     if (!rule?.trim()) { err(res, "Rule text is required", 400); return; }
-    addLesson(rule.trim(), tags || [], { pinned: !!pinned, role: role || null, category: category || null });
+    addLesson(rule.trim(), tags || [], { pinned: !!pinned, role: role || null, category: category || null, bypassFreeze: true });
     json(res, { ok: true });
   } catch (e) {
     err(res, e.message);

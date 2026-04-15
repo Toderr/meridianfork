@@ -241,6 +241,15 @@ async function notifyBots(newLessons, appliedConfig, rationale, autoresearchData
 export async function claudeUpdateLessons() {
   const { log } = await import("../logger.js");
 
+  // Check freeze flag
+  try {
+    const uc = loadJson(USER_CONFIG_FILE) || {};
+    if (uc.freezeLessons) {
+      log("claude_review", "Skipping — lessons are frozen");
+      return;
+    }
+  } catch { /* not frozen if unreadable */ }
+
   try {
     // Load data
     const data = loadJson(LESSONS_FILE) || { lessons: [], performance: [] };

@@ -163,7 +163,9 @@ export async function recordPerformance(perf) {
   data.performance.push(entry);
 
   // Derive and store a lesson — route to correct file by source
-  const lesson = derivLesson(entry);
+  const { config: cfg } = await import("./config.js");
+  const frozen = cfg.learning?.freezeLessons;
+  const lesson = frozen ? null : derivLesson(entry);
   if (lesson) {
     const isExp = lesson.source === "experiment";
     const targetData = isExp ? loadExperiment() : data;
@@ -215,62 +217,65 @@ export async function recordPerformance(perf) {
 
   // Evolve thresholds every 5 closed positions
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
-    const { config, reloadScreeningThresholds } = await import("./config.js");
-    const result = evolveThresholds(data.performance, config);
-    if (result?.changes && Object.keys(result.changes).length > 0) {
-      reloadScreeningThresholds();
-      log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
-    }
-
-    // Comparative lessons — aggregate strategy/volatility patterns
-    try {
-      const compLessons = derivComparativeLessons(data.performance);
-      for (const cl of compLessons) {
-        // Dedup: update existing comparative lesson with same strategy pair
-        const existingIdx = data.lessons.findIndex(
-          l => l.outcome === "comparative" && l.tags?.includes("comparative") &&
-               cl.tags.every(t => t === "comparative" || t === "strategy" || t === "volatility" || l.tags.includes(t))
-        );
-        if (existingIdx !== -1) {
-          data.lessons[existingIdx].rule = cl.rule;
-          data.lessons[existingIdx].created_at = cl.created_at;
-          log("lessons", `Updated comparative lesson: ${cl.rule}`);
-        } else {
-          data.lessons.push(cl);
-          log("lessons", `New comparative lesson: ${cl.rule}`);
-        }
+    if (frozen) {
+      log("lessons", "Lessons frozen — skipping evolve, comparative, token-characteristic, and Claude updater");
+    } else {
+      const { config, reloadScreeningThresholds } = await import("./config.js");
+      const result = evolveThresholds(data.performance, config);
+      if (result?.changes && Object.keys(result.changes).length > 0) {
+        reloadScreeningThresholds();
+        log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
       }
-      if (compLessons.length > 0) saveRegular(data);
-    } catch (compErr) {
-      log("lessons_warn", `Comparative lesson derivation failed (non-fatal): ${compErr.message}`);
-    }
 
-    // Token characteristic lessons — "mcap X tokens work best with strategy Y"
-    try {
-      const { lessons: tokenLessons } = analyzeTokenCharacteristics(data.performance);
-      for (const tl of tokenLessons) {
-        const existingIdx = data.lessons.findIndex(
-          l => l.outcome === "comparative" && l.tags?.includes("token_characteristic") &&
-               tl.tags.filter(t => !["comparative", "token_characteristic"].includes(t)).every(t => l.tags.includes(t))
-        );
-        if (existingIdx !== -1) {
-          data.lessons[existingIdx].rule = tl.rule;
-          data.lessons[existingIdx].created_at = tl.created_at;
-          log("lessons", `Updated token-characteristic lesson: ${tl.rule}`);
-        } else {
-          data.lessons.push(tl);
-          log("lessons", `New token-characteristic lesson: ${tl.rule}`);
+      // Comparative lessons — aggregate strategy/volatility patterns
+      try {
+        const compLessons = derivComparativeLessons(data.performance);
+        for (const cl of compLessons) {
+          const existingIdx = data.lessons.findIndex(
+            l => l.outcome === "comparative" && l.tags?.includes("comparative") &&
+                 cl.tags.every(t => t === "comparative" || t === "strategy" || t === "volatility" || l.tags.includes(t))
+          );
+          if (existingIdx !== -1) {
+            data.lessons[existingIdx].rule = cl.rule;
+            data.lessons[existingIdx].created_at = cl.created_at;
+            log("lessons", `Updated comparative lesson: ${cl.rule}`);
+          } else {
+            data.lessons.push(cl);
+            log("lessons", `New comparative lesson: ${cl.rule}`);
+          }
         }
+        if (compLessons.length > 0) saveRegular(data);
+      } catch (compErr) {
+        log("lessons_warn", `Comparative lesson derivation failed (non-fatal): ${compErr.message}`);
       }
-      if (tokenLessons.length > 0) saveRegular(data);
-    } catch (tokenErr) {
-      log("lessons_warn", `Token characteristic lesson derivation failed (non-fatal): ${tokenErr.message}`);
-    }
 
-    // Claude lesson updater — fire-and-forget, runs after evolveThresholds
-    import("./scripts/claude-lesson-updater.js")
-      .then(m => m.claudeUpdateLessons())
-      .catch(e => log("claude_review_error", `claudeUpdateLessons failed: ${e.message}`));
+      // Token characteristic lessons — "mcap X tokens work best with strategy Y"
+      try {
+        const { lessons: tokenLessons } = analyzeTokenCharacteristics(data.performance);
+        for (const tl of tokenLessons) {
+          const existingIdx = data.lessons.findIndex(
+            l => l.outcome === "comparative" && l.tags?.includes("token_characteristic") &&
+                 tl.tags.filter(t => !["comparative", "token_characteristic"].includes(t)).every(t => l.tags.includes(t))
+          );
+          if (existingIdx !== -1) {
+            data.lessons[existingIdx].rule = tl.rule;
+            data.lessons[existingIdx].created_at = tl.created_at;
+            log("lessons", `Updated token-characteristic lesson: ${tl.rule}`);
+          } else {
+            data.lessons.push(tl);
+            log("lessons", `New token-characteristic lesson: ${tl.rule}`);
+          }
+        }
+        if (tokenLessons.length > 0) saveRegular(data);
+      } catch (tokenErr) {
+        log("lessons_warn", `Token characteristic lesson derivation failed (non-fatal): ${tokenErr.message}`);
+      }
+
+      // Claude lesson updater — fire-and-forget, runs after evolveThresholds
+      import("./scripts/claude-lesson-updater.js")
+        .then(m => m.claudeUpdateLessons())
+        .catch(e => log("claude_review_error", `claudeUpdateLessons failed: ${e.message}`));
+    }
   }
 }
 
@@ -894,7 +899,7 @@ export function evolveThresholds(perfData, config) {
       {
         const current = config.management.takeProfitFeePct;
         const target  = avgWin * 0.6;
-        const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), 2, 20);
+        const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), 2, 5);
         if (newVal !== current) {
           changes.takeProfitFeePct = newVal;
           rationale.takeProfitFeePct = `Avg winner pnl ${avgWin.toFixed(1)}% — nudged TP ${current} → ${newVal}`;
@@ -904,7 +909,7 @@ export function evolveThresholds(perfData, config) {
       {
         const current = config.management.fastTpPct;
         const target  = p90Win * 0.75;
-        const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), 8, 30);
+        const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), 5, 15);
         if (newVal !== current) {
           changes.fastTpPct = newVal;
           rationale.fastTpPct = `p90 winner pnl ${p90Win.toFixed(1)}% — nudged fastTp ${current} → ${newVal}`;
@@ -926,7 +931,7 @@ export function evolveThresholds(perfData, config) {
       const avgLoss = avg(loserPnls); // negative number
       const current = config.management.emergencyPriceDropPct; // negative number
       const target  = avgLoss * 1.3;
-      const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), -80, -10);
+      const newVal  = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(1)), -15, -3);
       if (newVal !== current) {
         changes.emergencyPriceDropPct = newVal;
         rationale.emergencyPriceDropPct = `Avg loser pnl ${avgLoss.toFixed(1)}% — nudged SL ${current} → ${newVal}`;
@@ -944,7 +949,7 @@ export function evolveThresholds(perfData, config) {
       if (recentWr > 0.7)      target = current * 1.1;
       else if (recentWr < 0.4) target = current * 0.9;
       if (target !== current) {
-        const newVal = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(3)), 0.15, 0.5);
+        const newVal = clamp(parseFloat(nudge(current, target, MAX_CHANGE_PER_STEP).toFixed(3)), 0.15, 0.3);
         if (newVal !== current) {
           changes.positionSizePct = newVal;
           rationale.positionSizePct = `Recent win rate ${Math.round(recentWr * 100)}% (last ${recent.length}) — nudged sizing ${current} → ${newVal}`;
@@ -968,7 +973,7 @@ export function evolveThresholds(perfData, config) {
           const goalTarget = pg.max_loss_pct.target; // e.g. -10
           // If current SL is looser than goal, push it toward goal
           if (current < goalTarget) {
-            const newVal = clamp(parseFloat(nudge(current, goalTarget * 1.1, MAX_CHANGE_PER_STEP).toFixed(1)), -80, -5);
+            const newVal = clamp(parseFloat(nudge(current, goalTarget * 1.1, MAX_CHANGE_PER_STEP).toFixed(1)), -15, -3);
             if (newVal !== current) {
               changes.emergencyPriceDropPct = newVal;
               rationale.emergencyPriceDropPct = `Goal: max_loss ≥ ${goalTarget}% (actual: ${pg.max_loss_pct.actual}%) — tightened SL ${current} → ${newVal}`;
@@ -980,7 +985,7 @@ export function evolveThresholds(perfData, config) {
         if (pg.win_rate_pct && !pg.win_rate_pct.met && pg.win_rate_pct.gap < -5) {
           // Shrink position size to reduce risk while win rate is low
           const currentSize = changes.positionSizePct ?? config.management.positionSizePct;
-          const newSize = clamp(parseFloat((currentSize * 0.92).toFixed(3)), 0.15, 0.5);
+          const newSize = clamp(parseFloat((currentSize * 0.92).toFixed(3)), 0.15, 0.3);
           if (newSize < currentSize) {
             changes.positionSizePct = newSize;
             rationale.positionSizePct = `Goal: win_rate ≥ ${pg.win_rate_pct.target}% (actual: ${pg.win_rate_pct.actual}%) — reduced sizing ${currentSize} → ${newSize}`;
@@ -990,7 +995,7 @@ export function evolveThresholds(perfData, config) {
         // profit_factor unmet → tighten TP (take profits earlier to lock in wins)
         if (pg.profit_factor && !pg.profit_factor.met) {
           const currentTp = changes.takeProfitFeePct ?? config.management.takeProfitFeePct;
-          const newTp = clamp(parseFloat((currentTp * 0.92).toFixed(1)), 2, 20);
+          const newTp = clamp(parseFloat((currentTp * 0.92).toFixed(1)), 2, 5);
           if (newTp < currentTp) {
             changes.takeProfitFeePct = newTp;
             rationale.takeProfitFeePct = `Goal: profit_factor ≥ ${pg.profit_factor.target} (actual: ${pg.profit_factor.actual}) — lowered TP ${currentTp} → ${newTp}`;
@@ -1235,8 +1240,19 @@ export function getLessonRuleType(rule) {
  * @param {boolean}  opts.pinned - Always inject regardless of cap
  * @param {string}   opts.role   - "SCREENER" | "MANAGER" | "GENERAL" | null (all roles)
  */
-export function addLesson(rule, tags = [], { pinned = false, role = null, category = null, source = "regular" } = {}) {
+export function addLesson(rule, tags = [], { pinned = false, role = null, category = null, source = "regular", bypassFreeze = false } = {}) {
   const src = source || "regular";
+
+  // Block auto-generated lessons when frozen (manual/dashboard/CLI bypass)
+  if (!bypassFreeze) {
+    try {
+      const uc = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      if (uc.freezeLessons) {
+        log("lessons", `Lesson blocked (frozen): ${rule.slice(0, 80)}`);
+        return;
+      }
+    } catch { /* not frozen if config unreadable */ }
+  }
 
   // For regular lessons, check if a same-type lesson already exists and update it
   if (src !== "experiment") {

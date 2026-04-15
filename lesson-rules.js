@@ -147,6 +147,16 @@ export function extractRules(agentType = "GENERAL") {
       matched = true;
     }
 
+    // AVOID bid_ask with bins_above > 0 — enforce downside-only
+    if (upper.includes("BID_ASK") && upper.includes("BINS_ABOVE") && (upper.includes("AVOID") || upper.includes("NEVER"))) {
+      screening.push({
+        type: "block_bid_ask_upside",
+        source: rule,
+        lesson_id: lesson.id,
+      });
+      matched = true;
+    }
+
     // NEVER deploy more than X SOL / cap sizing at X SOL
     // Supports optional condition: "when volatility > Y"
     const maxSolMatch = rule.match(/(?:more\s+than|cap(?:ped)?\s+(?:sizing|deploy)?\s*at|max(?:imum)?\s+(?:deploy\s+)?|deploy\s+max\s+)\s*(\d+(?:\.\d+)?)\s*sol/i);
@@ -205,6 +215,21 @@ export function extractRules(agentType = "GENERAL") {
       }
     }
 
+    // AVOID holding > Xm when pnl < Y% — time-based stop loss
+    const holdTimeMatch = rule.match(/(?:AVOID|NEVER)\s+hold(?:ing)?\s*>\s*(\d+)\s*m(?:in)?\s+when\s+pnl\s*<\s*([+-]?\d+(?:\.\d+)?)\s*%/i);
+    if (holdTimeMatch) {
+      const maxMinutes = parseInt(holdTimeMatch[1]);
+      const pnlThreshold = parseFloat(holdTimeMatch[2]);
+      management.push({
+        type: "max_hold_time",
+        max_minutes: maxMinutes,
+        pnl_threshold_pct: pnlThreshold,
+        source: rule,
+        lesson_id: lesson.id,
+      });
+      matched = true;
+    }
+
     // TAKE PROFIT at X% / TP at X% / close at X% profit
     const takeProfitMatch = rule.match(/(?:take[\s-]*profit|tp)\s+(?:at\s+|when\s+pnl[_\s]*[>≥]=?\s*)?[+]?(\d+(?:\.\d+)?)\s*%/i)
       || rule.match(/(?:close|exit)\s+(?:at\s+)?[+]?(\d+(?:\.\d+)?)\s*%\s*profit/i);
@@ -260,7 +285,7 @@ export function extractRules(agentType = "GENERAL") {
   const dedup = (arr) => {
     const seen = new Set();
     return arr.filter((r) => {
-      const key = JSON.stringify({ type: r.type, strategy: r.strategy, threshold: r.threshold, max_age_minutes: r.max_age_minutes, threshold_pct: r.threshold_pct, max_sol: r.max_sol, token: r.token });
+      const key = JSON.stringify({ type: r.type, strategy: r.strategy, threshold: r.threshold, max_age_minutes: r.max_age_minutes, threshold_pct: r.threshold_pct, max_sol: r.max_sol, token: r.token, max_minutes: r.max_minutes, pnl_threshold_pct: r.pnl_threshold_pct });
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -350,6 +375,15 @@ export function checkDeployCompliance(args, poolData, rules) {
         break;
       }
       // reserve_slot is enforced in executor.js (needs live positions list)
+
+      case "block_bid_ask_upside": {
+        const strat = (args.strategy || "").toLowerCase();
+        const binsAbove = args.bins_above ?? 0;
+        if (strat === "bid_ask" && binsAbove > 0) {
+          violations.push(`bid_ask with bins_above=${binsAbove} blocked by lesson rule (downside-only enforced): ${rule.source}`);
+        }
+        break;
+      }
     }
   }
 
@@ -364,7 +398,11 @@ export function checkDeployCompliance(args, poolData, rules) {
  * @returns {{ action: "force_close"|"force_hold"|null, reason: string|null }}
  */
 export function checkPositionCompliance(position, rules) {
-  const pnlPct = position.pnl?.pnl_pct ?? null;
+  const pnlPctPrice = position.pnl?.pnl_pct ?? null;  // price-only %
+  const initUsd = position.initial_value_usd || position.initial_value_usd_api || 0;
+  const unclaimedFees = parseFloat(position.pnl?.unclaimed_fee_usd) || 0;
+  const feePct = (initUsd > 0 && unclaimedFees > 0) ? unclaimedFees / initUsd * 100 : 0;
+  const pnlPct = pnlPctPrice !== null ? pnlPctPrice + feePct : null;  // fee-inclusive for threshold comparisons
   const ageMinutes = position.age_minutes ?? 0;
   const minutesOOR = position.minutes_out_of_range ?? 0;
   const volatility = position.volatility ?? null;
@@ -396,6 +434,15 @@ export function checkPositionCompliance(position, rules) {
           return {
             action: "force_close",
             reason: `Lesson stop-loss: pnl ${pnlPct.toFixed(2)}% < ${rule.threshold_pct}%: ${rule.source}`,
+          };
+        }
+        break;
+
+      case "max_hold_time":
+        if (ageMinutes >= rule.max_minutes && pnlPct !== null && pnlPct < rule.pnl_threshold_pct) {
+          return {
+            action: "force_close",
+            reason: `Lesson rule: ${rule.source}`,
           };
         }
         break;

@@ -13,12 +13,15 @@ import { config } from "./config.js";
  */
 export function evaluatePosition(p) {
   const pnl     = p.pnl;
-  const pnlPct  = pnl?.pnl_pct ?? null;
+  const pnlPctPrice = pnl?.pnl_pct ?? null;  // price-only %
+  const initUsd = p.initial_value_usd || p.initial_value_usd_api || 0;
+  const fees    = parseFloat(pnl?.unclaimed_fee_usd) || 0;
+  const feePct  = (initUsd > 0 && fees > 0) ? fees / initUsd * 100 : 0;
+  const pnlPct  = pnlPctPrice !== null ? pnlPctPrice + feePct : null;  // fee-inclusive for threshold comparisons
   const age     = p.age_minutes ?? 0;
   const feeTvl  = p.feeTvl24h;
   const bins    = p.binsAbove;
   const vol     = p.volatility ?? null;
-  const fees    = parseFloat(pnl?.unclaimed_fee_usd) || 0;
   const instr   = p.instruction;
 
   // ── Rule 0: Lesson force-hold — overrides everything ───────────────
@@ -46,7 +49,16 @@ export function evaluatePosition(p) {
     return { action: "stay", reason: `Unparseable instruction: "${instr}"`, needsLlm: true };
   }
 
-  // ── Rule 3: Yield-exit ─────────────────────────────────────────────
+  // ── Rule 3: Hold-time cut — close aged losing positions early ───────
+  // Mirrors the lesson rules that made Mar28-Apr7 profitable
+  if (age >= 30 && pnlPct !== null && pnlPct < 0) {
+    return { action: "close", reason: `Hold-time cut: age ${age}m >= 30m, pnl ${pnlPct.toFixed(2)}% < 0%` };
+  }
+  if (age >= 15 && pnlPct !== null && pnlPct < -0.3) {
+    return { action: "close", reason: `Hold-time cut: age ${age}m >= 15m, pnl ${pnlPct.toFixed(2)}% < -0.3%` };
+  }
+
+  // ── Rule 4: Yield-exit ─────────────────────────────────────────────
   if (feeTvl !== null && age >= config.management.minAgeForYieldExit) {
     if (feeTvl < config.management.minFeeTvl24h) {
       // Skip if position is at a loss

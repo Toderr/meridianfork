@@ -297,16 +297,22 @@ async function runManagementCycle(tier = null) {
     for (const p of positionData) {
       if (!p.instruction) continue;
       const instr = p.instruction.toLowerCase();
-      const pnlPct = p.pnl?.pnl_pct ?? null;
+      const pnlPctRaw = p.pnl?.pnl_pct ?? null;
 
       // Parse "close at X% profit", "close at X% pnl", "close at X%"
       const profitMatch = instr.match(/close at ([+-]?\d+(?:\.\d+)?)\s*%/);
       if (!profitMatch) continue; // pattern not recognised — leave to agent
 
-      if (pnlPct === null) {
+      if (pnlPctRaw === null) {
         log("cron", `Instruction pre-check: ${p.pair} — pnl_pct unavailable, skipping auto-close`);
         continue;
       }
+
+      // pnl_pct is price-only; add fee % for total return comparison
+      const instrInitUsd = p.initial_value_usd || p.initial_value_usd_api || 0;
+      const instrFeePct = (instrInitUsd > 0 && p.unclaimed_fees_usd > 0)
+        ? p.unclaimed_fees_usd / instrInitUsd * 100 : 0;
+      const pnlPct = pnlPctRaw + instrFeePct;
 
       const target = parseFloat(profitMatch[1]);
       if (pnlPct >= target) {
@@ -932,7 +938,10 @@ async function runPnlChecker() {
 
       if (!pnl || pnl.error || pnl.pnl_pct == null) continue;
 
-      const pct = pnl.pnl_pct;
+      // pnl_pct is price-only; add fee % for TP/SL threshold comparisons (total return)
+      const feePct = pnl.initial_value_usd > 0
+        ? (pnl.unclaimed_fee_usd ?? 0) / pnl.initial_value_usd * 100 : 0;
+      const pct = pnl.pnl_pct + feePct;
 
       // Rule 1: Stop loss
       if (pct <= SL_PCT) {
@@ -1348,6 +1357,8 @@ if (isTTY) {
         "/update_lesson <N> <rule>   Edit lesson #N",
         "/del_lesson <N>             Delete lesson #N",
         "/review                     Claude lesson review (last 20 closes)",
+        "/freeze                     Stop all auto-lesson generation",
+        "/unfreeze                   Resume auto-lesson generation",
         "",
         "── Goals ──",
         "/goals               Show current goals + progress",
@@ -1576,6 +1587,18 @@ if (isTTY) {
         }
       }
       sendMessage(lines.join("\n")).catch(() => {});
+      return;
+    }
+
+    if (text === "/freeze" || text === "/unfreeze") {
+      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      const newState = text === "/freeze";
+      cfg.freezeLessons = newState;
+      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+      reloadConfig();
+      const icon = newState ? "🧊" : "🔓";
+      const label = newState ? "Lessons FROZEN — no new auto-lessons will be generated" : "Lessons UNFROZEN — auto-lesson generation resumed";
+      sendMessage(`${icon} ${label}`).catch(() => {});
       return;
     }
 
@@ -1861,6 +1884,17 @@ Commands:
       return;
     }
 
+    if (input === "/freeze" || input === "/unfreeze") {
+      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      const newState = input === "/freeze";
+      cfg.freezeLessons = newState;
+      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+      reloadConfig();
+      console.log(newState ? "\nLessons FROZEN — no new auto-lessons will be generated\n" : "\nLessons UNFROZEN — auto-lesson generation resumed\n");
+      rl.prompt();
+      return;
+    }
+
     if (input.startsWith("/learn")) {
       await runBusy(async () => {
         const parts = input.split(" ");
@@ -2012,6 +2046,8 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
         "/update_lesson <N> <rule>   Edit lesson #N",
         "/del_lesson <N>             Delete lesson #N",
         "/review                     Claude lesson review (last 20 closes)",
+        "/freeze                     Stop all auto-lesson generation",
+        "/unfreeze                   Resume auto-lesson generation",
         "",
         "── Goals ──",
         "/goals               Show current goals + progress",

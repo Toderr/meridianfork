@@ -92,6 +92,8 @@ STRUCTURED FORMATS (prefer these — they get auto-enforced by the rule parser):
 
 HARD CONSTRAINTS:
 - NEVER delete or merge lessons marked PINNED
+- NEVER delete or merge lessons containing "AVOID holding" (hold-time rules are critical risk management)
+- NEVER delete or merge lessons containing "bins_above" (range asymmetry rules)
 - Max ${maxDelete} deletions (40% cap)
 - Do NOT merge lessons from different categories
 
@@ -253,6 +255,8 @@ RULES:
 - Keep most conservative threshold from originals
 - 3+ lessons minimum per consolidation
 - NEVER touch PINNED lessons
+- NEVER touch lessons containing "AVOID holding" (hold-time stop losses are critical)
+- NEVER touch lessons containing "bins_above" (range asymmetry rules)
 - Strip token-specific names — generalize patterns
 
 Respond ONLY with valid JSON:
@@ -481,6 +485,16 @@ async function processBatch(batch, { removeLesson, addLesson, log }) {
 
 export async function claudeSummarizeLessons() {
   const { log } = await import("../logger.js");
+
+  // Check freeze flag
+  try {
+    const ucPath = path.join(ROOT, "user-config.json");
+    const uc = JSON.parse(fs.readFileSync(ucPath, "utf8"));
+    if (uc.freezeLessons) {
+      log("lesson_summarizer", "Skipping — lessons are frozen");
+      return;
+    }
+  } catch { /* not frozen if unreadable */ }
 
   try {
     const data = loadJson(LESSONS_FILE) || { lessons: [] };
