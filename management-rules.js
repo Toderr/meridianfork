@@ -49,14 +49,9 @@ export function evaluatePosition(p) {
     return { action: "stay", reason: `Unparseable instruction: "${instr}"`, needsLlm: true };
   }
 
-  // ── Rule 3: Hold-time cut — close aged losing positions early ───────
-  // Mirrors the lesson rules that made Mar28-Apr7 profitable
-  if (age >= 30 && pnlPct !== null && pnlPct < 0) {
-    return { action: "close", reason: `Hold-time cut: age ${age}m >= 30m, pnl ${pnlPct.toFixed(2)}% < 0%` };
-  }
-  if (age >= 15 && pnlPct !== null && pnlPct < -0.3) {
-    return { action: "close", reason: `Hold-time cut: age ${age}m >= 15m, pnl ${pnlPct.toFixed(2)}% < -0.3%` };
-  }
+  // ── Rule 3: Hold-time cut — DISABLED (30-Mar baseline restore) ──────
+  // Original hold-time cut rules (age>=30 & pnl<0; age>=15 & pnl<-0.3)
+  // disabled per user request to match March 30 behavior.
 
   // ── Rule 4: Yield-exit ─────────────────────────────────────────────
   if (feeTvl !== null && age >= config.management.minAgeForYieldExit) {

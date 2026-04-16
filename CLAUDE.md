@@ -132,7 +132,7 @@ Handled by `management-rules.js` rule engine (`evaluateAll()`). LLM only called 
 2. instruction "close at X%" parseable AND condition met → CLOSE
 3. instruction set AND condition NOT met → HOLD
 4. unparseable instruction → **LLM fallback** (only these positions, max 3 steps)
-5. hold-time cut: age ≥15m AND pnl < -0.3% → CLOSE; age ≥30m AND pnl < 0% → CLOSE
+5. hold-time cut: **DISABLED** (30-Mar baseline restore). Original rules (age ≥15m & pnl<-0.3% → CLOSE; age ≥30m & pnl<0% → CLOSE) commented out in `management-rules.js`.
 6. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
 7. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
 8. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
@@ -154,7 +154,7 @@ All on-chain calls go through `sendWithRetry()` — 5 attempts with exponential 
 - **Max positions**: `config.risk.maxPositions` (default 10)
 - **Gas reserve**: `gasReserve` SOL (default 0.2) always kept
 - **Single-sided SOL**: `forceSolSingleSided: true` forces `bins_above=0` on all deploys (downside-only). Prevents whipsaw IL from upside bin exposure on volatile meme tokens.
-- **Hold-time cut**: Deterministic early-exit in management-rules.js: ≥15m at <-0.3% → close, ≥30m at <0% → close. Prevents small losses from becoming big ones.
+- **Hold-time cut**: Currently **DISABLED** (30-Mar baseline restore). Originally a deterministic early-exit in management-rules.js: ≥15m at <-0.3% → close, ≥30m at <0% → close. Re-enable by un-commenting Rule 3.
 - **Evolution guardrails**: `emergencyPriceDropPct` clamped [-15, -3], `takeProfitFeePct` [2, 5], `fastTpPct` [5, 15], `positionSizePct` [0.15, 0.3]. Prevents threshold evolution from drifting to dangerous values.
 - **Anti-scam**: Only hardcoded gate: `global_fees_sol < 30` (cannot be lowered). All other screening thresholds (top_10_pct, bundlers, organic, mcap, bin_step, etc.) are configurable and learnable — the agent can adjust them via `update_config` or lessons.
 - **OKX hard filters**: honeypot → auto-reject, dev_rug_count > 0 → auto-reject (pre-LLM)
