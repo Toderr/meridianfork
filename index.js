@@ -1229,6 +1229,403 @@ function appendHistory(userMsg, assistantMsg) {
 // Register restarter — when update_config changes intervals, running cron jobs get replaced
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });
 
+// ── Shared Telegram command handler ──────────────────────────────────────────
+// Called from both TTY and non-TTY polling handlers to keep commands in sync.
+// Returns true if the command was handled, false to fall through to agent loop.
+async function handleTelegramCommand(rawText, sendMessage, opts = {}) {
+  // Strip @botname suffix, zero-width/invisible Unicode, and trim
+  const text = rawText
+    .replace(/@\S+/, "")
+    .replace(/[\u200B-\u200D\uFEFF\u00A0\u200E\u200F\u2028\u2029\u202A-\u202E\u2060\u2066-\u2069]/g, "")
+    .trim();
+  const cmd = text.toLowerCase(); // for case-insensitive command matching
+  const { onStart, onStop } = opts;
+
+  // Debug: log command matching for slash commands
+  if (cmd.startsWith("/")) {
+    log("telegram", `Command: "${text}" cmd="${cmd}" raw=${JSON.stringify(rawText)} bytes=${[...rawText].map(c=>c.charCodeAt(0).toString(16)).join(",").slice(0,120)}`);
+  }
+
+  if (cmd === "/help") {
+    sendMessage([
+      "🤖 Meridian Commands",
+      "",
+      "── Agent Control ──",
+      "/start          Resume cron cycles",
+      "/stop           Pause cron cycles",
+      "/stats          Agent uptime, cycle counts, errors",
+      "/status         Wallet balance + open positions",
+      "/withdraw       Close all positions, swap to SOL",
+      "",
+      "── Reports ──",
+      "/briefing       Last 24h trading summary",
+      "/report         Daily report (default)",
+      "/report weekly  Weekly report",
+      "/report monthly Monthly report",
+      "",
+      "── Screening ──",
+      "/screen         Manual screening cycle now",
+      "/candidates     Refresh top pool candidates",
+      "/thresholds     Current screening thresholds + perf stats",
+      "/evolve         Trigger threshold evolution",
+      "",
+      "── Lessons ──",
+      "/update_lesson              List all lessons with index numbers",
+      "/update_lesson <N> <rule>   Edit lesson #N",
+      "/del_lesson <N>             Delete lesson #N",
+      "/review                     Claude lesson review (last 20 closes)",
+      "/freeze                     Stop all auto-lesson generation",
+      "/unfreeze                   Resume auto-lesson generation",
+      "",
+      "── Goals ──",
+      "/goals               Show current goals + progress",
+      "/goals win_rate=80 max_loss=-10 profit_factor=2",
+      "                     Set trading goals",
+      "/goals clear         Remove all goals",
+      "",
+      "── Claude AI ──",
+      "/claude <question>   Ask Claude about positions, lessons, journal",
+      "",
+      "── Reconcile ──",
+      "/reconcile      Re-sync state.json with on-chain positions",
+    ].join("\n")).catch(() => {});
+    return true;
+  }
+
+  if (cmd === "/start") {
+    if (onStart) { onStart(); }
+    else { sendMessage("▶️ Cron cycles are already running.").catch(() => {}); }
+    return true;
+  }
+
+  if (cmd === "/stop") {
+    if (onStop) { onStop(); }
+    else {
+      stopCronJobs();
+      sendMessage("⏹️ Agent stopped — cron cycles paused. Restart with PM2 to resume.").catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd === "/stats") {
+    const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
+    const msg = `📊 Agent Stats\n\nUptime: ${uptime}m\nMgmt cycles: ${_stats.managementCycles}\nScreening cycles: ${_stats.screeningCycles}\nDeployed: ${_stats.positionsDeployed}\nClosed: ${_stats.positionsClosed}\nFees claimed: ${_stats.feesClaimed}\nErrors: ${_stats.errors}\nStarted: ${_stats.startedAt}`;
+    sendMessage(msg).catch(() => {});
+    return true;
+  }
+
+  if (cmd === "/status") {
+    try {
+      const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
+      const lines = [`💰 Wallet: ${wallet.sol.toFixed(4)} SOL ($${wallet.sol_usd?.toFixed(2) ?? "?"})`, `📂 Positions: ${positions.total_positions}`, ""];
+      for (const p of (positions.positions || []).slice(0, 10)) {
+        const status = p.in_range ? "✅" : "⚠️ OOR";
+        lines.push(`${p.pair} ${status} | fees: $${(p.unclaimed_fees_usd ?? 0).toFixed(2)}`);
+      }
+      if (positions.total_positions === 0) lines.push("No open positions.");
+      sendMessage(lines.join("\n")).catch(() => {});
+    } catch (e) {
+      sendMessage(`Status error: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd === "/briefing") {
+    try {
+      const briefing = await generateBriefing();
+      await sendMessage(briefing);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd.startsWith("/report")) {
+    const parts = text.split(" ");
+    const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
+    try {
+      const report = await generateReport(period);
+      await sendMessage(report);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd === "/review") {
+    sendMessage("🧠 Starting Claude review... (may take ~2 min)").catch(() => {});
+    import("./scripts/claude-lesson-updater.js")
+      .then(m => m.claudeUpdateLessons())
+      .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
+    return true;
+  }
+
+  if (cmd.startsWith("/update_lesson")) {
+    const args = text.slice("/update_lesson".length).trim();
+    if (!args) {
+      const lessons = listAllLessons();
+      if (lessons.length === 0) {
+        sendMessage("No lessons found.").catch(() => {});
+      } else {
+        function fmtLesson(l) {
+          const badges = [l.outcome];
+          if (l.pinned) badges.push("PINNED");
+          if (l.source === "experiment") badges.push("EXP");
+          const header = `#${l.index}  ${badges.join("  ")}` +
+            (l.tags?.length ? `  |  ${l.tags.slice(0, 4).join(", ")}` : "");
+          const ruleText = l.rule.length > 120 ? l.rule.slice(0, 117) + "..." : l.rule;
+          return `${header}\n${ruleText}`;
+        }
+        let chunk = `📚 Lessons — ${lessons.length} total\n/update_lesson <N> <new rule>\n\n`;
+        for (const l of lessons) {
+          const card = fmtLesson(l) + "\n\n";
+          if (chunk.length + card.length > 4000) {
+            sendMessage(chunk.trimEnd()).catch(() => {});
+            chunk = "";
+          }
+          chunk += card;
+        }
+        if (chunk.trim()) sendMessage(chunk.trimEnd()).catch(() => {});
+      }
+      return true;
+    }
+    const spaceIdx = args.indexOf(" ");
+    if (spaceIdx === -1) {
+      sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
+      return true;
+    }
+    const n = parseInt(args.slice(0, spaceIdx), 10);
+    const newRule = args.slice(spaceIdx + 1).trim();
+    if (!n || n < 1 || !newRule) {
+      sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
+      return true;
+    }
+    const lessons = listAllLessons();
+    const target = lessons[n - 1];
+    if (!target) {
+      sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
+      return true;
+    }
+    const result = updateLesson(target.id, newRule);
+    if (result.found) {
+      sendMessage(`✅ Lesson ${n} updated.\n\nOld: ${result.old_rule.slice(0, 200)}\n\nNew: ${result.new_rule.slice(0, 200)}`).catch(() => {});
+    } else {
+      sendMessage(`❌ Failed to update lesson ${n}.`).catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd.startsWith("/del_lesson")) {
+    const arg = text.slice("/del_lesson".length).trim();
+    const n = parseInt(arg, 10);
+    if (!n || n < 1) {
+      sendMessage("Usage: /del_lesson <N>  — use /update_lesson to list lessons with their numbers").catch(() => {});
+      return true;
+    }
+    const lessons = listAllLessons();
+    const target = lessons[n - 1];
+    if (!target) {
+      sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
+      return true;
+    }
+    if (target.pinned) {
+      sendMessage(`❌ Lesson #${n} is pinned — unpin it first via the dashboard before deleting.`).catch(() => {});
+      return true;
+    }
+    const removed = removeLesson(target.id);
+    if (removed) {
+      sendMessage(`🗑️ Lesson #${n} deleted.\n\n${target.rule.slice(0, 200)}`).catch(() => {});
+    } else {
+      sendMessage(`❌ Failed to delete lesson ${n}.`).catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd === "/freeze" || cmd === "/unfreeze") {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      const newState = cmd === "/freeze";
+      cfg.freezeLessons = newState;
+      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+      reloadConfig();
+      const icon = newState ? "🧊" : "🔓";
+      const label = newState ? "Lessons FROZEN — no new auto-lessons will be generated" : "Lessons UNFROZEN — auto-lesson generation resumed";
+      sendMessage(`${icon} ${label}`).catch(() => {});
+    } catch (e) {
+      log("telegram_error", `freeze/unfreeze failed: ${e.message}`);
+      sendMessage(`❌ Failed to ${text.slice(1)}: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd === "/withdraw") {
+    busy = true;
+    sendMessage("🏧 WITHDRAW — closing all positions and converting to SOL...").catch(() => {});
+    (async () => {
+      try {
+        if (_cronRunning) {
+          stopCronJobs();
+          sendMessage("⏹️ Cron paused for withdrawal.").catch(() => {});
+        }
+
+        const positions = getTrackedPositions(true);
+        if (positions.length === 0) {
+          await sendMessage("No open positions. Sweeping remaining tokens...");
+        } else {
+          await sendMessage(`Closing ${positions.length} position(s)...`);
+        }
+
+        const closeResults = [];
+        for (const pos of positions) {
+          try {
+            const result = await executeTool("close_position", {
+              position_address: pos.position,
+              close_reason: "withdraw — zap out all to SOL",
+            });
+            closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: result?.success, pnl_pct: result?.pnl_pct });
+            if (result?.success) {
+              log("withdraw", `Closed ${pos.pool_name || pos.position.slice(0, 8)}`);
+            } else {
+              log("withdraw_warn", `Failed to close ${pos.pool_name}: ${result?.error}`);
+            }
+          } catch (e) {
+            closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: false, error: e.message });
+            log("withdraw_error", `Error closing ${pos.pool_name}: ${e.message}`);
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
+        await new Promise(r => setTimeout(r, 3000));
+        const sweepResults = await sweepAllTokensToSol({ bypassAllowlist: true });
+
+        const closedOk = closeResults.filter(r => r.success).length;
+        const closedFail = closeResults.filter(r => !r.success).length;
+        const swappedOk = sweepResults.filter(r => r.success).length;
+        const swappedFail = sweepResults.filter(r => !r.success).length;
+
+        const bal = await getWalletBalances({});
+        let msg = `🏧 WITHDRAW COMPLETE\n\n`;
+        msg += `📍 Positions: ${closedOk} closed`;
+        if (closedFail > 0) msg += `, ${closedFail} failed`;
+        msg += `\n`;
+        if (sweepResults.length > 0) {
+          msg += `💱 Swaps: ${swappedOk} tokens → SOL`;
+          if (swappedFail > 0) msg += `, ${swappedFail} failed`;
+          msg += `\n`;
+        }
+        msg += `\n💰 Final balance: ${bal.sol?.toFixed(4) || "?"} SOL`;
+        if (bal.sol_usd) msg += ` ($${bal.sol_usd.toFixed(2)})`;
+
+        const failures = closeResults.filter(r => !r.success);
+        if (failures.length > 0) {
+          msg += `\n\n⚠️ Failed closes:`;
+          for (const f of failures) msg += `\n- ${f.pair}: ${f.error || "unknown error"}`;
+        }
+        const swapFails = sweepResults.filter(r => !r.success);
+        if (swapFails.length > 0) {
+          msg += `\n\n⚠️ Failed swaps:`;
+          for (const f of swapFails) msg += `\n- ${f.symbol || f.mint?.slice(0, 8)}: ${f.error || "unknown error"}`;
+        }
+
+        await sendMessage(msg);
+      } catch (e) {
+        await sendMessage(`❌ Withdraw error: ${e.message}`).catch(() => {});
+      } finally {
+        busy = false;
+      }
+    })();
+    return true;
+  }
+
+  if (cmd.startsWith("/goals")) {
+    const arg = text.slice("/goals".length).trim();
+    const { loadGoals, calculateProgress, loadPerformance } = await import("./scripts/goals.js");
+    if (!arg) {
+      const goals = loadGoals();
+      if (!goals) {
+        sendMessage("No goals set. Usage:\n/goals win_rate=80 max_loss=-10 profit_factor=2\n/goals clear").catch(() => {});
+        return true;
+      }
+      const perf = loadPerformance();
+      const result = calculateProgress(goals, perf);
+      if (!result) {
+        sendMessage(`📎 Goals: ${JSON.stringify(goals)}\n\nNot enough data to calculate progress.`).catch(() => {});
+        return true;
+      }
+      const lines = ["📎 Trading Goals"];
+      for (const [key, data] of Object.entries(result.progress)) {
+        const icon = data.met ? "✅" : "❌";
+        const label = key.replace(/_/g, " ");
+        lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
+      }
+      lines.push(`\nLookback: ${result.sampleSize} trades`);
+      sendMessage(lines.join("\n")).catch(() => {});
+      return true;
+    }
+    if (arg === "clear") {
+      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      delete cfg.goals;
+      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+      sendMessage("🗑️ Goals cleared.").catch(() => {});
+      return true;
+    }
+    const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    const goals = cfg.goals || {};
+    const keyMap = { win_rate: "win_rate_pct", max_loss: "max_loss_pct", profit_factor: "profit_factor", lookback: "lookback" };
+    for (const part of arg.split(/\s+/)) {
+      const [k, v] = part.split("=");
+      if (!k || v == null) continue;
+      const configKey = keyMap[k] || k;
+      goals[configKey] = parseFloat(v);
+    }
+    cfg.goals = goals;
+    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    const perf = loadPerformance();
+    const result = calculateProgress(goals, perf);
+    const lines = ["✅ Goals updated"];
+    if (result) {
+      for (const [key, data] of Object.entries(result.progress)) {
+        const icon = data.met ? "✅" : "❌";
+        const label = key.replace(/_/g, " ");
+        lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
+      }
+    }
+    sendMessage(lines.join("\n")).catch(() => {});
+    return true;
+  }
+
+  if (cmd.startsWith("/claude ")) {
+    const query = text.slice(8).trim();
+    if (!query) { sendMessage("Usage: /claude <question>").catch(() => {}); return true; }
+    sendMessage("🤖 Thinking... (~30s)").catch(() => {});
+    import("./scripts/claude-ask.js")
+      .then(m => m.claudeAsk(query))
+      .then(reply => sendMessage(reply.slice(0, 4096)).catch(() => {}))
+      .catch(e => sendMessage(`Claude error: ${e.message}`).catch(() => {}));
+    return true;
+  }
+
+  if (cmd === "/reconcile") {
+    try {
+      sendMessage("🔄 Reconciling on-chain state...").catch(() => {});
+      const livePositions = await getMyPositions();
+      const { syncOpenPositions } = await import("./state.js");
+      const addresses = (livePositions?.positions || []).map(p => p.position);
+      syncOpenPositions(addresses);
+      sendMessage(`✅ Reconcile complete — ${addresses.length} open position(s) on-chain, state.json updated.`).catch(() => {});
+    } catch (e) {
+      sendMessage(`❌ Reconcile failed: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
+  // Log when a slash command falls through (unrecognized)
+  if (cmd.startsWith("/")) {
+    log("telegram", `⚠️ Unrecognized command fell through: "${cmd}" (text="${text}")`);
+  }
+  return false; // not a known command — fall through to agent loop
+}
+
 if (isTTY) {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -1329,390 +1726,26 @@ if (isTTY) {
       return;
     }
 
-    if (text === "/help") {
-      sendMessage([
-        "🤖 Meridian Commands",
-        "",
-        "── Agent Control ──",
-        "/start          Resume cron cycles",
-        "/stop           Pause cron cycles",
-        "/stats          Agent uptime, cycle counts, errors",
-        "/status         Wallet balance + open positions",
-        "/withdraw       Close all positions, swap to SOL",
-        "",
-        "── Reports ──",
-        "/briefing       Last 24h trading summary",
-        "/report         Daily report (default)",
-        "/report weekly  Weekly report",
-        "/report monthly Monthly report",
-        "",
-        "── Screening ──",
-        "/screen         Manual screening cycle now",
-        "/candidates     Refresh top pool candidates",
-        "/thresholds     Current screening thresholds + perf stats",
-        "/evolve         Trigger threshold evolution",
-        "",
-        "── Lessons ──",
-        "/update_lesson              List all lessons with index numbers",
-        "/update_lesson <N> <rule>   Edit lesson #N",
-        "/del_lesson <N>             Delete lesson #N",
-        "/review                     Claude lesson review (last 20 closes)",
-        "/freeze                     Stop all auto-lesson generation",
-        "/unfreeze                   Resume auto-lesson generation",
-        "",
-        "── Goals ──",
-        "/goals               Show current goals + progress",
-        "/goals win_rate=80 max_loss=-10 profit_factor=2",
-        "                     Set trading goals",
-        "/goals clear         Remove all goals",
-        "",
-        "── Claude AI ──",
-        "/claude <question>   Ask Claude about positions, lessons, journal",
-        "",
-        "── Reconcile ──",
-        "/reconcile      Re-sync state.json with on-chain positions",
-      ].join("\n")).catch(() => {});
-      return;
-    }
-
-    if (text === "/start") {
-      if (_cronRunning) {
-        sendMessage("Agent is already running.").catch(() => {});
-      } else {
-        startCronJobs();
-        _cronRunning = true;
-        sendMessage("▶️ Agent started — cron cycles running.").catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/stop") {
-      if (!_cronRunning) {
-        sendMessage("Agent is already stopped.").catch(() => {});
-      } else {
-        stopCronJobs();
-        sendMessage("⏹️ Agent stopped — cron cycles paused. Send /start to resume.").catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/stats") {
-      const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
-      const msg = `📊 Agent Stats\n\nUptime: ${uptime}m\nMgmt cycles: ${_stats.managementCycles}\nScreening cycles: ${_stats.screeningCycles}\nDeployed: ${_stats.positionsDeployed}\nClosed: ${_stats.positionsClosed}\nFees claimed: ${_stats.feesClaimed}\nErrors: ${_stats.errors}\nStarted: ${_stats.startedAt}`;
-      sendMessage(msg).catch(() => {});
-      return;
-    }
-
-    if (text === "/status") {
-      try {
-        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
-        const lines = [`💰 Wallet: ${wallet.sol.toFixed(4)} SOL ($${wallet.sol_usd?.toFixed(2) ?? "?"})`, `📂 Positions: ${positions.total_positions}`, ""];
-        for (const p of (positions.positions || []).slice(0, 10)) {
-          const status = p.in_range ? "✅" : "⚠️ OOR";
-          lines.push(`${p.pair} ${status} | fees: $${(p.unclaimed_fees_usd ?? 0).toFixed(2)}`);
-        }
-        if (positions.total_positions === 0) lines.push("No open positions.");
-        sendMessage(lines.join("\n")).catch(() => {});
-      } catch (e) {
-        sendMessage(`Status error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/briefing") {
-      try {
-        const briefing = await generateBriefing();
-        await sendMessage(briefing);
-      } catch (e) {
-        await sendMessage(`Error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text.startsWith("/report")) {
-      const parts = text.split(" ");
-      const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
-      try {
-        const report = await generateReport(period);
-        await sendMessage(report);
-      } catch (e) {
-        await sendMessage(`Error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/review") {
-      sendMessage("🧠 Starting Claude review... (may take ~2 min)").catch(() => {});
-      import("./scripts/claude-lesson-updater.js")
-        .then(m => m.claudeUpdateLessons())
-        .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
-      return;
-    }
-
-    if (text.startsWith("/update_lesson")) {
-      const args = text.slice("/update_lesson".length).trim();
-      if (!args) {
-        const lessons = listAllLessons();
-        if (lessons.length === 0) {
-          sendMessage("No lessons found.").catch(() => {});
+    const handled = await handleTelegramCommand(text, sendMessage, {
+      onStart() {
+        if (_cronRunning) {
+          sendMessage("Agent is already running.").catch(() => {});
         } else {
-          function fmtLesson(l) {
-            const badges = [l.outcome];
-            if (l.pinned) badges.push("PINNED");
-            if (l.source === "experiment") badges.push("EXP");
-            const header = `#${l.index}  ${badges.join("  ")}` +
-              (l.tags?.length ? `  |  ${l.tags.slice(0, 4).join(", ")}` : "");
-            const ruleText = l.rule.length > 120 ? l.rule.slice(0, 117) + "..." : l.rule;
-            return `${header}\n${ruleText}`;
-          }
-          let chunk = `📚 Lessons — ${lessons.length} total\n/update_lesson <N> <new rule>\n\n`;
-          for (const l of lessons) {
-            const card = fmtLesson(l) + "\n\n";
-            if (chunk.length + card.length > 4000) {
-              sendMessage(chunk.trimEnd()).catch(() => {});
-              chunk = "";
-            }
-            chunk += card;
-          }
-          if (chunk.trim()) sendMessage(chunk.trimEnd()).catch(() => {});
+          startCronJobs();
+          _cronRunning = true;
+          sendMessage("▶️ Agent started — cron cycles running.").catch(() => {});
         }
-        return;
-      }
-      // Parse: first token is index N, rest is new rule
-      const spaceIdx = args.indexOf(" ");
-      if (spaceIdx === -1) {
-        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
-        return;
-      }
-      const n = parseInt(args.slice(0, spaceIdx), 10);
-      const newRule = args.slice(spaceIdx + 1).trim();
-      if (!n || n < 1 || !newRule) {
-        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
-        return;
-      }
-      const lessons = listAllLessons();
-      const target = lessons[n - 1];
-      if (!target) {
-        sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
-        return;
-      }
-      const result = updateLesson(target.id, newRule);
-      if (result.found) {
-        sendMessage(`✅ Lesson ${n} updated.\n\nOld: ${result.old_rule.slice(0, 200)}\n\nNew: ${result.new_rule.slice(0, 200)}`).catch(() => {});
-      } else {
-        sendMessage(`❌ Failed to update lesson ${n}.`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text.startsWith("/del_lesson")) {
-      const arg = text.slice("/del_lesson".length).trim();
-      const n = parseInt(arg, 10);
-      if (!n || n < 1) {
-        sendMessage("Usage: /del_lesson <N>  — use /update_lesson to list lessons with their numbers").catch(() => {});
-        return;
-      }
-      const lessons = listAllLessons();
-      const target = lessons[n - 1];
-      if (!target) {
-        sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
-        return;
-      }
-      if (target.pinned) {
-        sendMessage(`❌ Lesson #${n} is pinned — unpin it first via the dashboard before deleting.`).catch(() => {});
-        return;
-      }
-      const removed = removeLesson(target.id);
-      if (removed) {
-        sendMessage(`🗑️ Lesson #${n} deleted.\n\n${target.rule.slice(0, 200)}`).catch(() => {});
-      } else {
-        sendMessage(`❌ Failed to delete lesson ${n}.`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text.startsWith("/goals")) {
-      const arg = text.slice("/goals".length).trim();
-      const { loadGoals, calculateProgress, loadPerformance } = await import("./scripts/goals.js");
-      if (!arg) {
-        // Show current goals + progress
-        const goals = loadGoals();
-        if (!goals) {
-          sendMessage("No goals set. Usage:\n/goals win_rate=80 max_loss=-10 profit_factor=2\n/goals clear").catch(() => {});
-          return;
+      },
+      onStop() {
+        if (!_cronRunning) {
+          sendMessage("Agent is already stopped.").catch(() => {});
+        } else {
+          stopCronJobs();
+          sendMessage("⏹️ Agent stopped — cron cycles paused. Send /start to resume.").catch(() => {});
         }
-        const perf = loadPerformance();
-        const result = calculateProgress(goals, perf);
-        if (!result) {
-          sendMessage(`📎 Goals: ${JSON.stringify(goals)}\n\nNot enough data to calculate progress.`).catch(() => {});
-          return;
-        }
-        const lines = ["📎 Trading Goals"];
-        for (const [key, data] of Object.entries(result.progress)) {
-          const icon = data.met ? "✅" : "❌";
-          const label = key.replace(/_/g, " ");
-          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
-        }
-        lines.push(`\nLookback: ${result.sampleSize} trades`);
-        sendMessage(lines.join("\n")).catch(() => {});
-        return;
-      }
-      if (arg === "clear") {
-        const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-        delete cfg.goals;
-        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
-        sendMessage("🗑️ Goals cleared.").catch(() => {});
-        return;
-      }
-      // Parse: /goals win_rate=80 max_loss=-10 profit_factor=2 lookback=50
-      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-      const goals = cfg.goals || {};
-      const keyMap = { win_rate: "win_rate_pct", max_loss: "max_loss_pct", profit_factor: "profit_factor", lookback: "lookback" };
-      for (const part of arg.split(/\s+/)) {
-        const [k, v] = part.split("=");
-        if (!k || v == null) continue;
-        const configKey = keyMap[k] || k;
-        goals[configKey] = parseFloat(v);
-      }
-      cfg.goals = goals;
-      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
-      const perf = loadPerformance();
-      const result = calculateProgress(goals, perf);
-      const lines = ["✅ Goals updated"];
-      if (result) {
-        for (const [key, data] of Object.entries(result.progress)) {
-          const icon = data.met ? "✅" : "❌";
-          const label = key.replace(/_/g, " ");
-          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
-        }
-      }
-      sendMessage(lines.join("\n")).catch(() => {});
-      return;
-    }
-
-    if (text === "/freeze" || text === "/unfreeze") {
-      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-      const newState = text === "/freeze";
-      cfg.freezeLessons = newState;
-      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
-      reloadConfig();
-      const icon = newState ? "🧊" : "🔓";
-      const label = newState ? "Lessons FROZEN — no new auto-lessons will be generated" : "Lessons UNFROZEN — auto-lesson generation resumed";
-      sendMessage(`${icon} ${label}`).catch(() => {});
-      return;
-    }
-
-    if (text.startsWith("/claude ")) {
-      const query = text.slice(8).trim();
-      if (!query) { sendMessage("Usage: /claude <question>").catch(() => {}); return; }
-      sendMessage("🤖 Thinking... (~30s)").catch(() => {});
-      import("./scripts/claude-ask.js")
-        .then(m => m.claudeAsk(query))
-        .then(reply => sendMessage(reply.slice(0, 4096)).catch(() => {}))
-        .catch(e => sendMessage(`Claude error: ${e.message}`).catch(() => {}));
-      return;
-    }
-
-    if (text === "/withdraw") {
-      busy = true;
-      sendMessage("🏧 WITHDRAW — closing all positions and converting to SOL...").catch(() => {});
-      (async () => {
-        try {
-          // Stop cron cycles so management doesn't interfere
-          if (_cronRunning) {
-            stopCronJobs();
-            sendMessage("⏹️ Cron paused for withdrawal.").catch(() => {});
-          }
-
-          const positions = getTrackedPositions(true);
-          if (positions.length === 0) {
-            await sendMessage("No open positions. Sweeping remaining tokens...");
-          } else {
-            await sendMessage(`Closing ${positions.length} position(s)...`);
-          }
-
-          const closeResults = [];
-          for (const pos of positions) {
-            try {
-              const result = await executeTool("close_position", {
-                position_address: pos.position,
-                close_reason: "withdraw — zap out all to SOL",
-              });
-              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: result?.success, pnl_pct: result?.pnl_pct });
-              if (result?.success) {
-                log("withdraw", `Closed ${pos.pool_name || pos.position.slice(0, 8)}`);
-              } else {
-                log("withdraw_warn", `Failed to close ${pos.pool_name}: ${result?.error}`);
-              }
-            } catch (e) {
-              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: false, error: e.message });
-              log("withdraw_error", `Error closing ${pos.pool_name}: ${e.message}`);
-            }
-            // Brief pause between closes to let RPC settle
-            await new Promise(r => setTimeout(r, 2000));
-          }
-
-          // Sweep ALL remaining non-SOL tokens to SOL
-          await new Promise(r => setTimeout(r, 3000)); // let balances settle
-          const sweepResults = await sweepAllTokensToSol({ bypassAllowlist: true });
-
-          // Build summary
-          const closedOk = closeResults.filter(r => r.success).length;
-          const closedFail = closeResults.filter(r => !r.success).length;
-          const swappedOk = sweepResults.filter(r => r.success).length;
-          const swappedFail = sweepResults.filter(r => !r.success).length;
-
-          const bal = await getWalletBalances({});
-          let msg = `🏧 WITHDRAW COMPLETE
-
-`;
-          msg += `📍 Positions: ${closedOk} closed`;
-          if (closedFail > 0) msg += `, ${closedFail} failed`;
-          msg += `
-`;
-          if (sweepResults.length > 0) {
-            msg += `💱 Swaps: ${swappedOk} tokens → SOL`;
-            if (swappedFail > 0) msg += `, ${swappedFail} failed`;
-            msg += `
-`;
-          }
-          msg += `
-💰 Final balance: ${bal.sol?.toFixed(4) || "?"} SOL`;
-          if (bal.sol_usd) msg += ` ($${bal.sol_usd.toFixed(2)})`;
-
-          // List any failed closes
-          const failures = closeResults.filter(r => !r.success);
-          if (failures.length > 0) {
-            msg += `
-
-⚠️ Failed closes:`;
-            for (const f of failures) {
-              msg += `
-- ${f.pair}: ${f.error || "unknown error"}`;
-            }
-          }
-
-          // List any failed swaps
-          const swapFails = sweepResults.filter(r => !r.success);
-          if (swapFails.length > 0) {
-            msg += `
-
-⚠️ Failed swaps:`;
-            for (const f of swapFails) {
-              msg += `
-- ${f.symbol || f.mint?.slice(0, 8)}: ${f.error || "unknown error"}`;
-            }
-          }
-
-          await sendMessage(msg);
-        } catch (e) {
-          await sendMessage(`❌ Withdraw error: ${e.message}`).catch(() => {});
-        } finally {
-          busy = false;
-        }
-      })();
-      return;
-    }
+      },
+    });
+    if (handled) return;
 
 
     busy = true;
@@ -2018,311 +2051,8 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
       return;
     }
 
-    if (text === "/help") {
-      sendMessage([
-        "🤖 Meridian Commands",
-        "",
-        "── Agent Control ──",
-        "/start          Resume cron cycles",
-        "/stop           Pause cron cycles",
-        "/stats          Agent uptime, cycle counts, errors",
-        "/status         Wallet balance + open positions",
-        "/withdraw       Close all positions, swap to SOL",
-        "",
-        "── Reports ──",
-        "/briefing       Last 24h trading summary",
-        "/report         Daily report (default)",
-        "/report weekly  Weekly report",
-        "/report monthly Monthly report",
-        "",
-        "── Screening ──",
-        "/screen         Manual screening cycle now",
-        "/candidates     Refresh top pool candidates",
-        "/thresholds     Current screening thresholds + perf stats",
-        "/evolve         Trigger threshold evolution",
-        "",
-        "── Lessons ──",
-        "/update_lesson              List all lessons with index numbers",
-        "/update_lesson <N> <rule>   Edit lesson #N",
-        "/del_lesson <N>             Delete lesson #N",
-        "/review                     Claude lesson review (last 20 closes)",
-        "/freeze                     Stop all auto-lesson generation",
-        "/unfreeze                   Resume auto-lesson generation",
-        "",
-        "── Goals ──",
-        "/goals               Show current goals + progress",
-        "/goals win_rate=80 max_loss=-10 profit_factor=2",
-        "                     Set trading goals",
-        "/goals clear         Remove all goals",
-        "",
-        "── Claude AI ──",
-        "/claude <question>   Ask Claude about positions, lessons, journal",
-        "",
-        "── Reconcile ──",
-        "/reconcile      Re-sync state.json with on-chain positions",
-      ].join("\n")).catch(() => {});
-      return;
-    }
-
-    if (text === "/start") {
-      sendMessage("▶️ Cron cycles are already running.").catch(() => {});
-      return;
-    }
-
-    if (text === "/stop") {
-      stopCronJobs();
-      sendMessage("⏹️ Agent stopped — cron cycles paused. Restart with PM2 to resume.").catch(() => {});
-      return;
-    }
-
-    if (text === "/stats") {
-      const uptime = Math.floor((Date.now() - new Date(_stats.startedAt).getTime()) / 60000);
-      const msg = `📊 Agent Stats\n\nUptime: ${uptime}m\nMgmt cycles: ${_stats.managementCycles}\nScreening cycles: ${_stats.screeningCycles}\nDeployed: ${_stats.positionsDeployed}\nClosed: ${_stats.positionsClosed}\nFees claimed: ${_stats.feesClaimed}\nErrors: ${_stats.errors}\nStarted: ${_stats.startedAt}`;
-      sendMessage(msg).catch(() => {});
-      return;
-    }
-
-    if (text === "/status") {
-      try {
-        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
-        const lines = [`💰 Wallet: ${wallet.sol.toFixed(4)} SOL ($${wallet.sol_usd?.toFixed(2) ?? "?"})`, `📂 Positions: ${positions.total_positions}`, ""];
-        for (const p of (positions.positions || []).slice(0, 10)) {
-          const status = p.in_range ? "✅" : "⚠️ OOR";
-          lines.push(`${p.pair} ${status} | fees: $${(p.unclaimed_fees_usd ?? 0).toFixed(2)}`);
-        }
-        if (positions.total_positions === 0) lines.push("No open positions.");
-        sendMessage(lines.join("\n")).catch(() => {});
-      } catch (e) {
-        sendMessage(`Status error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/briefing") {
-      try {
-        const briefing = await generateBriefing();
-        await sendMessage(briefing);
-      } catch (e) {
-        await sendMessage(`Error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text.startsWith("/report")) {
-      const parts = text.split(" ");
-      const period = ["daily", "weekly", "monthly"].includes(parts[1]) ? parts[1] : "daily";
-      try {
-        const report = await generateReport(period);
-        await sendMessage(report);
-      } catch (e) {
-        await sendMessage(`Error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/review") {
-      sendMessage("🧠 Starting Claude review... (may take ~2 min)").catch(() => {});
-      import("./scripts/claude-lesson-updater.js")
-        .then(m => m.claudeUpdateLessons())
-        .catch(e => sendMessage(`Review error: ${e.message}`).catch(() => {}));
-      return;
-    }
-
-    if (text.startsWith("/update_lesson")) {
-      const args = text.slice("/update_lesson".length).trim();
-      if (!args) {
-        const lessons = listAllLessons();
-        if (lessons.length === 0) {
-          sendMessage("No lessons found.").catch(() => {});
-        } else {
-          function fmtLesson(l) {
-            const badges = [l.outcome];
-            if (l.pinned) badges.push("PINNED");
-            if (l.source === "experiment") badges.push("EXP");
-            const header = `#${l.index}  ${badges.join("  ")}` +
-              (l.tags?.length ? `  |  ${l.tags.slice(0, 4).join(", ")}` : "");
-            const ruleText = l.rule.length > 120 ? l.rule.slice(0, 117) + "..." : l.rule;
-            return `${header}\n${ruleText}`;
-          }
-          let chunk = `📚 Lessons — ${lessons.length} total\n/update_lesson <N> <new rule>\n\n`;
-          for (const l of lessons) {
-            const card = fmtLesson(l) + "\n\n";
-            if (chunk.length + card.length > 4000) {
-              sendMessage(chunk.trimEnd()).catch(() => {});
-              chunk = "";
-            }
-            chunk += card;
-          }
-          if (chunk.trim()) sendMessage(chunk.trimEnd()).catch(() => {});
-        }
-        return;
-      }
-      const spaceIdx = args.indexOf(" ");
-      if (spaceIdx === -1) {
-        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
-        return;
-      }
-      const n = parseInt(args.slice(0, spaceIdx), 10);
-      const newRule = args.slice(spaceIdx + 1).trim();
-      if (!n || n < 1 || !newRule) {
-        sendMessage("Usage: /update_lesson <N> <new rule text>").catch(() => {});
-        return;
-      }
-      const lessons = listAllLessons();
-      const target = lessons[n - 1];
-      if (!target) {
-        sendMessage(`No lesson at index ${n}. There are ${lessons.length} lessons total.`).catch(() => {});
-        return;
-      }
-      const result = updateLesson(target.id, newRule);
-      if (result.found) {
-        sendMessage(`✅ Lesson ${n} updated.\n\nOld: ${result.old_rule.slice(0, 200)}\n\nNew: ${result.new_rule.slice(0, 200)}`).catch(() => {});
-      } else {
-        sendMessage(`❌ Failed to update lesson ${n}.`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/withdraw") {
-      busy = true;
-      sendMessage("🏧 WITHDRAW — closing all positions and converting to SOL...").catch(() => {});
-      (async () => {
-        try {
-          if (_cronRunning) {
-            stopCronJobs();
-            sendMessage("⏹️ Cron paused for withdrawal.").catch(() => {});
-          }
-
-          const positions = getTrackedPositions(true);
-          if (positions.length === 0) {
-            await sendMessage("No open positions. Sweeping remaining tokens...");
-          } else {
-            await sendMessage(`Closing ${positions.length} position(s)...`);
-          }
-
-          const closeResults = [];
-          for (const pos of positions) {
-            try {
-              const result = await executeTool("close_position", {
-                position_address: pos.position,
-                close_reason: "withdraw — zap out all to SOL",
-              });
-              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: result?.success, pnl_pct: result?.pnl_pct });
-            } catch (e) {
-              closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: false, error: e.message });
-            }
-            await new Promise(r => setTimeout(r, 2000));
-          }
-
-          await new Promise(r => setTimeout(r, 3000));
-          const sweepResults = await sweepAllTokensToSol({ bypassAllowlist: true });
-
-          const closedOk = closeResults.filter(r => r.success).length;
-          const closedFail = closeResults.filter(r => !r.success).length;
-          const swappedOk = sweepResults.filter(r => r.success).length;
-          const swappedFail = sweepResults.filter(r => !r.success).length;
-
-          const bal = await getWalletBalances({});
-          let msg = `🏧 WITHDRAW COMPLETE\n\n`;
-          msg += `📍 Positions: ${closedOk} closed`;
-          if (closedFail > 0) msg += `, ${closedFail} failed`;
-          msg += `\n`;
-          if (sweepResults.length > 0) {
-            msg += `💱 Swaps: ${swappedOk} tokens → SOL`;
-            if (swappedFail > 0) msg += `, ${swappedFail} failed`;
-            msg += `\n`;
-          }
-          msg += `\n💰 Final balance: ${bal.sol?.toFixed(4) || "?"} SOL`;
-          if (bal.sol_usd) msg += ` ($${bal.sol_usd.toFixed(2)})`;
-
-          const failures = closeResults.filter(r => !r.success);
-          if (failures.length > 0) {
-            msg += `\n\n⚠️ Failed closes:`;
-            for (const f of failures) msg += `\n- ${f.pair}: ${f.error || "unknown error"}`;
-          }
-          const swapFails = sweepResults.filter(r => !r.success);
-          if (swapFails.length > 0) {
-            msg += `\n\n⚠️ Failed swaps:`;
-            for (const f of swapFails) msg += `\n- ${f.symbol || f.mint?.slice(0, 8)}: ${f.error || "unknown error"}`;
-          }
-
-          await sendMessage(msg);
-        } catch (e) {
-          await sendMessage(`❌ Withdraw error: ${e.message}`).catch(() => {});
-        } finally {
-          busy = false;
-        }
-      })();
-      return;
-    }
-
-    if (text.startsWith("/goals")) {
-      const arg = text.slice("/goals".length).trim();
-      const { loadGoals, calculateProgress, loadPerformance } = await import("./scripts/goals.js");
-      if (!arg) {
-        const goals = loadGoals();
-        if (!goals) {
-          sendMessage("No goals set. Usage:\n/goals win_rate=80 max_loss=-10 profit_factor=2\n/goals clear").catch(() => {});
-          return;
-        }
-        const perf = loadPerformance();
-        const result = calculateProgress(goals, perf);
-        if (!result) {
-          sendMessage(`📎 Goals: ${JSON.stringify(goals)}\n\nNot enough data to calculate progress.`).catch(() => {});
-          return;
-        }
-        const lines = ["📎 Trading Goals"];
-        for (const [key, data] of Object.entries(result.progress)) {
-          const icon = data.met ? "✅" : "❌";
-          const label = key.replace(/_/g, " ");
-          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
-        }
-        lines.push(`\nLookback: ${result.sampleSize} trades`);
-        sendMessage(lines.join("\n")).catch(() => {});
-        return;
-      }
-      if (arg === "clear") {
-        const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-        delete cfg.goals;
-        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
-        sendMessage("🗑️ Goals cleared.").catch(() => {});
-        return;
-      }
-      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-      const goals = cfg.goals || {};
-      const keyMap = { win_rate: "win_rate_pct", max_loss: "max_loss_pct", profit_factor: "profit_factor", lookback: "lookback" };
-      for (const part of arg.split(/\s+/)) {
-        const [k, v] = part.split("=");
-        if (!k || v == null) continue;
-        const configKey = keyMap[k] || k;
-        goals[configKey] = parseFloat(v);
-      }
-      cfg.goals = goals;
-      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
-      const perf = loadPerformance();
-      const result = calculateProgress(goals, perf);
-      const lines = ["✅ Goals updated"];
-      if (result) {
-        for (const [key, data] of Object.entries(result.progress)) {
-          const icon = data.met ? "✅" : "❌";
-          const label = key.replace(/_/g, " ");
-          lines.push(`${icon} ${label}: ${data.actual} / ${data.target}`);
-        }
-      }
-      sendMessage(lines.join("\n")).catch(() => {});
-      return;
-    }
-
-    if (text.startsWith("/claude ")) {
-      const query = text.slice(8).trim();
-      if (!query) { sendMessage("Usage: /claude <question>").catch(() => {}); return; }
-      sendMessage("🤖 Thinking... (~30s)").catch(() => {});
-      import("./scripts/claude-ask.js")
-        .then(m => m.claudeAsk(query))
-        .then(reply => sendMessage(reply.slice(0, 4096)).catch(() => {}))
-        .catch(e => sendMessage(`Claude error: ${e.message}`).catch(() => {}));
-      return;
-    }
+    const handled = await handleTelegramCommand(text, sendMessage);
+    if (handled) return;
 
     busy = true;
     try {
