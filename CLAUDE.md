@@ -267,6 +267,10 @@ Opt-in collective intelligence (`hive-mind.js`). Pool consensus injected into sc
 
 ## Telegram Commands
 
+Primary interface — user always operates Meridian via Telegram (not TTY).
+
+Command matching uses `cmd = text.toLowerCase()` with aggressive Unicode stripping (zero-width spaces, BOM, directional marks, word joiners) to handle invisible characters Telegram may inject. Debug logging on every slash command shows raw bytes for troubleshooting.
+
 | Command | Action |
 |---------|--------|
 | `/start` / `/stop` | Start/stop cron cycles |
