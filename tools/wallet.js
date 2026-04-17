@@ -35,8 +35,7 @@ function getWallet() {
 }
 
 const JUPITER_PRICE_API = "https://api.jup.ag/price/v3";
-const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
-const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1";
+const JUPITER_SWAP_V2_API = "https://api.jup.ag/swap/v2";
 const JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
 // ─── Helius API Key Rotation ───────────────────────────────────
@@ -79,13 +78,13 @@ function isConnectionError(msg) {
 }
 
 /**
- * Internal: perform a single Ultra → quote-fallback swap attempt with a given slippageBps.
+ * Internal: perform a single Swap V2 attempt with a given slippageBps.
  * Returns the result object on success, throws on failure.
  */
 async function _attemptSwap({ wallet, connection, input_mint, output_mint, amountStr, slippageBps }) {
-  // ─── Get Ultra order ──────────────────────────────────────────
+  // ─── Get Swap V2 order ────────────────────────────────────────
   const orderUrl =
-    `${JUPITER_ULTRA_API}/order` +
+    `${JUPITER_SWAP_V2_API}/order` +
     `?inputMint=${input_mint}` +
     `&outputMint=${output_mint}` +
     `&amount=${amountStr}` +
@@ -97,17 +96,12 @@ async function _attemptSwap({ wallet, connection, input_mint, output_mint, amoun
 
   if (!orderRes.ok) {
     const body = await orderRes.text();
-    if (orderRes.status === 500) {
-      log("swap", `Ultra failed for ${input_mint}, falling back to regular swap API`);
-      return await swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps });
-    }
-    throw new Error(`Ultra order failed: ${orderRes.status} ${body}`);
+    throw new Error(`Swap V2 order failed: ${orderRes.status} ${body}`);
   }
 
   const order = await orderRes.json();
   if (order.errorCode || order.errorMessage) {
-    log("swap", `Ultra error for ${input_mint}, falling back to regular swap API`);
-    return await swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps });
+    throw new Error(`Swap V2 order error: ${order.errorMessage || order.errorCode}`);
   }
 
   const { transaction: unsignedTx, requestId } = order;
@@ -118,7 +112,7 @@ async function _attemptSwap({ wallet, connection, input_mint, output_mint, amoun
   const signedTx = Buffer.from(tx.serialize()).toString("base64");
 
   // ─── Execute ───────────────────────────────────────────────
-  const execRes = await fetch(`${JUPITER_ULTRA_API}/execute`, {
+  const execRes = await fetch(`${JUPITER_SWAP_V2_API}/execute`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -127,7 +121,7 @@ async function _attemptSwap({ wallet, connection, input_mint, output_mint, amoun
     body: JSON.stringify({ signedTransaction: signedTx, requestId }),
   });
   if (!execRes.ok) {
-    throw new Error(`Ultra execute failed: ${execRes.status} ${await execRes.text()}`);
+    throw new Error(`Swap V2 execute failed: ${execRes.status} ${await execRes.text()}`);
   }
 
   const result = await execRes.json();
@@ -606,50 +600,4 @@ export async function swapAllTokensAfterClose({ maxRounds = 3, targetMint = null
   }
 
   return allResults;
-}
-
-async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps = 300 }) {
-  // ─── Get quote ─────────────────────────────────────────────
-  const quoteRes = await fetch(
-    `${JUPITER_QUOTE_API}/quote?inputMint=${input_mint}&outputMint=${output_mint}&amount=${amountStr}&slippageBps=${slippageBps}`,
-    { headers: { "x-api-key": JUPITER_API_KEY } }
-  );
-  if (!quoteRes.ok) throw new Error(`Quote failed: ${quoteRes.status} ${await quoteRes.text()}`);
-  const quote = await quoteRes.json();
-  if (quote.error) throw new Error(`Quote error: ${quote.error}`);
-
-  // ─── Get swap tx ───────────────────────────────────────────
-  const swapRes = await fetch(`${JUPITER_QUOTE_API}/swap`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": JUPITER_API_KEY },
-    body: JSON.stringify({
-      quoteResponse: quote,
-      userPublicKey: wallet.publicKey.toString(),
-      wrapAndUnwrapSol: true,
-    }),
-  });
-  if (!swapRes.ok) throw new Error(`Swap tx failed: ${swapRes.status} ${await swapRes.text()}`);
-  const { swapTransaction } = await swapRes.json();
-
-  // ─── Sign and send ─────────────────────────────────────────
-  const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
-  tx.sign([wallet]);
-  let txHash;
-  try {
-    txHash = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-    await connection.confirmTransaction(txHash, "confirmed");
-  } catch (e) {
-    if (isConnectionError(e.message)) {
-      log("swap", `RPC error sending transaction, checking health...`);
-      await _checkRpcHealth();
-      const freshConn = getConnection();
-      txHash = await freshConn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-      await freshConn.confirmTransaction(txHash, "confirmed");
-    } else {
-      throw e;
-    }
-  }
-
-  log("swap", `SUCCESS (fallback) tx: ${txHash}`);
-  return { success: true, tx: txHash, input_mint, output_mint };
 }
