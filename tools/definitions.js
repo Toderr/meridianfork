@@ -1381,4 +1381,28 @@ Use query to search across all pages (e.g. query="bid_ask volatility").`,
       parameters: { type: "object", properties: {} }
     }
   },
+
+  {
+    type: "function",
+    function: {
+      name: "get_recent_decisions",
+      description: `Get the structured decision log — every deploy, close, skip, and no-deploy outcome with the recorded reasoning.
+Use this whenever the user asks "why" questions about agent behavior:
+- why did you deploy that position?
+- why did you close that pool?
+- why didn't you deploy this cycle?
+- why did the rule engine close X?
+
+This is the preferred tool for answering "why" — it returns the agent's recorded reasoning without triggering any live trading actions.`,
+      parameters: {
+        type: "object",
+        properties: {
+          limit:    { type: "number", description: "How many recent decisions to return (1–50). Default 10." },
+          type:     { type: "string", enum: ["deploy", "close", "claim", "skip", "no_deploy", "note"], description: "Filter by decision type." },
+          actor:    { type: "string", enum: ["SCREENER", "MANAGER", "RULE_ENGINE", "PNL_CHECKER", "AGENT", "USER", "GENERAL"], description: "Filter by what made the decision." },
+          position: { type: "string", description: "Filter by exact position address." },
+        }
+      }
+    }
+  },
 ];

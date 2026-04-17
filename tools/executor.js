@@ -24,6 +24,7 @@ import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsO
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, resolveStrategy } from "../config.js";
 import { extractRules, checkDeployCompliance } from "../lesson-rules.js";
+import { appendDecision, getRecentDecisions } from "../decision-log.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -277,6 +278,9 @@ const toolMap = {
   cancel_experiment: (args) => import("../experiment.js").then(m => m.cancelExperiment(args.experiment_id)),
   query_wiki: (args) => import("../wiki.js").then(m => m.queryWiki(args)),
   rebuild_wiki: () => import("../wiki.js").then(m => m.compileFullWiki()),
+  get_recent_decisions: ({ limit, type, actor, position } = {}) => ({
+    decisions: getRecentDecisions({ limit, type, actor, position }),
+  }),
 };
 
 // Tools that modify on-chain state (need extra safety checks)
@@ -303,6 +307,15 @@ export async function executeTool(name, args) {
     const error = `Unknown tool: ${name}`;
     log("error", error);
     return { error };
+  }
+
+  // ─── Strip internal hints from args (never reach the underlying tool) ──
+  // _decision_source: caller-supplied tag for the decision log (RULE_ENGINE/PNL_CHECKER/etc.)
+  let _decisionSource = null;
+  if (args && typeof args === "object" && "_decision_source" in args) {
+    _decisionSource = args._decision_source;
+    const { _decision_source, ...rest } = args;
+    args = rest;
   }
 
   // ─── Pre-execution safety checks ──────────
@@ -368,6 +381,27 @@ export async function executeTool(name, args) {
         _deployedThisCycle = true; // block second deploy in this screening cycle
         _stats.positionsDeployed++;
         notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, strategy: args.strategy, position: result.position, tx: result.tx }).catch(() => {});
+        try {
+          appendDecision({
+            type: "deploy",
+            actor: _decisionSource || "AGENT",
+            pool: args.pool_address,
+            pool_name: args.pool_name || result.pool_name,
+            position: result.position,
+            summary: `Deployed ${(args.amount_y ?? args.amount_sol ?? 0)} SOL with ${args.strategy || "?"}`,
+            reason: args.deploy_reason || null,
+            metrics: {
+              amount_sol:        args.amount_y ?? args.amount_sol ?? 0,
+              strategy:          args.strategy,
+              confidence_level:  args.confidence_level,
+              bin_step:          args.bin_step,
+              volatility:        args.volatility,
+              fee_tvl_ratio:     args.fee_tvl_ratio,
+              initial_value_usd: args.initial_value_usd,
+              variant:           args.variant,
+            },
+          });
+        } catch (e) { log("decision_log_error", `deploy decision failed: ${e.message}`); }
         // Record open to trading journal — retry up to 3 times in case of transient failure
         (async () => {
           let journalSuccess = false;
@@ -411,6 +445,36 @@ export async function executeTool(name, args) {
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || result.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, solPrice: result.sol_price ?? 0, reason: args.close_reason }).catch(() => {});
+        try {
+          const pnlPct = result.pnl_pct ?? 0;
+          const pnlUsd = result.pnl_usd ?? 0;
+          const feesUsd = result.fees_earned_usd ?? 0;
+          const minutesHeld = _tracked?.deployed_at
+            ? Math.floor((Date.now() - new Date(_tracked.deployed_at).getTime()) / 60000)
+            : null;
+          const risks = [];
+          if (pnlPct < 0) risks.push(`loss ${pnlPct.toFixed(2)}%`);
+          if (/oor|out.of.range/i.test(args.close_reason || "")) risks.push("out of range");
+          if (/stop.?loss|emergency/i.test(args.close_reason || "")) risks.push("stop loss");
+          if (/trailing/i.test(args.close_reason || "")) risks.push("trailing stop");
+          appendDecision({
+            type: "close",
+            actor: _decisionSource || "AGENT",
+            pool: _tracked?.pool || result.pool,
+            pool_name: _pair,
+            position: args.position_address,
+            summary: `Closed at ${pnlPct.toFixed(2)}% ($${pnlUsd.toFixed(2)})`,
+            reason: args.close_reason || "agent decision",
+            risks,
+            metrics: {
+              pnl_pct:         pnlPct,
+              pnl_usd:         pnlUsd,
+              fees_earned_usd: feesUsd,
+              minutes_held:    minutesHeld,
+              strategy:        _tracked?.strategy,
+            },
+          });
+        } catch (e) { log("decision_log_error", `close decision failed: ${e.message}`); }
         _flags.gasLowNotified = false;       // position closed — SOL may have returned, allow fresh gas warning
         _flags.maxPositionsNotified = false; // slot freed — allow next max-positions warning
         if (hiveEnabled()) syncToHive().catch(() => {});

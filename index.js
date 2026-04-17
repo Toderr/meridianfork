@@ -27,6 +27,7 @@ import { _stats, _flags } from "./stats.js";
 import { startDashboard } from "./dashboard/server.js";
 import { extractRules, checkPositionCompliance, filterCandidatesByRules } from "./lesson-rules.js";
 import { cacheTokenProfile } from "./screening-cache.js";
+import { appendDecision, getRecentDecisions } from "./decision-log.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
 import { fileURLToPath } from "url";
@@ -319,7 +320,7 @@ async function runManagementCycle(tier = null) {
         const reason = `Instruction: "${p.instruction}" (pnl_pct=${pnlPct}%)`;
         log("cron", `Instruction pre-check: closing ${p.pair} (${p.position}) — ${reason}`);
         try {
-          await executeTool("close_position", { position_address: p.position, close_reason: reason });
+          await executeTool("close_position", { position_address: p.position, close_reason: reason, _decision_source: "RULE_ENGINE" });
           skippedByInstruction.add(p.position);
           instructionClosePrefix.push(`Auto-closed by instruction: ${p.pair} — ${reason}`);
           if (telegramEnabled()) notifyInstructionClose({ pair: p.pair, instruction: p.instruction, pnlPct: p.pnl?.pnl_pct ?? 0 }).catch(() => {});
@@ -350,7 +351,7 @@ async function runManagementCycle(tier = null) {
           if (action === "force_close") {
             log("lesson_enforce", `Force-closing ${p.pair} (${p.position}) — ${reason}`);
             try {
-              await executeTool("close_position", { position_address: p.position, close_reason: `Lesson rule: ${reason}` });
+              await executeTool("close_position", { position_address: p.position, close_reason: `Lesson rule: ${reason}`, _decision_source: "RULE_ENGINE" });
               skippedByInstruction.add(p.position);
               instructionClosePrefix.push(`Lesson-enforced close: ${p.pair} — ${reason}`);
             } catch (err) {
@@ -405,7 +406,7 @@ async function runManagementCycle(tier = null) {
     for (const p of ruleResult.closes) {
       const reason = p._ruleResult.reason;
       try {
-        await executeTool("close_position", { position_address: p.position, close_reason: reason });
+        await executeTool("close_position", { position_address: p.position, close_reason: reason, _decision_source: "RULE_ENGINE" });
         log("mgmt_rule", `CLOSE ${p.pair}: ${reason}`);
       } catch (err) {
         log("cron_error", `Rule-engine close failed for ${p.pair}: ${err.message}`);
@@ -415,7 +416,7 @@ async function runManagementCycle(tier = null) {
     // Execute fee claims
     for (const p of ruleResult.claims) {
       try {
-        await executeTool("claim_fees", { position_address: p.position });
+        await executeTool("claim_fees", { position_address: p.position, _decision_source: "RULE_ENGINE" });
         log("mgmt_rule", `CLAIM ${p.pair}: ${p._ruleResult.reason}`);
       } catch (err) {
         log("cron_error", `Rule-engine claim failed for ${p.pair}: ${err.message}`);
@@ -598,6 +599,13 @@ async function runScreeningCycle() {
         notifyMaxPositions({ count: prePositions.total_positions, max: config.risk.maxPositions }).catch(() => {});
         _flags.maxPositionsNotified = true;
       }
+      appendDecision({
+        type: "skip",
+        actor: "SCREENER",
+        summary: "Screening skipped",
+        reason: `Max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`,
+        metrics: { positions_open: prePositions.total_positions, max_positions: config.risk.maxPositions },
+      });
       _screeningBusy = false;
       return;
     }
@@ -611,6 +619,13 @@ async function runScreeningCycle() {
         _flags.gasLowNotified = true;
         _flags.gasLowNotifiedAt = Date.now();
       }
+      appendDecision({
+        type: "skip",
+        actor: "SCREENER",
+        summary: "Screening skipped",
+        reason: `Insufficient SOL: ${preBalance.sol.toFixed(3)} < ${minRequired} required`,
+        metrics: { sol_balance: preBalance.sol, sol_required: minRequired },
+      });
       _screeningBusy = false;
       return;
     }
@@ -836,6 +851,17 @@ If no candidate passed rules or confidence <= 7: NO DEPLOY — [1 sentence reaso
 Do NOT write next steps, lessons, observations, or anything else.
       `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 4096);
       screenReport = content;
+      // If the screener chose not to deploy, record the reasoning so the user (and future cycles) can see it.
+      // The deploy success path is already logged inside the executor — only NO DEPLOY needs explicit tagging here.
+      if (/\bNO DEPLOY\b/i.test(content || "")) {
+        appendDecision({
+          type: "no_deploy",
+          actor: "SCREENER",
+          summary: "Screener chose not to deploy",
+          reason: (content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim().slice(0, 500),
+          metrics: { candidates_evaluated: candidates.length },
+        });
+      }
     } catch (error) {
       _stats.errors++;
       log("cron_error", `Screening cycle failed: ${error.message}`);
@@ -921,7 +947,7 @@ async function runPnlChecker() {
         if (minutesHeld >= maxMinutesHeld) {
           log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: experiment time limit ${minutesHeld}m >= ${maxMinutesHeld}m — closing`);
           _trailingStops.delete(tracked.position);
-          await executeTool("close_position", { position_address: tracked.position, close_reason: `Experiment time limit: ${minutesHeld}m` });
+          await executeTool("close_position", { position_address: tracked.position, close_reason: `Experiment time limit: ${minutesHeld}m`, _decision_source: "PNL_CHECKER" });
           continue;
         }
       }
@@ -932,7 +958,7 @@ async function runPnlChecker() {
       if (pnl && !pnl.error && pnl.current_value_usd === 0 && (pnl.unclaimed_fee_usd ?? 0) === 0) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: current value = 0 — CLOSE (empty position)`);
         _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: "Empty position: current value = 0" });
+        await executeTool("close_position", { position_address: tracked.position, close_reason: "Empty position: current value = 0", _decision_source: "PNL_CHECKER" });
         continue;
       }
 
@@ -947,7 +973,7 @@ async function runPnlChecker() {
       if (pct <= SL_PCT) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% <= ${SL_PCT}% — STOP LOSS`);
         _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Stop loss: pnl ${pct}%` });
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Stop loss: pnl ${pct}%`, _decision_source: "PNL_CHECKER" });
         continue;
       }
 
@@ -955,7 +981,7 @@ async function runPnlChecker() {
       if (pct >= expFastTp) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${expFastTp}% — FAST TAKE PROFIT`);
         _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%` });
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Fast TP: pnl ${pct}%`, _decision_source: "PNL_CHECKER" });
         continue;
       }
 
@@ -963,7 +989,7 @@ async function runPnlChecker() {
       if (pct >= TP_PCT) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${TP_PCT}% — TAKE PROFIT`);
         _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Take profit: pnl ${pct}%` });
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Take profit: pnl ${pct}%`, _decision_source: "PNL_CHECKER" });
         continue;
       }
 
@@ -973,7 +999,7 @@ async function runPnlChecker() {
         if (hit) {
           log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% >= ${hit.threshold_pct}% — LESSON TP`);
           _trailingStops.delete(tracked.position);
-          await executeTool("close_position", { position_address: tracked.position, close_reason: `Lesson TP: pnl ${pct}% >= ${hit.threshold_pct}%` });
+          await executeTool("close_position", { position_address: tracked.position, close_reason: `Lesson TP: pnl ${pct}% >= ${hit.threshold_pct}%`, _decision_source: "PNL_CHECKER" });
           continue;
         }
       }
@@ -993,7 +1019,7 @@ async function runPnlChecker() {
       if (stop && pct < expTrailFloor) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${expTrailFloor}% — CLOSE`);
         _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%` });
+        await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%`, _decision_source: "PNL_CHECKER" });
       }
     }
   } finally {
@@ -1283,6 +1309,9 @@ async function handleTelegramCommand(rawText, sendMessage, opts = {}) {
       "                     Set trading goals",
       "/goals clear         Remove all goals",
       "",
+      "── Decisions ──",
+      "/decisions [N]       Last N decisions (default 10) — why deploys/closes/skips happened",
+      "",
       "── Claude AI ──",
       "/claude <question>   Ask Claude about positions, lessons, journal",
       "",
@@ -1441,6 +1470,42 @@ async function handleTelegramCommand(rawText, sendMessage, opts = {}) {
     return true;
   }
 
+  if (cmd.startsWith("/decisions")) {
+    const arg = text.slice("/decisions".length).trim();
+    const n = arg ? Math.max(1, Math.min(50, parseInt(arg, 10) || 10)) : 10;
+    try {
+      const decisions = getRecentDecisions({ limit: n });
+      if (!decisions.length) {
+        sendMessage("📓 No decisions recorded yet. They'll appear here as the agent deploys, closes, skips, or no-deploys.").catch(() => {});
+        return true;
+      }
+      const lines = [`📓 Last ${decisions.length} decision(s) — newest first`, ""];
+      for (let i = 0; i < decisions.length; i++) {
+        const d = decisions[i];
+        const ts = d.ts ? d.ts.slice(5, 16).replace("T", " ") : "—";
+        const where = d.pool_name || (d.pool ? d.pool.slice(0, 8) : "—");
+        lines.push(`${i + 1}. ${ts} [${d.actor}] ${d.type.toUpperCase()} ${where}`);
+        if (d.summary) lines.push(`   ${d.summary}`);
+        if (d.reason)  lines.push(`   why: ${d.reason}`);
+        if (d.risks?.length) lines.push(`   risks: ${d.risks.join(", ")}`);
+        lines.push("");
+      }
+      // Telegram caps at 4096 chars; chunk by message if needed
+      let buf = "";
+      for (const line of lines) {
+        if (buf.length + line.length + 1 > 3800) {
+          sendMessage(buf.trimEnd()).catch(() => {});
+          buf = "";
+        }
+        buf += line + "\n";
+      }
+      if (buf.trim()) sendMessage(buf.trimEnd()).catch(() => {});
+    } catch (e) {
+      sendMessage(`Error reading decisions: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
   if (cmd === "/freeze" || cmd === "/unfreeze") {
     try {
       const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
@@ -1481,6 +1546,7 @@ async function handleTelegramCommand(rawText, sendMessage, opts = {}) {
             const result = await executeTool("close_position", {
               position_address: pos.position,
               close_reason: "withdraw — zap out all to SOL",
+              _decision_source: "USER",
             });
             closeResults.push({ pair: pos.pool_name || pos.position.slice(0, 8), success: result?.success, pnl_pct: result?.pnl_pct });
             if (result?.success) {

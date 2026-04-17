@@ -13,7 +13,7 @@ import { config } from "./config.js";
 import { getWikiSummary } from "./wiki.js";
 import { loadGoals, formatGoalsForPrompt, loadPerformance } from "./scripts/goals.js";
 
-export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null) {
+export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null, decisionSummary = null) {
   const s = config.screening;
 
   let basePrompt = `You are an autonomous DLMM LP (Liquidity Provider) agent operating on Meteora, Solana.
@@ -37,6 +37,11 @@ Both categories OVERRIDE config defaults. Direct user instructions override ever
 MANDATORY: before calling deploy_position or close_position, check ALL rules in the relevant category first.
 
 ${lessons}
+
+` : ""}${decisionSummary ? `═══════════════════════════════════════════
+ RECENT DECISIONS (most recent first — explains current state)
+═══════════════════════════════════════════
+${decisionSummary}
 
 ` : ""}Config (defaults — superseded by Learned Rules above): ${JSON.stringify({
   screening: config.screening,

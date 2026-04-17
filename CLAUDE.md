@@ -37,6 +37,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `pool-memory.js` | Per-pool deploy history and notes |
 | `screening-cache.js` | In-memory cache of token characteristics from screening → used at close for lesson derivation |
 | `management-rules.js` | Deterministic management rule engine — replaces LLM for position decisions |
+| `decision-log.js` | Structured why-log of every deploy/close/skip/no-deploy — answers "why did you…?" without re-deriving from logs |
 | `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
 | `scripts/claude-ask.js` | Telegram `/claude` Q&A agent via `claude --print` |
 | `scripts/claude-lesson-updater.js` | Auto lesson updater — runs every 5 closes, enriched with autoresearch backtest |
@@ -47,7 +48,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
-`user-config.json`, `state.json`, `journal.json`, `lessons.json`, `experiment-lessons.json`, `strategy-library.json`, `pool-memory.json`, `experiments.json`, `.env`, `.agent.pid`, `wiki/`
+`user-config.json`, `state.json`, `journal.json`, `lessons.json`, `experiment-lessons.json`, `strategy-library.json`, `pool-memory.json`, `experiments.json`, `decision-log.json`, `.env`, `.agent.pid`, `wiki/`
 
 All runtime JSON files use **atomic writes** (write to `.tmp` then `fs.renameSync`) to prevent corruption on crash.
 
@@ -284,6 +285,7 @@ Command matching uses `cmd = text.toLowerCase()` with aggressive Unicode strippi
 | `/goals` | View progress, set (`/goals win_rate=80 max_loss=-10`), or clear (`/goals clear`) |
 | `/freeze` / `/unfreeze` | Stop/resume all auto-lesson generation |
 | `/withdraw` | Close all, swap to SOL, report balance |
+| `/decisions [N]` | Last N decisions (default 10) — why deploys/closes/skips happened |
 
 ## VPS Deployment
 
@@ -313,6 +315,17 @@ Python CLI (`cli-anything-meridian`) for inspecting/configuring the agent. Group
 - Commit frequently, explain *why*
 - Runtime files are gitignored — safe to `git pull` on VPS
 - **Always update `CLAUDE.md` before pushing**
+
+## Decision Log
+
+Structured why-log at `decision-log.json` (gitignored, atomic writes, ring buffer 200 entries). Each entry: `{id, ts, type, actor, pool, pool_name, position, summary, reason, risks[], metrics{}}`.
+
+- **Centralized capture**: `appendDecision()` is wired into the executor's success branch — every successful `deploy_position` and `close_position` is logged automatically with metrics. Never throws (failure logs and returns null).
+- **Actor tagging via `_decision_source`**: Internal callers pass `_decision_source: "RULE_ENGINE" | "PNL_CHECKER" | "USER"` to `executeTool`. The executor strips this hint from args before invoking the underlying tool, then uses it to tag the decision actor. LLM-driven calls (no hint) default to `"AGENT"`.
+- **Skip / no-deploy capture**: `index.js` calls `appendDecision()` directly for screening skips (max positions, low SOL) and for screener `NO DEPLOY` outputs.
+- **Prompt injection**: `agent.js` calls `getDecisionSummary(6)` and passes it through `buildSystemPrompt()` into a `RECENT DECISIONS` block. Agents see the last 6 decisions in every cycle.
+- **Tool**: `get_recent_decisions({limit, type, actor, position})` is registered for SCREENER, MANAGER, and GENERAL roles — preferred for answering "why did you…?" questions without triggering trades.
+- **Telegram**: `/decisions [N]` shows the last N decisions formatted with timestamp, actor, type, summary, reason, and risks.
 
 ## Observability
 
