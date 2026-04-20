@@ -32,10 +32,60 @@ function append(entry) {
   save(data);
 }
 
+// ─── Lookups used by close-time enrichment ──────────────────────
+
+/**
+ * Find the most recent open entry for a given position address.
+ * Returns null if not found. Reads from disk each call — journal is small
+ * and this happens once per close.
+ */
+function findOpenEntry(positionAddress) {
+  if (!positionAddress) return null;
+  const data = load();
+  for (let i = data.entries.length - 1; i >= 0; i--) {
+    const e = data.entries[i];
+    if (e.type === "open" && e.position === positionAddress) return e;
+  }
+  return null;
+}
+
+/**
+ * Public read-only accessor — used by external modules that want to enrich
+ * a close payload using data captured at open (e.g. lessons.js).
+ */
+export function peekOpenEntry(positionAddress) {
+  return findOpenEntry(positionAddress);
+}
+
+/**
+ * Compute minutes from open to first fee event for a position.
+ * Considers both prior `claim` entries and the close itself when fees > 0.
+ * Returns null if no fee event or open time unknown.
+ */
+function computeTimeToFirstFee(positionAddress, openedAtMs, feesAtClose, closedAtMs) {
+  if (!positionAddress || openedAtMs == null) return null;
+  const data = load();
+  let firstFeeMs = null;
+  for (const e of data.entries) {
+    if (e.type === "claim" && e.position === positionAddress && e.timestamp) {
+      const t = new Date(e.timestamp).getTime();
+      if (firstFeeMs == null || t < firstFeeMs) firstFeeMs = t;
+    }
+  }
+  if (firstFeeMs == null && feesAtClose && feesAtClose > 0) firstFeeMs = closedAtMs;
+  if (firstFeeMs == null) return null;
+  return Math.max(0, Math.round((firstFeeMs - openedAtMs) / 60000));
+}
+
 // ─── Record Events ──────────────────────────────────────────────
 
 /**
  * Record a position open event.
+ * Top-level fields kept stable for back-compat with reports/dashboard/wiki.
+ * Rich snapshots live in nested objects (token_profile, strategy_config) — readers
+ * that don't know about them simply ignore them; new readers can rely on them
+ * being present on every entry written by this version.
+ *
  * @param {Object} d
  * @param {string} d.position
  * @param {string} d.pool
@@ -49,6 +99,8 @@ function append(entry) {
  * @param {number} d.fee_tvl_ratio
  * @param {number} d.organic_score
  * @param {*}      d.bin_range
+ * @param {Object} [d.token_profile]    - Full screening-cache snapshot at deploy
+ * @param {Object} [d.strategy_config]  - Active strategy library entry + config thresholds at deploy
  */
 export function recordOpen(d) {
   try {
@@ -69,6 +121,8 @@ export function recordOpen(d) {
       organic_score: d.organic_score,
       bin_range: d.bin_range,
       variant: d.variant || null,
+      token_profile: d.token_profile || null,
+      strategy_config: d.strategy_config || null,
     });
     log("journal", `Recorded open: ${d.pool_name} pos=${d.position?.slice(0, 8)}`);
   } catch (e) {
@@ -78,6 +132,14 @@ export function recordOpen(d) {
 
 /**
  * Record a position close event.
+ * Carries forward the open-time token_profile and strategy_config (looked up
+ * from the matching open entry) and adds:
+ *   - token_profile_close: best-effort fresh snapshot at close (null on failure)
+ *   - duration: structured time metrics (opened_at, closed_at, seconds_held,
+ *     minutes_held, time_to_first_fee_min, time_in_range_pct, peak_pnl_pct,
+ *     minutes_to_peak)
+ * minutes_held remains at the top level for back-compat.
+ *
  * @param {Object} d
  * @param {string} d.position
  * @param {string} d.pool
@@ -93,10 +155,45 @@ export function recordOpen(d) {
  * @param {number} d.minutes_held
  * @param {number} d.range_efficiency
  * @param {string} d.close_reason
+ * @param {Object} [d.token_profile_close]
+ * @param {string} [d._close_snapshot_error]
+ * @param {number} [d.peak_pnl_pct]
+ * @param {number} [d.minutes_to_peak]
  */
 export function recordJournalClose(d) {
   try {
     const pnl_sol = d.pnl_sol != null ? Math.round(d.pnl_sol * 10000) / 10000 : null;
+
+    // Look up the matching open entry to carry forward open-time snapshots
+    // and to compute precise duration. Done synchronously off the in-memory
+    // load() — same file we're about to append to.
+    const openEntry = findOpenEntry(d.position);
+    const openedAtMs = openEntry?.timestamp
+      ? new Date(openEntry.timestamp).getTime()
+      : null;
+    const closedAtMs = Date.now();
+    const secondsHeld = openedAtMs != null
+      ? Math.max(0, Math.round((closedAtMs - openedAtMs) / 1000))
+      : null;
+    const minutesHeld = d.minutes_held != null
+      ? d.minutes_held
+      : (secondsHeld != null ? Math.floor(secondsHeld / 60) : null);
+
+    // First fee: scan claim entries for this position; if none, fall back to
+    // close time when fees_earned_usd > 0 (single claim at close).
+    const timeToFirstFeeMin = computeTimeToFirstFee(d.position, openedAtMs, d.fees_earned_usd, closedAtMs);
+
+    const duration = {
+      opened_at: openEntry?.timestamp || null,
+      closed_at: new Date(closedAtMs).toISOString(),
+      seconds_held: secondsHeld,
+      minutes_held: minutesHeld,
+      time_to_first_fee_min: timeToFirstFeeMin,
+      time_in_range_pct: d.range_efficiency ?? null,
+      peak_pnl_pct: d.peak_pnl_pct ?? null,
+      minutes_to_peak: d.minutes_to_peak ?? null,
+    };
+
     append({
       id: Date.now(),
       type: "close",
@@ -113,12 +210,17 @@ export function recordJournalClose(d) {
       pnl_sol,
       pnl_pct: d.pnl_pct,
       sol_price: d.sol_price || 0,
-      minutes_held: d.minutes_held,
+      minutes_held: minutesHeld,
       range_efficiency: d.range_efficiency,
       close_reason: d.close_reason,
       bin_range: d.bin_range ?? null,
       bin_step: d.bin_step ?? null,
       variant: d.variant || null,
+      token_profile: openEntry?.token_profile ?? null,
+      strategy_config: openEntry?.strategy_config ?? null,
+      token_profile_close: d.token_profile_close ?? null,
+      _close_snapshot_error: d._close_snapshot_error ?? null,
+      duration,
     });
     log("journal", `Recorded close: ${d.pool_name} pnl=$${d.pnl_usd?.toFixed(2)} (${pnl_sol != null ? pnl_sol.toFixed(4) : "?"} SOL)`);
     if (journalBotEnabled()) {

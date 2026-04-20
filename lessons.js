@@ -134,8 +134,34 @@ export async function recordPerformance(perf) {
     recorded_at: new Date().toISOString(),
   };
 
-  // Record to trading journal with native pnl_sol from Meteora API
+  // Record to trading journal with native pnl_sol from Meteora API.
+  // Best-effort enrichment: token_profile_close from screening cache (warm if
+  // position closed within MAX_AGE_MS), peak from in-memory peak tracker.
   try {
+    const { getTokenProfile } = await import("./screening-cache.js");
+    const { consumePeak } = await import("./stats.js");
+
+    let tokenProfileClose = null;
+    let snapshotError = null;
+    try {
+      tokenProfileClose = getTokenProfile(perf.pool) || null;
+      if (!tokenProfileClose) snapshotError = "screening_cache_miss";
+    } catch (snapErr) {
+      snapshotError = `snapshot_failed: ${snapErr.message}`;
+    }
+
+    const peak = consumePeak(perf.position);
+    let minutesToPeak = null;
+    if (peak && peak.at) {
+      // Open time looked up from journal inside recordJournalClose; we
+      // approximate here using minutes_held - (now - peak.at)/60000 fallback.
+      const elapsedSinceOpen = entry.minutes_held;
+      const minutesSincePeak = Math.max(0, Math.round((Date.now() - peak.at) / 60000));
+      if (Number.isFinite(elapsedSinceOpen)) {
+        minutesToPeak = Math.max(0, elapsedSinceOpen - minutesSincePeak);
+      }
+    }
+
     recordJournalClose({
       position: entry.position,
       pool: entry.pool,
@@ -155,6 +181,10 @@ export async function recordPerformance(perf) {
       bin_range: entry.bin_range ?? null,
       bin_step: entry.bin_step ?? null,
       variant: entry.variant || null,
+      token_profile_close: tokenProfileClose,
+      _close_snapshot_error: snapshotError,
+      peak_pnl_pct: peak?.peak ?? null,
+      minutes_to_peak: minutesToPeak,
     });
   } catch (e) {
     log("journal_error", `Failed to journal close: ${e.message}`);

@@ -16,7 +16,7 @@ import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, removeLesson, getPerformanceHistory, pinLesson, unpinLesson, listLessons, listAllLessons } from "../lessons.js";
 import { setPositionInstruction, getTrackedPosition } from "../state.js";
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
-import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
+import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy, getActiveStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { syncToHive, isEnabled as hiveEnabled, getHivePulse, queryPoolConsensus, queryLessonConsensus } from "../hive-mind.js";
@@ -409,7 +409,41 @@ export async function executeTool(name, args) {
             try {
               const w = await getWalletBalances({});
               const { recordOpen } = await import("../journal.js");
+              const { getTokenProfile } = await import("../screening-cache.js");
               const tracked = getTrackedPosition(result.position);
+
+              // Snapshot strategy library entry + active config thresholds.
+              // Both calls are local (no network); failures fall through to null.
+              let strategyConfig = null;
+              try {
+                const activeStrategy = getActiveStrategy();
+                const r = config.risk || {};
+                const m = config.management || {};
+                const s = config.screening || {};
+                strategyConfig = {
+                  strategy_id: activeStrategy?.id || args.strategy || null,
+                  library_entry: activeStrategy || null,
+                  thresholds: {
+                    takeProfitFeePct:        r.takeProfitFeePct ?? null,
+                    fastTpPct:               r.fastTpPct ?? null,
+                    emergencyPriceDropPct:   r.emergencyPriceDropPct ?? null,
+                    trailingActivate:        r.trailingActivate ?? null,
+                    trailingFloor:           r.trailingFloor ?? null,
+                    outOfRangeBinsToClose:   m.outOfRangeBinsToClose ?? null,
+                    minFeeTvl24h:            m.minFeeTvl24h ?? s.minFeeTvl24h ?? null,
+                    minClaimAmount:          m.minClaimAmount ?? null,
+                    positionSizePct:         r.positionSizePct ?? null,
+                    gasReserve:              r.gasReserve ?? null,
+                    forceSolSingleSided:     r.forceSolSingleSided ?? null,
+                    deployAmountSol:         r.deployAmountSol ?? null,
+                    maxDeployAmount:         r.maxDeployAmount ?? null,
+                    maxPositions:            r.maxPositions ?? null,
+                  },
+                };
+              } catch (cfgErr) {
+                log("executor", `strategy_config snapshot failed: ${cfgErr.message}`);
+              }
+
               recordOpen({
                 position: result.position,
                 pool: args.pool_address,
@@ -426,6 +460,8 @@ export async function executeTool(name, args) {
                 organic_score: args.organic_score,
                 bin_range: result.bin_range || args.bin_range,
                 variant: args.variant,
+                token_profile: getTokenProfile(args.pool_address) || null,
+                strategy_config: strategyConfig,
               });
               journalSuccess = true;
               break;

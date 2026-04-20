@@ -26,7 +26,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `lessons.js` | Performance recording and learning system |
 | `lesson-rules.js` | Lesson rule extractor + compliance checkers |
 | `wiki.js` | Knowledge wiki — auto-compiled markdown KB from journal/lessons/snapshots |
-| `journal.js` | Append-only trade journal |
+| `journal.js` | Append-only trade journal — open + close entries carry full token profile, strategy library entry, runtime config thresholds, and a duration object (opened_at, closed_at, seconds_held, time_to_first_fee_min, peak_pnl_pct, minutes_to_peak) |
 | `reports.js` | Daily/weekly/monthly plain-text reports |
 | `prompt.js` | System prompt builder |
 | `telegram.js` | Main Telegram bot (long-polling) |

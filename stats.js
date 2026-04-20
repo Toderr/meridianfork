@@ -48,3 +48,24 @@ export const _flags = {
   // Suppress repeated max-positions notifications until a position closes (which frees a slot)
   maxPositionsNotified: false,
 };
+
+// Per-position peak PnL tracker — written by the PnL checker on every pass,
+// read by lessons.js at close time so the journal can record peak_pnl_pct
+// and minutes_to_peak. Cleared on close. In-memory only; resets on restart.
+export const _peakTracker = new Map();
+
+export function recordPeak(positionAddress, pct) {
+  if (!positionAddress || pct == null || !Number.isFinite(pct)) return;
+  const prev = _peakTracker.get(positionAddress);
+  if (!prev || pct > prev.peak) {
+    _peakTracker.set(positionAddress, { peak: pct, at: Date.now() });
+  }
+}
+
+export function consumePeak(positionAddress) {
+  if (!positionAddress) return null;
+  const entry = _peakTracker.get(positionAddress);
+  if (!entry) return null;
+  _peakTracker.delete(positionAddress);
+  return entry;
+}

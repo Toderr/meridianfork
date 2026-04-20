@@ -23,7 +23,7 @@ import { studyTopLPers } from "./tools/study.js";
 import { getFullTokenAnalysis } from "./tools/okx.js";
 import { evaluateAll } from "./management-rules.js";
 import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
-import { _stats, _flags } from "./stats.js";
+import { _stats, _flags, recordPeak } from "./stats.js";
 import { startDashboard } from "./dashboard/server.js";
 import { extractRules, checkPositionCompliance, filterCandidatesByRules } from "./lesson-rules.js";
 import { cacheTokenProfile } from "./screening-cache.js";
@@ -968,6 +968,9 @@ async function runPnlChecker() {
       const feePct = pnl.initial_value_usd > 0
         ? (pnl.unclaimed_fee_usd ?? 0) / pnl.initial_value_usd * 100 : 0;
       const pct = pnl.pnl_pct + feePct;
+
+      // Track peak for journal duration metrics (cleared at close in lessons.js)
+      recordPeak(tracked.position, pct);
 
       // Rule 1: Stop loss
       if (pct <= SL_PCT) {
