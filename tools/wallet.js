@@ -347,7 +347,7 @@ export async function swapToken({
 
   // ─── Check if this token has failed too many times recently ──
   const failure = _swapFailures.get(input_mint);
-  if (failure && failure.count >= 3) {
+  if (failure && failure.count >= 5) {
     const minutesSinceLastFail = (Date.now() - failure.lastFailedAt) / 60000;
     if (minutesSinceLastFail < 60) {
       log("swap", `Skipping swap for ${input_mint} — failed ${failure.count}x in last hour`);
