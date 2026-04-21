@@ -318,6 +318,22 @@ export async function executeTool(name, args) {
     args = rest;
   }
 
+  // ─── HARDCODED: +1 confidence for lper-proven/LPerProven/pullback-entry variants.
+  // Data basis (2026-04-21 audit): LPerProven 100% net wr / +1.63%, pullback-entry
+  // 92% net wr / +0.80%, lper-proven +0.33% net. Applied before the confidence gate
+  // so a 7 → 8 bump on a bonused variant passes the > 7 threshold.
+  if (name === "deploy_position" && args && typeof args === "object") {
+    const LPER_BONUS_VARIANTS = new Set(["lper-proven", "LPerProven", "pullback-entry"]);
+    if (LPER_BONUS_VARIANTS.has(args.variant) && typeof args.confidence_level === "number") {
+      const original = args.confidence_level;
+      const bumped = Math.min(10, original + 1);
+      if (bumped !== original) {
+        args = { ...args, confidence_level: bumped };
+        log("executor", `Confidence bump: variant=${args.variant} ${original} → ${bumped} (hardcoded lper variant bonus)`);
+      }
+    }
+  }
+
   // ─── Pre-execution safety checks ──────────
   if (WRITE_TOOLS.has(name)) {
     const safetyCheck = await runSafetyChecks(name, args);

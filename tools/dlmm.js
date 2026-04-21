@@ -205,8 +205,13 @@ export async function deployPosition({
   const activeStrategy = strategy || config.strategy.strategy;
 
   const activeBinsBelow = bins_below ?? config.strategy.binsBelow;
-  // Force single-sided SOL (downside-only) — bins_above=0 unless explicitly allowed via config
-  const activeBinsAbove = config.strategy.forceSolSingleSided ? 0 : (bins_above ?? 0);
+  // HARDCODED: always single-sided SOL (downside-only). bins_above requests are ignored.
+  // Rationale: upside bin exposure amplifies IL on volatile meme-coin dumps. The config
+  // flag forceSolSingleSided is now moot — enforcement is unconditional.
+  const activeBinsAbove = 0;
+  if ((bins_above ?? 0) !== 0) {
+    log("deploy", `bins_above=${bins_above} requested but forced to 0 (single-sided SOL hardcoded)`);
+  }
 
   if (process.env.DRY_RUN === "true") {
     const totalBins = activeBinsBelow + activeBinsAbove;

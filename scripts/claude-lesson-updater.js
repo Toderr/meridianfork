@@ -18,6 +18,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { pickTargetPool, mapHorizon, runBacktestForPool } from "./autoresearch-bridge.js";
 import { loadGoals, formatGoalsForPrompt, formatGoalsForNotification, loadPerformance } from "./goals.js";
+import { computeTruePnl } from "../true-pnl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
@@ -67,12 +68,14 @@ function loadJson(file) {
 
 function buildPrompt(recentPerf, existingLessons, currentConfig, autoresearchData = null, goalsSection = "", tokenCharSummary = "") {
   const perfLines = recentPerf.map((p, i) => {
-    const sign = (p.pnl_pct ?? 0) >= 0 ? "+" : "";
+    // Fee-inclusive pnl for lesson reviewer — matches user-facing metrics.
+    const tpnl = computeTruePnl(p) || { usd: 0, pct: 0 };
+    const sign = tpnl.pct >= 0 ? "+" : "";
     const tp = p.token_profile;
     const profileHint = tp
       ? ` | mcap=${tp.mcap ?? "?"} holders=${tp.holders ?? "?"} sw=${tp.smart_wallet_count ?? 0} sm_buy=${tp.okx_smart_money_buy ?? "?"} mom1h=${tp.momentum_1h ?? "?"}`
       : "";
-    return `${i + 1}. ${p.pool_name || "?"} | ${p.strategy || "?"} | pnl=${sign}${(p.pnl_pct ?? 0).toFixed(2)}% ($${(p.pnl_usd ?? 0).toFixed(2)}) | held=${p.minutes_held || 0}m | range_eff=${(p.range_efficiency ?? 0).toFixed(0)}% | vol=${p.volatility ?? "?"}${profileHint} | reason=${p.close_reason || "?"}`;
+    return `${i + 1}. ${p.pool_name || "?"} | ${p.strategy || "?"} | pnl=${sign}${tpnl.pct.toFixed(2)}% ($${tpnl.usd.toFixed(2)}) | held=${p.minutes_held || 0}m | range_eff=${(p.range_efficiency ?? 0).toFixed(0)}% | vol=${p.volatility ?? "?"}${profileHint} | reason=${p.close_reason || "?"}`;
   }).join("\n");
 
   const lessonLines = existingLessons.map(l => `- [${l.type || "?"}] ${l.rule}`).join("\n") || "none";

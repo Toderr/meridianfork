@@ -6,6 +6,15 @@
  * has an unparseable natural-language instruction.
  */
 import { config } from "./config.js";
+import { getRecentFeeRate } from "./pool-memory.js";
+
+// HARDCODED: force-close at 120m hold unless recent fee rate clears the floor.
+// Rationale: fee accrual collapses after ~2h (SLICE 7 of the 2026-04-21 fee-inclusive
+// audit — median $/hr drops from $17 in the first 10m to $0.09 past 4h). Holding past
+// 120m is pure exposure unless fees are still flowing.
+const HARD_HOLD_CAP_MIN = 120;
+const HARD_HOLD_FEE_WINDOW_MIN = 30;
+const HARD_HOLD_MIN_FEE_RATE_USD_HR = 2;
 
 /**
  * @param {Object} p  — enriched position (from positionData in index.js)
@@ -52,6 +61,24 @@ export function evaluatePosition(p) {
   // ── Rule 3: Hold-time cut — DISABLED (30-Mar baseline restore) ──────
   // Original hold-time cut rules (age>=30 & pnl<0; age>=15 & pnl<-0.3)
   // disabled per user request to match March 30 behavior.
+
+  // ── Rule 3b: HARDCODED 120m hold cap with fee-rate escape ─────────
+  // After HARD_HOLD_CAP_MIN minutes, force-close unless fees are still
+  // accruing above HARD_HOLD_MIN_FEE_RATE_USD_HR in the last
+  // HARD_HOLD_FEE_WINDOW_MIN minutes. Data-driven from fee-inclusive audit.
+  if (age >= HARD_HOLD_CAP_MIN && p.pool && p.position) {
+    const rate = getRecentFeeRate(p.pool, p.position, HARD_HOLD_FEE_WINDOW_MIN);
+    if (rate !== null && rate >= HARD_HOLD_MIN_FEE_RATE_USD_HR) {
+      // Still fee-productive — let it run, but mark the decision
+      // (fall through to other rules)
+    } else {
+      const reasonRate = rate === null ? "insufficient snapshot history" : `${rate.toFixed(2)} $/hr`;
+      return {
+        action: "close",
+        reason: `Hard hold cap: ${age}m >= ${HARD_HOLD_CAP_MIN}m and last-${HARD_HOLD_FEE_WINDOW_MIN}m fee rate ${reasonRate} < $${HARD_HOLD_MIN_FEE_RATE_USD_HR}/hr`,
+      };
+    }
+  }
 
   // ── Rule 4: Yield-exit ─────────────────────────────────────────────
   if (feeTvl !== null && age >= config.management.minAgeForYieldExit) {

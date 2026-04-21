@@ -19,6 +19,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { runBacktestForPool, mapHorizon } from "./autoresearch-bridge.js";
 import { loadGoals, formatGoalsForPrompt, formatGoalsForNotification, loadPerformance } from "./goals.js";
+import { computeTruePnl } from "../true-pnl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
@@ -64,30 +65,29 @@ function pickExtremes(perfRecords) {
 
   if (todayRecords.length < 2) return null;
 
-  // Sort by pnl_pct
-  const sorted = [...todayRecords].sort((a, b) => (a.pnl_pct ?? 0) - (b.pnl_pct ?? 0));
+  // Sort by fee-inclusive (true_pnl) pct — the user-facing metric.
+  const withTp = todayRecords.map(r => ({ r, tp: computeTruePnl(r) })).filter(x => x.tp);
+  if (withTp.length < 2) return null;
+  const sorted = [...withTp].sort((a, b) => a.tp.pct - b.tp.pct);
 
-  const biggestLoss = sorted[0];
-  const biggestWin = sorted[sorted.length - 1];
-
-  // Need at least one win and one loss to contrast
-  if ((biggestWin.pnl_pct ?? 0) <= 0 && (biggestLoss.pnl_pct ?? 0) <= 0) {
-    // All losses — still analyze worst vs least-worst
-  }
+  const biggestLoss = sorted[0].r;
+  const biggestWin = sorted[sorted.length - 1].r;
 
   return {
     win: biggestWin,
     loss: biggestLoss,
     totalCloses: todayRecords.length,
-    winCount: todayRecords.filter(r => (r.pnl_pct ?? 0) > 0).length,
-    lossCount: todayRecords.filter(r => (r.pnl_pct ?? 0) <= 0).length,
+    winCount: withTp.filter(x => x.tp.is_win).length,
+    lossCount: withTp.filter(x => !x.tp.is_win).length,
   };
 }
 
 // ─── Format trade for prompt ─────────────────────────────────────
 
 function formatTrade(label, trade) {
-  const sign = (trade.pnl_pct ?? 0) >= 0 ? "+" : "";
+  // Fee-inclusive PnL — the single user-facing metric.
+  const tp = computeTruePnl(trade) || { usd: 0, pct: 0, fees_usd: trade.fees_earned_usd ?? 0 };
+  const sign = tp.pct >= 0 ? "+" : "";
   return `${label}:
   Pool: ${trade.pool_name || "?"} (${trade.pool})
   Strategy: ${trade.strategy || "?"}
@@ -95,8 +95,8 @@ function formatTrade(label, trade) {
   Bin step: ${trade.bin_step || "?"}
   Volatility: ${trade.volatility ?? "?"}
   Amount: ${trade.amount_sol ?? "?"} SOL ($${(trade.initial_value_usd ?? 0).toFixed(2)})
-  PnL: ${sign}${(trade.pnl_pct ?? 0).toFixed(2)}% ($${(trade.pnl_usd ?? 0).toFixed(2)})
-  Fees earned: $${(trade.fees_earned_usd ?? 0).toFixed(2)}
+  PnL (fee-inclusive): ${sign}${tp.pct.toFixed(2)}% ($${tp.usd.toFixed(2)})
+  Of which fees: $${tp.fees_usd.toFixed(2)}
   Held: ${trade.minutes_held ?? 0}m | In range: ${trade.minutes_in_range ?? 0}m
   Close reason: ${trade.close_reason || "?"}
   Range efficiency: ${((trade.minutes_in_range ?? 0) / Math.max(trade.minutes_held ?? 1, 1) * 100).toFixed(0)}%`;
@@ -205,13 +205,15 @@ Respond ONLY with valid JSON:
 function buildNotificationMessage(extremes, newLessons, rationale) {
   const w = extremes.win;
   const l = extremes.loss;
-  const wSign = (w.pnl_pct ?? 0) >= 0 ? "+" : "";
-  const lSign = (l.pnl_pct ?? 0) >= 0 ? "+" : "";
+  const wTp = computeTruePnl(w) || { pct: 0 };
+  const lTp = computeTruePnl(l) || { pct: 0 };
+  const wSign = wTp.pct >= 0 ? "+" : "";
+  const lSign = lTp.pct >= 0 ? "+" : "";
 
   const parts = [`🔬 DAILY RESEARCH`];
   parts.push(`Closes: ${extremes.totalCloses} | W ${extremes.winCount} / L ${extremes.lossCount}`);
-  parts.push(`\n🏆 Best: ${w.pool_name} ${wSign}${(w.pnl_pct ?? 0).toFixed(2)}% (${w.strategy}, ${w.minutes_held}m)`);
-  parts.push(`💀 Worst: ${l.pool_name} ${lSign}${(l.pnl_pct ?? 0).toFixed(2)}% (${l.strategy}, ${l.minutes_held}m)`);
+  parts.push(`\n🏆 Best: ${w.pool_name} ${wSign}${wTp.pct.toFixed(2)}% (${w.strategy}, ${w.minutes_held}m)`);
+  parts.push(`💀 Worst: ${l.pool_name} ${lSign}${lTp.pct.toFixed(2)}% (${l.strategy}, ${l.minutes_held}m)`);
 
   if (newLessons.length > 0) {
     parts.push(`\n📚 Lessons (${newLessons.length}):`);
@@ -274,7 +276,9 @@ export async function runDailyAutoresearch() {
       return;
     }
 
-    log("autoresearch", `Daily review: ${extremes.totalCloses} closes | best: ${extremes.win.pool_name} +${(extremes.win.pnl_pct ?? 0).toFixed(1)}% | worst: ${extremes.loss.pool_name} ${(extremes.loss.pnl_pct ?? 0).toFixed(1)}%`);
+    const logWinTp = computeTruePnl(extremes.win) || { pct: 0 };
+    const logLossTp = computeTruePnl(extremes.loss) || { pct: 0 };
+    log("autoresearch", `Daily review: ${extremes.totalCloses} closes | best: ${extremes.win.pool_name} +${logWinTp.pct.toFixed(1)}% | worst: ${extremes.loss.pool_name} ${logLossTp.pct.toFixed(1)}%`);
 
     // Fetch backtest context for both pools (parallel, best-effort)
     const winHz = mapHorizon(extremes.win.minutes_held ?? 15);

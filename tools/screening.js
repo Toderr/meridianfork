@@ -3,6 +3,7 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { getRiskFlags } from "./okx.js";
+import { isInPostLossCooldown } from "../pool-memory.js";
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
@@ -88,8 +89,32 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
 
+  // Post-loss cooldown — block re-entry on pools/tokens that just lost ≤ -5%
+  const cooldownMin = config.screening.postLossCooldownMin ?? 120;
+  const cooldownThresholdPct = config.screening.postLossCooldownPct ?? -5;
+
+  // HARDCODED: reject volatility > 5. Per 2026-04-21 fee-inclusive audit
+  // (SLICE 5), vol >= 10 bucket is -7.12% net and vol 5-10 is +0.08% net —
+  // only vol 2-5 (+1.51% net, 100% net wr) clears comfortably. Cap at 5.
+  const MAX_VOLATILITY_HARDCODED = 5;
+
   const eligible = pools
     .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
+    .filter((p) => {
+      if (p.volatility != null && p.volatility > MAX_VOLATILITY_HARDCODED) {
+        log("screening", `Volatility cap: ${p.name} blocked — volatility ${p.volatility} > ${MAX_VOLATILITY_HARDCODED}`);
+        return false;
+      }
+      return true;
+    })
+    .filter((p) => {
+      const cd = isInPostLossCooldown(p.pool, p.base?.mint, cooldownMin, cooldownThresholdPct);
+      if (cd.cooling) {
+        log("screening", `Cooldown: ${p.name} blocked — last close ${cd.last_pnl_pct}% ${cd.minutes_since}m ago (scope=${cd.scope}, cooldown=${cd.cooldown_min}m)`);
+        return false;
+      }
+      return true;
+    })
     .slice(0, limit);
 
   // Enrich with OKX risk flags — parallel, fire-and-forget per candidate

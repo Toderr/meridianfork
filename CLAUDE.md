@@ -98,20 +98,31 @@ Three keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`, `HELIUS_API_KEY_3`). On 429, r
 
 **On-chain PnL fallback**: When Meteora datapi fails (or returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
-## PnL Display — Price-Only + Fees Separate
+## PnL Display — Storage Price-Only, Display Fee-Inclusive (true_pnl)
 
 **Meteora datapi `p.pnlUsd` is fee-inclusive** (total PnL including earned fees). `getPositionPnl()` strips fees to derive price-only values: `pnlUsdPrice = pnlUsdTotal - unclaimedUsd`, `pnl_pct = pnlUsdPrice / initial * 100`.
 
-**All stored/displayed PnL values (USD, SOL, %) are price-only**, matching Meteora UI. Fees shown separately:
-- Journal stores `pnl_usd`, `pnl_sol`, `pnl_pct` (all price-only) and `fees_earned_usd` separately
-- Close notifications (both bots): price-only PnL line + separate "Fees Earned" line
-- Dashboard & reports: add `fees_earned_usd` to `pnl_usd` for fee-inclusive aggregates (net PnL, win/loss)
-- PnL checker: adds `unclaimed_fee_usd / initial * 100` to price-only `pnl_pct` for TP/SL threshold comparisons (total return)
+**Storage layer unchanged** — journal keeps price-only `pnl_usd`, `pnl_sol`, `pnl_pct` alongside `fees_earned_usd`.
+
+**Every user-facing surface displays fee-inclusive (`true_pnl`) as the single PnL number** — no price-only/fees split anywhere the user reads. Implemented via the `true-pnl.js` helper:
+- `computeTruePnl(entry)` → `{ usd, sol, pct, is_win, fees_usd }` for journal closes OR live positions
+- `aggregateTruePnl(entries)` → `{ count, total_usd, avg_pct, true_win_rate_pct, profit_factor, best, worst, … }`
+
+Consumers:
+- Telegram `notifyJournalClose`, `/recent`, `/today`, `/closes`, `/stats`, `notifyInstructionClose`
+- Telegram `/status` (per-position PnL block in `index.js`) and hourly health check log
+- `reports.js` daily/weekly/monthly (totals, avg profit/loss, best/worst, tail risk, strategy/variant breakdown)
+- `dashboard/api.js` `computePortfolio` (net PnL, cumulative, calendar) + `lessons.js` `getPerformanceSummary`/`getPerformanceHistory`
+- `dashboard/index.html` open-position PnL %, history table PnL %, journal table PnL USD/SOL and CLOSE± badge
+- `scripts/goals.js` `calculateProgress` (win rate, max loss, profit factor, avg)
+- `scripts/claude-lesson-updater.js` + `scripts/autoresearch-loop.js` close-line summaries and biggest-win/loss picks
+
+PnL checker (`index.js` line ~965) still composes `pnl_pct + feePct` inline for TP/SL threshold comparisons — same fee-inclusive semantics, but lives at the rule boundary, not the display boundary. Tool outputs for agents/CLI (`getPositionPnl`, cli.js JSON) keep the raw storage shape.
 - `feesSol` uses `fees_earned_usd / sol_price` (SOL price threaded from `closePosition` through the notification chain)
 
-## PnL Checker (every 30s, no LLM)
+## PnL Checker (every 15s, no LLM)
 
-Runs via `setInterval`, skips when `_managementBusy` or position has `instruction` set.
+Runs via `setInterval`, skips when `_managementBusy` or position has `instruction` set. Poll cadence was tightened from 30s→15s on 2026-04-21 to close the gap-through window on volatile meme dumps (stops that triggered at -10% were realizing -13% to -21% due to price moving between polls).
 
 ```
 empty position (value=0, fees=0)     → CLOSE
@@ -134,9 +145,10 @@ Handled by `management-rules.js` rule engine (`evaluateAll()`). LLM only called 
 3. instruction set AND condition NOT met → HOLD
 4. unparseable instruction → **LLM fallback** (only these positions, max 3 steps)
 5. hold-time cut: **DISABLED** (30-Mar baseline restore). Original rules (age ≥15m & pnl<-0.3% → CLOSE; age ≥30m & pnl<0% → CLOSE) commented out in `management-rules.js`.
-6. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
-7. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
-8. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
+6. **HARDCODED 120m hold cap (Rule 3b)**: `age ≥ 120m` → CLOSE **unless** fees/hr over the last 30m ≥ $2 (computed from `getRecentFeeRate()` in `pool-memory.js` using `collected_fees_usd` deltas in snapshots). Constants live at the top of `management-rules.js` — `HARD_HOLD_CAP_MIN`, `HARD_HOLD_FEE_WINDOW_MIN`, `HARD_HOLD_MIN_FEE_RATE_USD_HR`.
+7. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
+8. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
+9. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
 
 NOTE: Stop loss / take profit handled by PnL checker, not management cycle.
 NOTE: Health check is also deterministic (no LLM) — logs portfolio summary hourly.
@@ -144,6 +156,8 @@ NOTE: Health check is also deterministic (no LLM) — logs portfolio summary hou
 ## Confidence-Based Position Sizing
 
 Deploys only if confidence > 7. Amount scales: `deployAmount × (confidence/10)`, minimum 0.1 SOL.
+
+**HARDCODED variant bonus** (`tools/executor.js`, early in `executeTool`): when `variant ∈ {lper-proven, LPerProven, pullback-entry}`, `confidence_level` is bumped by +1 (capped at 10) before the confidence gate and before sizing. Data basis (2026-04-21 fee-inclusive audit): these three variants were the top net-return performers (LPerProven 100% net wr / +1.63%, pullback-entry 92% net wr / +0.80%, lper-proven +0.33% net).
 
 ## Transaction Retry
 
@@ -154,7 +168,9 @@ All on-chain calls go through `sendWithRetry()` — 5 attempts with exponential 
 - **Sizing**: `(wallet - gasReserve) × positionSizePct`, clamped between `deployAmountSol` and `maxDeployAmount`
 - **Max positions**: `config.risk.maxPositions` (default 10)
 - **Gas reserve**: `gasReserve` SOL (default 0.2) always kept
-- **Single-sided SOL**: `forceSolSingleSided: true` forces `bins_above=0` on all deploys (downside-only). Prevents whipsaw IL from upside bin exposure on volatile meme tokens.
+- **Single-sided SOL (HARDCODED)**: `bins_above` is always 0 in `tools/dlmm.js` — the config flag `forceSolSingleSided` is now moot. Any `bins_above` value requested by the LLM or by an experiment is silently overridden and logged. Prevents whipsaw IL from upside bin exposure on volatile meme tokens.
+- **Post-loss cooldown**: `isInPostLossCooldown(pool, mint, cooldownMin, thresholdPct)` in `pool-memory.js` blocks re-entry on pools or base_mints that closed ≤ `postLossCooldownPct` (default -5%) within `postLossCooldownMin` minutes (default 120). Enforced in `tools/screening.js` `getTopCandidates` before the LLM sees the candidate list. Both config keys are hot-reloadable.
+- **Volatility cap (HARDCODED)**: `tools/screening.js` `getTopCandidates` rejects any candidate with `volatility > 5` pre-LLM (constant `MAX_VOLATILITY_HARDCODED = 5`). Basis: 2026-04-21 fee-inclusive audit SLICE 5 — vol 2–5 bucket was 100% net wr / +1.51%, vol 5–10 was +0.08% net (marginal), vol ≥10 was −7.12% net. Not configurable.
 - **Hold-time cut**: Currently **DISABLED** (30-Mar baseline restore). Originally a deterministic early-exit in management-rules.js: ≥15m at <-0.3% → close, ≥30m at <0% → close. Re-enable by un-commenting Rule 3.
 - **Evolution guardrails**: `emergencyPriceDropPct` clamped [-15, -3], `takeProfitFeePct` [2, 5], `fastTpPct` [5, 15], `positionSizePct` [0.15, 0.3]. Prevents threshold evolution from drifting to dangerous values.
 - **Anti-scam**: Only hardcoded gate: `global_fees_sol < 30` (cannot be lowered). All other screening thresholds (top_10_pct, bundlers, organic, mcap, bin_step, etc.) are configurable and learnable — the agent can adjust them via `update_config` or lessons.

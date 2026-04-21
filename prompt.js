@@ -139,13 +139,11 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
    - price down >5% → 20% token / 80% SOL
    Capital is always in SOL terms. Swap the token portion: swap_token SOL→base_mint for the token %.
 
-8. CHOOSE BIN RANGE — call get_pool_detail, read volatility + price_trend:
+8. CHOOSE BIN RANGE — call get_pool_detail, read volatility:
    Total bins (tighter is better — research shows 20-40 bins outperform):
    - Low vol (0-1): 25-35 bins. Med vol (1-3): 35-50. High vol (3-5): 50-60. Extreme: 60-69.
-   Directional split:
-   - Price downtrend → bins_below = round(total × 0.75), bins_above = rest
-   - Price uptrend → bins_below = round(total × 0.35), bins_above = rest
-   - Price flat → bins_below = round(total × 0.55), bins_above = rest
+   HARDCODED: bins_above is always 0 (single-sided SOL / downside-only). Put all bins below active.
+   - bins_below = total_bins, bins_above = 0. Upside requests are silently overridden to 0.
 
 9. PRE-DEPLOY: Check get_wallet_balance. If token needed, call swap_token first. Ensure SOL remaining >= gasReserve.
 

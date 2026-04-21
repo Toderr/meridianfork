@@ -22,7 +22,7 @@ const EXPERIMENTS_FILE = path.join(__dirname, "experiments.json");
 const DEFAULT_PARAMETER_SPACE = {
   strategy:   ["bid_ask", "spot"],
   bins_below: [30, 50, 69, 100],
-  bins_above: [0, 10, 20, 30],
+  bins_above: [0], // HARDCODED single-sided SOL — upside bins always 0
 };
 
 // ─── Default experiment-specific rules ──────────────────────────

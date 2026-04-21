@@ -14,6 +14,7 @@ import { getTrackedPositions, getStateSummary } from "../state.js";
 import { getPerformanceSummary, listLessons, removeLesson, updateLessonFields, getLessonRuleType, addLesson } from "../lessons.js";
 import { extractRules } from "../lesson-rules.js";
 import { _stats } from "../stats.js";
+import { computeTruePnl } from "../true-pnl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LESSONS_PATH = path.join(__dirname, "../lessons.json");
@@ -68,14 +69,16 @@ function computePortfolio(closes) {
   const byDay = {}, byDaySol = {}, byDayInitUsd = {};
   const sorted = [...closes].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
+  // All dashboard PnL numbers are fee-inclusive (true_pnl).
   for (const c of sorted) {
-    const feesUsd = c.fees_earned_usd ?? 0;
-    const pnlUsd = (c.pnl_usd ?? 0) + feesUsd;
-    const pnlSol = (c.pnl_sol ?? 0) + (c.sol_price > 0 ? feesUsd / c.sol_price : 0);
+    const tp = computeTruePnl(c);
+    if (!tp) continue;
+    const pnlUsd = tp.usd;
+    const pnlSol = tp.sol;
     totalPnlUsd += pnlUsd;
     totalPnlSol += pnlSol;
     totalInitUsd += c.initial_value_usd ?? 0;
-    if (pnlUsd > 0) { posGross += pnlUsd; wins++; }
+    if (tp.is_win) { posGross += pnlUsd; wins++; }
     else negGross += Math.abs(pnlUsd);
 
     const day = (c.timestamp || "").slice(0, 10);
@@ -101,12 +104,11 @@ function computePortfolio(closes) {
   // Profit factor
   const profitFactor = negGross > 0 ? posGross / negGross : null;
 
-  // Cumulative series
+  // Cumulative series — fee-inclusive
   let cumUsd = 0, cumSol = 0;
   const cumulative = sorted.map(c => {
-    const cFees = c.fees_earned_usd ?? 0;
-    cumUsd += (c.pnl_usd ?? 0) + cFees;
-    cumSol += (c.pnl_sol ?? 0) + (c.sol_price > 0 ? cFees / c.sol_price : 0);
+    const tp = computeTruePnl(c);
+    if (tp) { cumUsd += tp.usd; cumSol += tp.sol; }
     return { date: c.timestamp, cum_usd: +cumUsd.toFixed(4), cum_sol: +cumSol.toFixed(6) };
   });
 

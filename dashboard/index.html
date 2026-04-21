@@ -956,8 +956,11 @@ function renderPosCard(p, i, sol, solPrice) {
   const upper  = p.upper_bin  ?? p.bin_range?.[1] ?? 0;
   const active = p.active_bin ?? 0;
   const pct    = lower < upper ? Math.max(0, Math.min(100, ((active-lower)/(upper-lower))*100)) : 50;
-  const pu     = (p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0);
-  const ps     = p.pnl_sol != null ? p.pnl_sol + (solPrice > 0 ? (p.unclaimed_fees_usd ?? 0) / solPrice : 0) : (solPrice > 0 ? pu / solPrice : null);
+  // All displayed PnL is fee-inclusive (true_pnl)
+  const feesInc = p.unclaimed_fees_usd ?? 0;
+  const pu     = (p.pnl_usd ?? 0) + feesInc;
+  const ps     = p.pnl_sol != null ? p.pnl_sol + (solPrice > 0 ? feesInc / solPrice : 0) : (solPrice > 0 ? pu / solPrice : null);
+  const ppct   = (p.pnl_pct ?? 0) + (feesInc > 0 && p.initial_value_usd > 0 ? feesInc / p.initial_value_usd * 100 : 0);
   const status = p.in_range
     ? '<span class="badge b-in">In Range</span>'
     : '<span class="badge b-out">Out of Range</span>';
@@ -999,7 +1002,7 @@ function renderPosCard(p, i, sol, solPrice) {
     <div class="pc-metrics">
       <div class="pc-metric">Invested<span class="pc-metric-val g">${investedStr}</span></div>
       <div class="pc-metric">PnL<span class="pc-metric-val ${pc(pnlVal)}">${pnlStr}</span></div>
-      <div class="pc-metric">PnL %<span class="pc-metric-val ${pc(p.pnl_pct)}">${f(p.pnl_pct,2)}%</span></div>
+      <div class="pc-metric">PnL %<span class="pc-metric-val ${pc(ppct)}">${f(ppct,2)}%</span></div>
       <div class="pc-metric">Fees<span class="pc-metric-val">${feesStr}</span></div>
       <div class="pc-metric">Age<span class="pc-metric-val">${fmtHold(p.age_minutes)}</span></div>
     </div>
@@ -1253,9 +1256,11 @@ function renderHistory() {
   if ($("hist-th-pnl"))    $("hist-th-pnl").textContent    = sol ? "PnL SOL" : "PnL $";
 
   tbody.innerHTML = data.map(r => {
+    // Fee-inclusive (true_pnl) — single user-facing number across the row.
     const feeInc = r.fees_earned_usd ?? 0;
     const p = (r.pnl_usd ?? 0) + feeInc;
     const ps = r.pnl_sol != null ? r.pnl_sol + (_wallet?.sol_price > 0 ? feeInc / _wallet.sol_price : 0) : null;
+    const pct = (r.pnl_pct ?? 0) + (feeInc > 0 && r.initial_value_usd > 0 ? feeInc / r.initial_value_usd * 100 : 0);
     const statusBadge = p>=0 ? '<span class="badge b-cp">CLOSED +</span>' : '<span class="badge b-cn">CLOSED −</span>';
     const reason = r.close_reason ? `<span class="badge b-cls">${r.close_reason.toUpperCase().slice(0,18)}</span>` : "—";
     const amountCell = sol
@@ -1272,7 +1277,7 @@ function renderHistory() {
       <td>${r.strategy||"—"}${fmtRange(r.bin_range,r.bin_step) ? `<br><span style="font-size:9px;color:var(--muted)">${fmtRange(r.bin_range,r.bin_step)}</span>` : ""}</td>
       <td>${amountCell}</td>
       <td>${pnlCell}</td>
-      <td class="${(r.pnl_pct??0)>=0?"pv":"nv"}">${f(r.pnl_pct,2)}%</td>
+      <td class="${pct>=0?"pv":"nv"}">${f(pct,2)}%</td>
       <td>${sol && _wallet?.sol_price > 0 && r.fees_earned_usd != null ? f(r.fees_earned_usd/_wallet.sol_price,4)+"◎" : "$"+f(r.fees_earned_usd,2)}</td>
       <td>${fmtHold(r.minutes_held)}</td>
       <td>${f(r.range_efficiency,1)}%</td>
@@ -1312,18 +1317,22 @@ function renderJournal() {
   if (!data.length) { tbody.innerHTML='<tr><td colspan="9" class="empty">No journal entries yet</td></tr>'; return; }
 
   tbody.innerHTML = data.map(r => {
+    // Fee-inclusive (true_pnl) for close entries
+    const jFeeInc = r.fees_earned_usd ?? 0;
+    const jPnlUsd = r.pnl_usd != null ? r.pnl_usd + jFeeInc : null;
+    const jPnlSol = r.pnl_sol != null ? r.pnl_sol + (_wallet?.sol_price > 0 ? jFeeInc / _wallet.sol_price : 0) : null;
     let badge="";
     if (r.type==="open")  badge='<span class="badge b-open">OPEN</span>';
-    if (r.type==="close") badge=(r.pnl_usd??0)>=0?'<span class="badge b-cp">CLOSE+</span>':'<span class="badge b-cn">CLOSE−</span>';
+    if (r.type==="close") badge=(jPnlUsd??0)>=0?'<span class="badge b-cp">CLOSE+</span>':'<span class="badge b-cn">CLOSE−</span>';
     if (r.type==="claim") badge='<span class="badge b-clm">CLAIM</span>';
     const amountCell = sol
       ? `${f(r.amount_sol,4)} SOL`
       : (r.initial_value_usd > 0 ? `$${f(r.initial_value_usd,2)}` : `<span style="color:var(--muted)">${f(r.amount_sol,4)} SOL</span>`);
     let pnlCell;
     if (sol) {
-      pnlCell = r.pnl_sol!=null ? `<span class="${r.pnl_sol>=0?"pv":"nv"}">${r.pnl_sol>=0?"+":""}${f(r.pnl_sol,4)} SOL</span>` : "—";
+      pnlCell = jPnlSol!=null ? `<span class="${jPnlSol>=0?"pv":"nv"}">${jPnlSol>=0?"+":""}${f(jPnlSol,4)} SOL</span>` : "—";
     } else {
-      pnlCell = r.pnl_usd!=null ? `<span class="${r.pnl_usd>=0?"pv":"nv"}">${r.pnl_usd>=0?"+":""} $${f(r.pnl_usd,2)}</span>` : "—";
+      pnlCell = jPnlUsd!=null ? `<span class="${jPnlUsd>=0?"pv":"nv"}">${jPnlUsd>=0?"+":""} $${f(jPnlUsd,2)}</span>` : "—";
     }
     const _feeUsd = r.fees_earned_usd ?? r.fees_usd ?? null;
     const fees = _feeUsd != null

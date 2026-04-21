@@ -28,6 +28,7 @@ import { startDashboard } from "./dashboard/server.js";
 import { extractRules, checkPositionCompliance, filterCandidatesByRules } from "./lesson-rules.js";
 import { cacheTokenProfile } from "./screening-cache.js";
 import { appendDecision, getRecentDecisions } from "./decision-log.js";
+import { computeTruePnl } from "./true-pnl.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
 import { fileURLToPath } from "url";
@@ -323,7 +324,7 @@ async function runManagementCycle(tier = null) {
           await executeTool("close_position", { position_address: p.position, close_reason: reason, _decision_source: "RULE_ENGINE" });
           skippedByInstruction.add(p.position);
           instructionClosePrefix.push(`Auto-closed by instruction: ${p.pair} — ${reason}`);
-          if (telegramEnabled()) notifyInstructionClose({ pair: p.pair, instruction: p.instruction, pnlPct: p.pnl?.pnl_pct ?? 0 }).catch(() => {});
+          if (telegramEnabled()) notifyInstructionClose({ pair: p.pair, instruction: p.instruction, pnlPct }).catch(() => {});
         } catch (err) {
           log("cron_error", `Instruction pre-check: failed to close ${p.pair} (${p.position}): ${err.message}`);
           // Do not skip — let the agent handle it as a fallback
@@ -510,15 +511,13 @@ REPORT FORMAT (one line per position, no markdown):
           lines.push(`💵 Invested: ~$${p.initial_value_usd.toFixed(2)}`);
         }
         if (pnl?.pnl_usd != null) {
-          const su = pnl.pnl_usd >= 0 ? "+" : "";
-          const ss = (pnl.pnl_sol ?? 0) >= 0 ? "+" : "";
-          const sp = (pnl.pnl_pct ?? 0) >= 0 ? "+" : "";
-          lines.push(`💰 PnL: ${su}$${pnl.pnl_usd.toFixed(2)} | ${ss}${(pnl.pnl_sol ?? 0).toFixed(4)} SOL`);
-          if (pnl.unclaimed_fee_usd > 0) {
-            lines.push(`💸 Fees: $${pnl.unclaimed_fee_usd.toFixed(2)} | Total: ${sp}${(pnl.pnl_pct ?? 0).toFixed(2)}%`);
-          } else {
-            lines.push(`📊 ${sp}${(pnl.pnl_pct ?? 0).toFixed(2)}%`);
-          }
+          // Fee-inclusive (true_pnl) — single user-facing PnL number.
+          const tp = computeTruePnl(p) || { usd: pnl.pnl_usd, sol: pnl.pnl_sol ?? 0, pct: pnl.pnl_pct ?? 0, fees_usd: pnl.unclaimed_fee_usd ?? 0 };
+          const su = tp.usd >= 0 ? "+" : "";
+          const ss = tp.sol >= 0 ? "+" : "";
+          const sp = tp.pct >= 0 ? "+" : "";
+          lines.push(`💰 PnL: ${su}$${tp.usd.toFixed(2)} | ${ss}${tp.sol.toFixed(4)} SOL | ${sp}${tp.pct.toFixed(2)}%`);
+          if (tp.fees_usd > 0) lines.push(`💸 Fees included: $${tp.fees_usd.toFixed(2)}`);
         }
         if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 🎯 ${p.strategy}` : ""}`);
 
@@ -1080,16 +1079,17 @@ export function startCronJobs() {
           if (pnl) {
             const val = parseFloat(pnl.current_value_usd) || 0;
             const fees = parseFloat(pnl.unclaimed_fee_usd) || 0;
-            const pnlUsd = parseFloat(pnl.pnl_usd) || 0;
-            totalValue += val; totalFees += fees; totalPnlUsd += pnlUsd;
-            lines.push(`${p.pair || p.pool_address.slice(0,8)}: $${val.toFixed(2)} | pnl ${pnl.pnl_pct}% ($${pnlUsd.toFixed(2)}) | fees $${fees.toFixed(2)}`);
+            // Fee-inclusive (true_pnl) — single PnL number.
+            const tp = computeTruePnl({ pnl }) || { usd: 0, pct: 0, fees_usd: fees };
+            totalValue += val; totalFees += fees; totalPnlUsd += tp.usd;
+            lines.push(`${p.pair || p.pool_address.slice(0,8)}: $${val.toFixed(2)} | pnl ${tp.pct.toFixed(2)}% ($${tp.usd.toFixed(2)}) | fees incl $${fees.toFixed(2)}`);
           }
         } catch { /* skip failed pnl fetch */ }
       }
       const solBal = wallet?.sol?.toFixed(3) ?? "?";
       const summary = [
         `Health Check — ${positions.length} positions`,
-        `SOL: ${solBal} | Total value: $${totalValue.toFixed(2)} | Unclaimed fees: $${totalFees.toFixed(2)} | Net PnL: $${totalPnlUsd.toFixed(2)}`,
+        `SOL: ${solBal} | Total value: $${totalValue.toFixed(2)} | PnL (fee-inclusive): $${totalPnlUsd.toFixed(2)} | Unclaimed fees: $${totalFees.toFixed(2)}`,
         ...lines,
       ].join("\n");
       log("health", summary);
@@ -1152,7 +1152,7 @@ export function startCronJobs() {
   _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(e => {
     log("cron_error", `PnL checker failed: ${e.message}`);
     notifyError("PnL checker", e.message);
-  }), 30_000);
+  }), 15_000);
 
   // Periodic dust sweep — every 10 minutes, retry any tokens still in wallet
   _dustSweepInterval = setInterval(async () => {
@@ -1169,7 +1169,7 @@ export function startCronJobs() {
 
   _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, autoresearchTask, lessonSummarizerTask];
   const t = config.schedule.managementTiers;
-  log("cron", `Cycles started — management: high=${t.high.intervalMin}m, med=${t.med.intervalMin}m, low=${t.low.intervalMin}m | screening every ${config.schedule.screeningIntervalMin}m | pnl-check every 30s`);
+  log("cron", `Cycles started — management: high=${t.high.intervalMin}m, med=${t.med.intervalMin}m, low=${t.low.intervalMin}m | screening every ${config.schedule.screeningIntervalMin}m | pnl-check every 15s`);
 }
 
 // ═══════════════════════════════════════════

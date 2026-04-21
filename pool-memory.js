@@ -177,6 +177,8 @@ export function recordPositionSnapshot(poolAddress, snapshot) {
     pnl_usd: snapshot.pnl_usd ?? null,
     in_range: snapshot.in_range ?? null,
     unclaimed_fees_usd: snapshot.unclaimed_fees_usd ?? null,
+    // claim-invariant cumulative fees — required for fees/hr rate calc across claims
+    collected_fees_usd: snapshot.collected_fees_usd ?? null,
     minutes_out_of_range: snapshot.minutes_out_of_range ?? null,
     age_minutes: snapshot.age_minutes ?? null,
   });
@@ -228,6 +230,89 @@ export function recallForPool(poolAddress) {
   }
 
   return lines.length > 0 ? lines.join("\n") : null;
+}
+
+/**
+ * Post-loss cooldown check — returns whether the pool (and optionally the base mint
+ * across all pools) is currently in a cooldown window following a recent big loss.
+ * Used by the screener to refuse re-entry on repeat-offender tokens.
+ *
+ * @param {string} poolAddress
+ * @param {string|null} baseMint — when provided, also scans for matching base_mint in other pools
+ * @param {number} cooldownMin — minutes to block re-entry after a qualifying loss
+ * @param {number} thresholdPct — losses at or below this trigger the cooldown (negative number)
+ * @returns {{cooling: boolean, scope?: 'pool'|'mint', last_pnl_pct?: number,
+ *           minutes_since?: number, cooldown_min?: number, pool_name?: string}}
+ */
+export function isInPostLossCooldown(poolAddress, baseMint = null, cooldownMin = 120, thresholdPct = -5) {
+  const db = load();
+
+  const check = (entry) => {
+    if (!entry?.deploys?.length) return null;
+    const last = entry.deploys[entry.deploys.length - 1];
+    if (last.pnl_pct == null || last.pnl_pct > thresholdPct || !last.closed_at) return null;
+    const minsSince = (Date.now() - new Date(last.closed_at).getTime()) / 60000;
+    if (minsSince >= cooldownMin) return null;
+    return {
+      last_pnl_pct: last.pnl_pct,
+      minutes_since: Math.round(minsSince),
+      cooldown_min: cooldownMin,
+      pool_name: entry.name,
+    };
+  };
+
+  if (poolAddress) {
+    const hit = check(db[poolAddress]);
+    if (hit) return { cooling: true, scope: "pool", ...hit };
+  }
+
+  if (baseMint) {
+    for (const [addr, entry] of Object.entries(db)) {
+      if (entry.base_mint !== baseMint) continue;
+      if (addr === poolAddress) continue;
+      const hit = check(entry);
+      if (hit) return { cooling: true, scope: "mint", ...hit };
+    }
+  }
+
+  return { cooling: false };
+}
+
+/**
+ * Fee-rate over the last `windowMin` minutes, in $/hr, for a given position.
+ * Uses claim-invariant `collected_fees_usd` deltas from recent snapshots, so
+ * `claim_fees` events do not distort the rate. Returns null when there aren't
+ * enough snapshots spanning the requested window.
+ *
+ * @param {string} poolAddress
+ * @param {string} positionAddress
+ * @param {number} windowMin — lookback window in minutes
+ * @returns {number|null}  $/hr, or null when insufficient data
+ */
+export function getRecentFeeRate(poolAddress, positionAddress, windowMin = 30) {
+  if (!poolAddress || !positionAddress) return null;
+  const db = load();
+  const snaps = (db[poolAddress]?.snapshots || []).filter((s) => s.position === positionAddress);
+  if (snaps.length < 2) return null;
+
+  const now = Date.now();
+  const cutoff = now - windowMin * 60 * 1000;
+
+  // Earliest snapshot >= cutoff (or fall back to earliest overall if window reaches further back than history)
+  const recent = snaps.filter((s) => new Date(s.ts).getTime() >= cutoff);
+  if (recent.length < 2) return null;
+
+  const first = recent[0];
+  const last  = recent[recent.length - 1];
+  if (first.collected_fees_usd == null || last.collected_fees_usd == null) return null;
+
+  const dtHours = (new Date(last.ts).getTime() - new Date(first.ts).getTime()) / 3_600_000;
+  if (dtHours <= 0) return null;
+
+  const delta = last.collected_fees_usd - first.collected_fees_usd;
+  // Negative delta can happen if collected_fees_usd ever decreases (shouldn't, but guard anyway).
+  if (delta < 0) return 0;
+  return delta / dtHours;
 }
 
 /**

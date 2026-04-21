@@ -8,6 +8,7 @@
 import fs from "fs";
 import { log } from "./logger.js";
 import { getJournalEntries } from "./journal.js";
+import { computeTruePnl, aggregateTruePnl } from "./true-pnl.js";
 
 const LESSONS_FILE = "./lessons.json";
 const EXP_LESSONS_FILE = "./experiment-lessons.json";
@@ -55,32 +56,37 @@ export async function generateReport(period = "daily") {
   const closes = getJournalEntries({ from: fromISO, to: toISO, type: "close" });
   const claims = getJournalEntries({ from: fromISO, to: toISO, type: "claim" });
 
-  // Compute period metrics
+  // Compute period metrics — all PnL numbers are fee-inclusive (true_pnl)
   const positions_opened = opens.length;
   const positions_closed = closes.length;
 
-  const totalPnl = (e) => (e.pnl_usd || 0) + (e.fees_earned_usd || 0);
-  const total_pnl_usd = closes.reduce((s, e) => s + totalPnl(e), 0);
-  const total_pnl_sol = closes.reduce((s, e) => s + (e.pnl_sol || 0) + (e.sol_price > 0 ? (e.fees_earned_usd || 0) / e.sol_price : 0), 0);
-  const total_fees_usd = claims.reduce((s, e) => s + (e.fees_usd || 0), 0)
-    + closes.reduce((s, e) => s + (e.fees_earned_usd || 0), 0);
+  // Pair each close with its true_pnl (fee-inclusive). tp is null only when the
+  // entry has no pnl AND no fees — skip those rows from aggregation.
+  const closesTp = closes
+    .map(e => ({ e, tp: computeTruePnl(e) }))
+    .filter(x => x.tp !== null);
 
-  // Weighted PnL% by initial value
-  const totalInitial = closes.reduce((s, e) => s + (e.initial_value_usd || 0), 0);
+  const total_pnl_usd = closesTp.reduce((s, x) => s + x.tp.usd, 0);
+  const total_pnl_sol = closesTp.reduce((s, x) => s + x.tp.sol, 0);
+  const total_fees_usd = claims.reduce((s, e) => s + (e.fees_usd || 0), 0)
+    + closesTp.reduce((s, x) => s + x.tp.fees_usd, 0);
+
+  // Weighted PnL% by initial value (true_pnl / initial)
+  const totalInitial = closesTp.reduce((s, x) => s + (x.e.initial_value_usd || 0), 0);
   const total_pnl_pct = totalInitial > 0
     ? (total_pnl_usd / totalInitial) * 100
     : 0;
 
-  const wins   = closes.filter(e => totalPnl(e) > 0);
-  const losses = closes.filter(e => totalPnl(e) <= 0);
-  const win_rate = closes.length > 0 ? Math.round((wins.length / closes.length) * 100) : null;
+  const wins   = closesTp.filter(x => x.tp.is_win);
+  const losses = closesTp.filter(x => !x.tp.is_win);
+  const win_rate = closesTp.length > 0 ? Math.round((wins.length / closesTp.length) * 100) : null;
 
-  // Avg profit % and avg loss %
+  // Avg profit % / avg loss % — both fee-inclusive
   const avg_profit_pct = wins.length > 0
-    ? wins.reduce((s, e) => s + (e.pnl_pct || 0), 0) / wins.length
+    ? wins.reduce((s, x) => s + x.tp.pct, 0) / wins.length
     : null;
   const avg_loss_pct = losses.length > 0
-    ? losses.reduce((s, e) => s + (e.pnl_pct || 0), 0) / losses.length
+    ? losses.reduce((s, x) => s + x.tp.pct, 0) / losses.length
     : null;
 
   // Lessons from both regular + experiment files, filtered by created_at
@@ -95,9 +101,12 @@ export async function generateReport(period = "daily") {
   const allPositions = Object.values(state.positions || {});
   const openPositions = allPositions.filter(p => !p.closed);
 
-  // All-time PnL from all closes in journal
+  // All-time PnL from all closes in journal — fee-inclusive
   const allCloses = getJournalEntries({ type: "close" });
-  const allTimePnlUsd = allCloses.reduce((s, e) => s + totalPnl(e), 0);
+  const allTimePnlUsd = allCloses.reduce((s, e) => {
+    const tp = computeTruePnl(e);
+    return s + (tp ? tp.usd : 0);
+  }, 0);
 
   // ── Build report ─────────────────────────────────────────────
 
@@ -126,23 +135,23 @@ export async function generateReport(period = "daily") {
   if (avg_loss_pct !== null)   lines.push(`📉 Avg Loss: ${avg_loss_pct.toFixed(2)}%`);
   lines.push("");
 
-  // Weekly/monthly extras
+  // Weekly/monthly extras — all fee-inclusive
   if (period === "weekly" || period === "monthly") {
-    if (closes.length > 0) {
-      const bestTrade  = closes.reduce((best, e) => totalPnl(e) > totalPnl(best) ? e : best, closes[0]);
-      const worstTrade = closes.reduce((worst, e) => totalPnl(e) < totalPnl(worst) ? e : worst, closes[0]);
+    if (closesTp.length > 0) {
+      const bestX  = closesTp.reduce((best, x) => x.tp.usd > best.tp.usd ? x : best, closesTp[0]);
+      const worstX = closesTp.reduce((worst, x) => x.tp.usd < worst.tp.usd ? x : worst, closesTp[0]);
 
-      lines.push(`*Best Trade:* ${bestTrade.pool_name || "?"} +$${totalPnl(bestTrade).toFixed(2)} (${(bestTrade.pnl_pct || 0).toFixed(1)}%)`);
-      lines.push(`*Worst Trade:* ${worstTrade.pool_name || "?"} $${totalPnl(worstTrade).toFixed(2)} (${(worstTrade.pnl_pct || 0).toFixed(1)}%)`);
+      lines.push(`*Best Trade:* ${bestX.e.pool_name || "?"} +$${bestX.tp.usd.toFixed(2)} (${bestX.tp.pct.toFixed(1)}%)`);
+      lines.push(`*Worst Trade:* ${worstX.e.pool_name || "?"} $${worstX.tp.usd.toFixed(2)} (${worstX.tp.pct.toFixed(1)}%)`);
       lines.push("");
 
-      // Strategy breakdown
+      // Strategy breakdown — win rate on fee-inclusive outcome
       const strategies = {};
-      for (const e of closes) {
-        const s = e.strategy || "unknown";
+      for (const x of closesTp) {
+        const s = x.e.strategy || "unknown";
         if (!strategies[s]) strategies[s] = { wins: 0, total: 0 };
         strategies[s].total++;
-        if (totalPnl(e) > 0) strategies[s].wins++;
+        if (x.tp.is_win) strategies[s].wins++;
       }
       if (Object.keys(strategies).length > 0) {
         lines.push(`*Strategy Breakdown:*`);
@@ -153,16 +162,16 @@ export async function generateReport(period = "daily") {
         lines.push("");
       }
 
-      // A/B variant breakdown (weekly/monthly only)
-      const closesWithVariant = closes.filter(e => e.variant);
-      if (closesWithVariant.length > 0) {
+      // A/B variant breakdown — fee-inclusive PnL + win rate
+      const withVariant = closesTp.filter(x => x.e.variant);
+      if (withVariant.length > 0) {
         const variants = {};
-        for (const e of closesWithVariant) {
-          const v = e.variant;
+        for (const x of withVariant) {
+          const v = x.e.variant;
           if (!variants[v]) variants[v] = { wins: 0, total: 0, pnl: 0 };
           variants[v].total++;
-          if (totalPnl(e) > 0) variants[v].wins++;
-          variants[v].pnl += totalPnl(e);
+          if (x.tp.is_win) variants[v].wins++;
+          variants[v].pnl += x.tp.usd;
         }
         lines.push(`*A/B Variant Results:*`);
         for (const [v, stats] of Object.entries(variants)) {
@@ -173,20 +182,20 @@ export async function generateReport(period = "daily") {
       }
 
       // Average hold time
-      const avgHold = closes.reduce((s, e) => s + (e.minutes_held || 0), 0) / closes.length;
+      const avgHold = closesTp.reduce((s, x) => s + (x.e.minutes_held || 0), 0) / closesTp.length;
       lines.push(`⏱ Avg Hold Time: ${Math.round(avgHold)}m`);
       lines.push("");
 
-      // Tail risk metrics
+      // Tail risk — drawdown + loss streak on fee-inclusive PnL
       let maxConsecutiveLosses = 0, currentStreak = 0;
       let maxDrawdownUsd = 0, runningPnl = 0, peakPnl = 0;
-      for (const e of closes) {
-        const pnl = totalPnl(e);
+      for (const x of closesTp) {
+        const pnl = x.tp.usd;
         runningPnl += pnl;
         if (runningPnl > peakPnl) peakPnl = runningPnl;
         const dd = peakPnl - runningPnl;
         if (dd > maxDrawdownUsd) maxDrawdownUsd = dd;
-        if (pnl <= 0) { currentStreak++; maxConsecutiveLosses = Math.max(maxConsecutiveLosses, currentStreak); }
+        if (!x.tp.is_win) { currentStreak++; maxConsecutiveLosses = Math.max(maxConsecutiveLosses, currentStreak); }
         else currentStreak = 0;
       }
       if (maxConsecutiveLosses > 0 || maxDrawdownUsd > 0) {

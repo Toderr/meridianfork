@@ -38,6 +38,9 @@ export const config = {
     category:          u.category          ?? "trending",
     minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
     maxBotHoldersPct:  u.maxBotHoldersPct  ?? null, // null = disabled; set to e.g. 30 to hard-filter bot-heavy tokens
+    // Post-loss cooldown — after a qualifying loss on a pool/base_mint, block re-entry for N minutes
+    postLossCooldownMin: u.postLossCooldownMin ?? 120,
+    postLossCooldownPct: u.postLossCooldownPct ?? -5,
   },
 
   // ─── Position Management ────────────────
@@ -213,6 +216,8 @@ export function reloadConfig() {
     if (f.category       != null) s.category       = f.category;
     if (f.minTokenFeesSol   != null) s.minTokenFeesSol   = f.minTokenFeesSol;
     if (f.maxBotHoldersPct  != null) s.maxBotHoldersPct  = f.maxBotHoldersPct;
+    if (f.postLossCooldownMin != null) s.postLossCooldownMin = f.postLossCooldownMin;
+    if (f.postLossCooldownPct != null) s.postLossCooldownPct = f.postLossCooldownPct;
 
     const m = config.management;
     if (f.minClaimAmount        != null) m.minClaimAmount        = f.minClaimAmount;

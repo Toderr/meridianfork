@@ -16,6 +16,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { computeTruePnl } from "../true-pnl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
@@ -40,17 +41,21 @@ export function calculateProgress(goals, perfRecords) {
   const recent = perfRecords.slice(-lookback);
   if (recent.length < 5) return null;
 
-  const wins = recent.filter(p => (p.pnl_pct ?? 0) > 0);
-  const losses = recent.filter(p => (p.pnl_pct ?? 0) <= 0);
-  const winPnlSum = wins.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
-  const lossPnlSum = losses.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
+  // Goals evaluate against fee-inclusive (true_pnl) outcomes.
+  const tps = recent.map(p => computeTruePnl(p)).filter(tp => tp !== null);
+  if (tps.length === 0) return null;
+
+  const wins = tps.filter(tp => tp.is_win);
+  const losses = tps.filter(tp => !tp.is_win);
+  const winPnlSum = wins.reduce((s, tp) => s + tp.pct, 0);
+  const lossPnlSum = losses.reduce((s, tp) => s + tp.pct, 0);
 
   const current = {
-    win_rate_pct: recent.length > 0 ? (wins.length / recent.length) * 100 : 0,
-    max_loss_pct: recent.length > 0 ? Math.min(...recent.map(p => p.pnl_pct ?? 0)) : 0,
+    win_rate_pct: tps.length > 0 ? (wins.length / tps.length) * 100 : 0,
+    max_loss_pct: tps.length > 0 ? Math.min(...tps.map(tp => tp.pct)) : 0,
     profit_factor: lossPnlSum !== 0 ? winPnlSum / Math.abs(lossPnlSum) : (winPnlSum > 0 ? Infinity : 0),
-    avg_pnl_pct: recent.reduce((s, p) => s + (p.pnl_pct ?? 0), 0) / recent.length,
-    sample_size: recent.length,
+    avg_pnl_pct: tps.reduce((s, tp) => s + tp.pct, 0) / tps.length,
+    sample_size: tps.length,
   };
 
   // Compare each goal
