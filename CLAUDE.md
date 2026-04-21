@@ -98,22 +98,27 @@ Three keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`, `HELIUS_API_KEY_3`). On 429, r
 
 **On-chain PnL fallback**: When Meteora datapi fails (or returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
-## PnL Display — Meteora Canonical Formula (true_pnl)
+## PnL Display — Meteora UI Formula (true_pnl)
 
-**Canonical formula** (from Meteora LP UI):
+**UI formula** (what Meteora's LP dashboard actually displays):
 ```
 PnL ($) = (Current Balance + All-time Withdraw + Claimable Fees + Claimed Fees) − All-time Deposits
 ```
 
-**Meteora datapi pre-computes this** as `p.pnlUsd` / `p.pnlSol`. Meridian now plumbs those values through as `pnl_usd_total` / `pnl_sol_total` / `pnl_pct_total` on **both** live position snapshots (`tools/dlmm.js` positions builder, getPositionPnl) and journal close entries. `true-pnl.js` reads these canonical totals directly — no reconstruction needed.
+For Meridian's data shapes this reduces to:
+- Closed: `final_value_usd + fees_earned_usd − initial_value_usd`
+- Live:   `total_value_usd + (unclaimed_fees_usd + collected_fees_usd) − initial_value_usd`
+
+**Important: do NOT use Meteora datapi's `p.pnlUsd`.** That field is IL/HODL-adjusted (it reprices the initial deposit at current token prices) and drifts from what the LP UI shows. Verified against PEACE-SOL on 2026-04-21: datapi said +$1.32 while UI showed +$0.95. We compute the UI formula explicitly in `true-pnl.js` → this matches the UI to within rounding.
 
 **Storage layer**:
-- Legacy price-only `pnl_usd` / `pnl_sol` / `pnl_pct` + `fees_earned_usd` still written to journal (Meteora-UI reconciliation, back-compat).
-- New close entries **also** persist `pnl_usd_total` / `pnl_sol_total` / `pnl_pct_total` straight from `freshPnl` at close time (via `recordPerformance` → `recordJournalClose`).
-- Legacy entries without `_total` fields render correctly — `computeTruePnl` falls back to `pnl_usd + fees_earned_usd`.
+- Journal close entries persist `initial_value_usd`, `final_value_usd`, `fees_earned_usd` (the UI formula inputs) plus legacy price-only `pnl_usd`/`pnl_sol`/`pnl_pct`.
+- `pnl_usd_total` / `pnl_sol_total` / `pnl_pct_total` are still written for forensic comparison (datapi IL-adjusted totals) but **not read by any display surface**.
+- Live positions expose `initial_value_usd` (authoritative, from `tracked` state), `initial_value_usd_api` (datapi-derived, fallback), `total_value_usd`, `unclaimed_fees_usd`, `collected_fees_usd`.
+- Legacy entries missing `final_value_usd` fall back to `pnl_usd + fees_earned_usd` reconstruction.
 
 **Every user-facing surface displays fee-inclusive (`true_pnl`) as the single PnL number** via the `true-pnl.js` helper:
-- `computeTruePnl(entry)` → prefers canonical `pnl_usd_total`, falls back to legacy reconstruction; returns `{ usd, sol, pct, is_win, fees_usd }`
+- `computeTruePnl(entry)` → computes `value + fees − initial` (UI formula), legacy fallback for ancient entries; returns `{ usd, sol, pct, is_win, fees_usd }`
 - `aggregateTruePnl(entries)` → `{ count, total_usd, avg_pct, true_win_rate_pct, profit_factor, best, worst, … }`
 
 Consumers:

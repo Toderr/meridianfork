@@ -621,9 +621,10 @@ export async function getMyPositions({ force = false } = {}) {
         pnl_usd: Math.round(pnlUsd * 100) / 100,
         pnl_pct: Math.round(pnlPct * 100) / 100,
         pnl_sol: Math.round(pnlSolRaw * 10000) / 10000,
-        pnl_usd_total: Math.round(pnlUsdTotal * 100) / 100,     // Meteora canonical fee-inclusive USD
-        pnl_sol_total: Math.round(pnlSolRaw * 10000) / 10000,    // Meteora canonical fee-inclusive SOL
-        pnl_pct_total: Math.round(pnlPctTotalCalc * 100) / 100,  // Meteora canonical fee-inclusive %
+        pnl_usd_total: Math.round(pnlUsdTotal * 100) / 100,     // Meteora datapi IL-adjusted USD (forensic only)
+        pnl_sol_total: Math.round(pnlSolRaw * 10000) / 10000,   // Meteora datapi IL-adjusted SOL (forensic only)
+        pnl_pct_total: Math.round(pnlPctTotalCalc * 100) / 100, // Meteora datapi IL-adjusted %   (forensic only)
+        initial_value_usd: tracked?.initial_value_usd != null ? Math.round(tracked.initial_value_usd * 100) / 100 : null,
         initial_value_usd_api: Math.round(initialValueUsd * 100) / 100,
         amount_sol_api: p?.amountSol != null ? Math.round(parseFloat(p.amountSol) * 10000) / 10000 : null,
         age_minutes: ageMinutes,
