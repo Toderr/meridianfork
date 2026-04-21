@@ -603,6 +603,9 @@ export async function getMyPositions({ force = false } = {}) {
         : null;
       const ageMinutes = Math.max(ageFromPnlApi ?? 0, ageFromState ?? 0) || null;
 
+      // Meteora canonical fee-inclusive totals (user's formula)
+      const pnlSolRaw       = parseFloat(p?.pnlSol ?? 0);  // raw from datapi = fee-inclusive
+      const pnlPctTotalCalc = initialValueUsd > 0 ? (pnlUsdTotal / initialValueUsd) * 100 : 0;
       return {
         position: r.position,
         pool: r.pool,
@@ -617,7 +620,10 @@ export async function getMyPositions({ force = false } = {}) {
         collected_fees_usd: Math.round(collectedFees * 100) / 100,
         pnl_usd: Math.round(pnlUsd * 100) / 100,
         pnl_pct: Math.round(pnlPct * 100) / 100,
-        pnl_sol: Math.round((parseFloat(p?.pnlSol ?? 0)) * 10000) / 10000,
+        pnl_sol: Math.round(pnlSolRaw * 10000) / 10000,
+        pnl_usd_total: Math.round(pnlUsdTotal * 100) / 100,     // Meteora canonical fee-inclusive USD
+        pnl_sol_total: Math.round(pnlSolRaw * 10000) / 10000,    // Meteora canonical fee-inclusive SOL
+        pnl_pct_total: Math.round(pnlPctTotalCalc * 100) / 100,  // Meteora canonical fee-inclusive %
         initial_value_usd_api: Math.round(initialValueUsd * 100) / 100,
         amount_sol_api: p?.amountSol != null ? Math.round(parseFloat(p.amountSol) * 10000) / 10000 : null,
         age_minutes: ageMinutes,
@@ -892,6 +898,10 @@ export async function closePosition({ position_address, close_reason }) {
       let finalValueUsd = 0;
       let pnlSolNative = null;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
+      // Meteora canonical fee-inclusive totals (user's formula: CurrentBalance + Withdraw + ClaimableFees + ClaimedFees − Deposits)
+      let pnlUsdTotal = null;
+      let pnlSolTotal = null;
+      let pnlPctTotal = null;
       if (freshPnl && !freshPnl.error && freshPnl.fallback) {
         // On-chain fallback: compute PnL from tracked initial value
         // Note: current_value_usd includes fees (totalXAmount + feeX), so subtract for price-only
@@ -900,6 +910,9 @@ export async function closePosition({ position_address, close_reason }) {
         const initUsd = tracked.initial_value_usd || 0;
         pnlUsd  = initUsd > 0 ? finalValueUsd - feesUsd - initUsd : 0;  // price-only
         pnlPct  = initUsd > 0 ? pnlUsd / initUsd * 100 : 0;  // price-only % (pnlUsd already excludes fees)
+        // Canonical total (fallback): finalValueUsd already includes unclaimed fees, add mid-life claimed
+        pnlUsdTotal = initUsd > 0 ? (finalValueUsd + (tracked.total_fees_claimed_usd || 0) - initUsd) : 0;
+        pnlPctTotal = initUsd > 0 ? pnlUsdTotal / initUsd * 100 : 0;
       } else if (freshPnl && !freshPnl.error) {
         pnlUsd        = freshPnl.pnl_usd          ?? 0;   // price-only (fees already stripped in getPositionPnl)
         pnlPct        = freshPnl.pnl_pct          ?? 0;   // price-only %
@@ -911,6 +924,11 @@ export async function closePosition({ position_address, close_reason }) {
         pnlSolNative = (pnlSolRaw != null && solPrice > 0)
           ? pnlSolRaw - (freshPnl.unclaimed_fee_usd ?? 0) / solPrice
           : pnlSolRaw;
+        // Canonical fee-inclusive totals straight from Meteora datapi (user's formula)
+        pnlUsdTotal = freshPnl.pnl_usd_total ?? (pnlUsd + feesUsd);
+        pnlSolTotal = pnlSolRaw ?? null;  // raw pnlSol IS the fee-inclusive canonical SOL PnL
+        const initUsd = tracked.initial_value_usd || 0;
+        pnlPctTotal = initUsd > 0 ? (pnlUsdTotal / initUsd) * 100 : pnlPct;
       } else {
         const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
         if (cachedPos) {
@@ -919,6 +937,10 @@ export async function closePosition({ position_address, close_reason }) {
           finalValueUsd = cachedPos.total_value_usd ?? 0;
           feesUsd       = (cachedPos.collected_fees_usd || 0) + (cachedPos.unclaimed_fees_usd || 0);
           pnlSolNative  = cachedPos.pnl_sol        ?? null;
+          pnlUsdTotal   = cachedPos.pnl_usd_total ?? (pnlUsd + feesUsd);
+          pnlSolTotal   = cachedPos.pnl_sol_total ?? null;
+          const initUsd = tracked.initial_value_usd || 0;
+          pnlPctTotal   = initUsd > 0 ? (pnlUsdTotal / initUsd) * 100 : pnlPct;
         }
       }
 
@@ -964,6 +986,9 @@ export async function closePosition({ position_address, close_reason }) {
         pnl_usd: pnlUsd,       // price-only (fees stripped) — avoids formula error when initial_value_usd is missing
         pnl_pct: pnlPct,       // price-only % (fees tracked separately via fees_earned_usd)
         pnl_sol: pnlSolNative,
+        pnl_usd_total: pnlUsdTotal,   // Meteora canonical fee-inclusive USD PnL
+        pnl_sol_total: pnlSolTotal,   // Meteora canonical fee-inclusive SOL PnL
+        pnl_pct_total: pnlPctTotal,   // Meteora canonical fee-inclusive %
         sol_price: solPrice,
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,

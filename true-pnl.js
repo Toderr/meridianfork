@@ -1,9 +1,13 @@
 /**
  * true_pnl — fee-inclusive PnL, the single user-facing PnL metric.
  *
- * The journal stores price-only pnl_usd / pnl_sol / pnl_pct alongside fees_earned_usd
- * (Meteora-UI-matching). Everywhere the user sees "PnL", it should be the fee-inclusive
- * total, not the price-only split. This module is the single source of truth.
+ * Canonical formula (Meteora LP UI):
+ *   PnL ($) = (Current Balance + All-time Withdraw + Claimable Fees + Claimed Fees)
+ *           − All-time Deposits
+ *
+ * Meteora's datapi pre-computes this as `p.pnlUsd` / `p.pnlSol`. Meridian plumbs
+ * those through as `pnl_usd_total` / `pnl_sol_total` / `pnl_pct_total` on both
+ * live position snapshots and journal close entries (recorded post this change).
  *
  * `is_win` (true_win): `true_pnl_usd >= 0`. Replaces the old price-only win definition.
  */
@@ -12,12 +16,15 @@
  * Compute fee-inclusive PnL for a journal close entry OR a live position object.
  *
  * Accepts either shape:
- *   - Journal close:  { pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, initial_value_usd, sol_price }
- *   - Live position:  { pnl: { pnl_usd, pnl_sol, pnl_pct, unclaimed_fee_usd }, initial_value_usd, sol_price }
- *                     (also accepts flat fields unclaimed_fee_usd / unclaimed_fees_usd on the top level)
+ *   - Journal close:  { pnl_usd_total, pnl_sol_total, pnl_pct_total, pnl_usd, pnl_sol,
+ *                       pnl_pct, fees_earned_usd, initial_value_usd, sol_price }
+ *   - Live position:  { pnl: { pnl_usd_total, pnl_sol_total, pnl_pct_total, pnl_usd,
+ *                              pnl_sol, pnl_pct, unclaimed_fee_usd }, initial_value_usd, sol_price }
+ *                     (also accepts canonical totals and flat unclaimed_fee_usd on the top level)
  *
- * Missing fields → 0 fallback so legacy entries never throw. Returns `null` if there
- * isn't enough data to compute anything meaningful (no pnl at all AND no fees).
+ * Prefers Meteora's canonical totals when present. Falls back to
+ * `pnl_usd + fees_earned_usd` for legacy entries written before the canonical
+ * fields were plumbed through. Returns `null` when there isn't enough data.
  *
  * @param {Object} entry
  * @returns {{ usd:number, sol:number, pct:number, is_win:boolean, fees_usd:number }|null}
@@ -28,6 +35,13 @@ export function computeTruePnl(entry) {
   const live = entry.pnl && typeof entry.pnl === "object";
   const src  = live ? entry.pnl : entry;
 
+  // Canonical totals (preferred — Meteora's pre-computed fee-inclusive PnL).
+  // Check top-level first, then nested .pnl for live positions.
+  const pnlUsdTotal = num(entry.pnl_usd_total ?? src.pnl_usd_total);
+  const pnlSolTotal = num(entry.pnl_sol_total ?? src.pnl_sol_total);
+  const pnlPctTotal = num(entry.pnl_pct_total ?? src.pnl_pct_total);
+
+  // Price-only fallbacks + fees for legacy entries.
   const pnlUsd = num(src.pnl_usd);
   const pnlSol = num(src.pnl_sol);
   const pnlPct = num(src.pnl_pct);
@@ -40,26 +54,40 @@ export function computeTruePnl(entry) {
     entry.unclaimed_fees_usd ??
     src.unclaimed_fees_usd ??
     0
-  );
+  ) ?? 0;
 
-  const initialUsd = num(entry.initial_value_usd ?? src.initial_value_usd ?? 0);
-  const solPrice   = num(entry.sol_price ?? src.sol_price ?? 0);
+  const initialUsd = num(entry.initial_value_usd ?? src.initial_value_usd ?? 0) ?? 0;
+  const solPrice   = num(entry.sol_price ?? src.sol_price ?? 0) ?? 0;
 
-  if (pnlUsd === null && feesUsd === 0) return null;
+  // Nothing to compute — refuse to fabricate a zero.
+  if (pnlUsdTotal === null && pnlUsd === null && feesUsd === 0) return null;
 
-  const usd = (pnlUsd ?? 0) + feesUsd;
-  // fees_pct = fees_earned_usd / initial_value_usd × 100 (guard /0)
-  const feesPct = initialUsd > 0 ? (feesUsd / initialUsd) * 100 : 0;
-  const pct = (pnlPct ?? 0) + feesPct;
-  // feesSol uses fees_earned_usd / sol_price (mirrors close-notification convention)
-  const feesSol = solPrice > 0 ? feesUsd / solPrice : 0;
-  const sol = (pnlSol ?? 0) + feesSol;
+  // USD: canonical if available, else reconstruct from price-only + fees.
+  const usd = pnlUsdTotal !== null ? pnlUsdTotal : (pnlUsd ?? 0) + feesUsd;
+
+  // Pct: canonical if available, else reconstruct.
+  let pct;
+  if (pnlPctTotal !== null) {
+    pct = pnlPctTotal;
+  } else {
+    const feesPct = initialUsd > 0 ? (feesUsd / initialUsd) * 100 : 0;
+    pct = (pnlPct ?? 0) + feesPct;
+  }
+
+  // SOL: canonical if available, else reconstruct using sol_price.
+  let sol;
+  if (pnlSolTotal !== null) {
+    sol = pnlSolTotal;
+  } else {
+    const feesSol = solPrice > 0 ? feesUsd / solPrice : 0;
+    sol = (pnlSol ?? 0) + feesSol;
+  }
 
   return {
-    usd:     round2(usd),
-    sol:     round4(sol),
-    pct:     round2(pct),
-    is_win:  usd >= 0,
+    usd:      round2(usd),
+    sol:      round4(sol),
+    pct:      round2(pct),
+    is_win:   usd >= 0,
     fees_usd: round2(feesUsd),
   };
 }

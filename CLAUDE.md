@@ -98,14 +98,22 @@ Three keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`, `HELIUS_API_KEY_3`). On 429, r
 
 **On-chain PnL fallback**: When Meteora datapi fails (or returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
-## PnL Display — Storage Price-Only, Display Fee-Inclusive (true_pnl)
+## PnL Display — Meteora Canonical Formula (true_pnl)
 
-**Meteora datapi `p.pnlUsd` is fee-inclusive** (total PnL including earned fees). `getPositionPnl()` strips fees to derive price-only values: `pnlUsdPrice = pnlUsdTotal - unclaimedUsd`, `pnl_pct = pnlUsdPrice / initial * 100`.
+**Canonical formula** (from Meteora LP UI):
+```
+PnL ($) = (Current Balance + All-time Withdraw + Claimable Fees + Claimed Fees) − All-time Deposits
+```
 
-**Storage layer unchanged** — journal keeps price-only `pnl_usd`, `pnl_sol`, `pnl_pct` alongside `fees_earned_usd`.
+**Meteora datapi pre-computes this** as `p.pnlUsd` / `p.pnlSol`. Meridian now plumbs those values through as `pnl_usd_total` / `pnl_sol_total` / `pnl_pct_total` on **both** live position snapshots (`tools/dlmm.js` positions builder, getPositionPnl) and journal close entries. `true-pnl.js` reads these canonical totals directly — no reconstruction needed.
 
-**Every user-facing surface displays fee-inclusive (`true_pnl`) as the single PnL number** — no price-only/fees split anywhere the user reads. Implemented via the `true-pnl.js` helper:
-- `computeTruePnl(entry)` → `{ usd, sol, pct, is_win, fees_usd }` for journal closes OR live positions
+**Storage layer**:
+- Legacy price-only `pnl_usd` / `pnl_sol` / `pnl_pct` + `fees_earned_usd` still written to journal (Meteora-UI reconciliation, back-compat).
+- New close entries **also** persist `pnl_usd_total` / `pnl_sol_total` / `pnl_pct_total` straight from `freshPnl` at close time (via `recordPerformance` → `recordJournalClose`).
+- Legacy entries without `_total` fields render correctly — `computeTruePnl` falls back to `pnl_usd + fees_earned_usd`.
+
+**Every user-facing surface displays fee-inclusive (`true_pnl`) as the single PnL number** via the `true-pnl.js` helper:
+- `computeTruePnl(entry)` → prefers canonical `pnl_usd_total`, falls back to legacy reconstruction; returns `{ usd, sol, pct, is_win, fees_usd }`
 - `aggregateTruePnl(entries)` → `{ count, total_usd, avg_pct, true_win_rate_pct, profit_factor, best, worst, … }`
 
 Consumers:
