@@ -237,6 +237,7 @@ export function recordJournalClose(d) {
         bin_step: d.bin_step ?? null,
         amount_sol: d.amount_sol,
         initial_value_usd: d.initial_value_usd,
+        final_value_usd: d.final_value_usd,
         pnl_usd: d.pnl_usd,
         pnl_sol,
         pnl_pct: d.pnl_pct,

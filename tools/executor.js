@@ -371,8 +371,11 @@ export async function executeTool(name, args) {
       if (!args.strategy || args.strategy === config.strategy.strategy) {
         args = { ...args, strategy: resolveStrategy(args.volatility) };
       }
-      // Ensure initial_value_usd is always set before trackPosition stores it in state.json
-      if (!(args.initial_value_usd > 0)) {
+      // Always compute initial_value_usd from wallet sol_price × deposit size.
+      // LLM-provided values have been observed to hallucinate (e.g. 137.44 where
+      // 2 SOL × $85.90 = $171.80), which poisons tracked state and every downstream
+      // PnL / lesson surface. The deposit size and live sol_price are authoritative.
+      {
         const amountSol = args.amount_y ?? args.amount_sol ?? 0;
         const wPre = await getWalletBalances({});
         const computed = amountSol * (wPre?.sol_price || 0);

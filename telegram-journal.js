@@ -103,10 +103,13 @@ function fmtBins(bin_range, bin_step) {
 }
 
 // ─── Notification ────────────────────────────────────────────────
-export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, sol_price = 0, minutes_held, close_reason }) {
+export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, final_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, sol_price = 0, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
-  // Display numbers are fee-inclusive (true_pnl) — replaces old price-only PnL line.
-  const tp = computeTruePnl({ pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, initial_value_usd, sol_price }) || { usd: 0, sol: 0, pct: 0, fees_usd: fees_earned_usd || 0 };
+  // Display numbers are fee-inclusive (true_pnl) — canonical Meteora UI formula.
+  // final_value_usd MUST be forwarded so computeTruePnl takes the main path
+  // (value + fees − initial); without it we fall back to pnl_usd + fees which
+  // drifts from the UI because pnl_usd is datapi's IL-adjusted price delta.
+  const tp = computeTruePnl({ pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, initial_value_usd, final_value_usd, sol_price }) || { usd: 0, sol: 0, pct: 0, fees_usd: fees_earned_usd || 0 };
   const su = tp.usd >= 0 ? "+" : "";
   const ss = tp.sol >= 0 ? "+" : "";
   const sp = tp.pct >= 0 ? "+" : "";
