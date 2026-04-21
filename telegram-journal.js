@@ -4,7 +4,6 @@ import { fileURLToPath } from "url";
 import cron from "node-cron";
 import { log } from "./logger.js";
 import { getJournalEntries } from "./journal.js";
-import { computeTruePnl, aggregateTruePnl } from "./true-pnl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -103,22 +102,21 @@ function fmtBins(bin_range, bin_step) {
 }
 
 // ─── Notification ────────────────────────────────────────────────
-export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, final_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, sol_price = 0, minutes_held, close_reason }) {
+export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, sol_price = 0, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
-  // Display numbers are fee-inclusive (true_pnl) — canonical Meteora UI formula.
-  // final_value_usd MUST be forwarded so computeTruePnl takes the main path
-  // (value + fees − initial); without it we fall back to pnl_usd + fees which
-  // drifts from the UI because pnl_usd is datapi's IL-adjusted price delta.
-  const tp = computeTruePnl({ pnl_usd, pnl_sol, pnl_pct, fees_earned_usd, initial_value_usd, final_value_usd, sol_price }) || { usd: 0, sol: 0, pct: 0, fees_usd: fees_earned_usd || 0 };
-  const su = tp.usd >= 0 ? "+" : "";
-  const ss = tp.sol >= 0 ? "+" : "";
-  const sp = tp.pct >= 0 ? "+" : "";
+  const usdVal = +pnl_usd || 0;
+  const solVal = +pnl_sol || 0;
+  const pctVal = +pnl_pct || 0;
+  const feesVal = +fees_earned_usd || 0;
+  const su = usdVal >= 0 ? "+" : "";
+  const ss = solVal >= 0 ? "+" : "";
+  const sp = pctVal >= 0 ? "+" : "";
   const stratLine = [strategy, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
   const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
   await sendMessage(
     `📍 ${pool_name}\n` +
-    `💰 ${sp}${tp.pct.toFixed(2)}% | ${su}$${tp.usd.toFixed(2)} | ${ss}${tp.sol.toFixed(4)} SOL\n` +
-    (tp.fees_usd > 0 ? `🏦 Fees Included: $${tp.fees_usd.toFixed(2)}\n` : ``) +
+    `💰 ${sp}${pctVal.toFixed(2)}% | ${su}$${usdVal.toFixed(2)} | ${ss}${solVal.toFixed(4)} SOL\n` +
+    (feesVal > 0 ? `🏦 Fees Earned: $${feesVal.toFixed(2)}\n` : ``) +
     `\n` +
     (stratLine ? `📊 ${stratLine}\n` : ``) +
     `💵 Invested: ${(amount_sol ?? 0).toFixed(4)} SOL${usdPart}\n` +
@@ -246,29 +244,26 @@ export async function notifyRpcLimit() {
 function buildSummaryReport(closes, header) {
   if (!closes.length) return `${header}\n\nNo closed positions.`;
 
-  // All aggregates are fee-inclusive (true_pnl).
-  const rows = closes.map(e => ({ e, tp: computeTruePnl(e) })).filter(x => x.tp !== null);
-  if (!rows.length) return `${header}\n\nNo closed positions.`;
-
-  const wins   = rows.filter(x => x.tp.is_win);
-  const losses = rows.filter(x => !x.tp.is_win);
-  const totalUsd = rows.reduce((s, x) => s + x.tp.usd, 0);
-  const totalSol = rows.reduce((s, x) => s + x.tp.sol, 0);
-  const totalInvested = rows.reduce((s, x) => s + (x.e.initial_value_usd ?? 0), 0);
+  const rows = closes;
+  const wins   = rows.filter(e => (e.pnl_usd ?? 0) >= 0);
+  const losses = rows.filter(e => (e.pnl_usd ?? 0) <  0);
+  const totalUsd = rows.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
+  const totalSol = rows.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+  const totalInvested = rows.reduce((s, e) => s + (e.initial_value_usd ?? 0), 0);
   const totalPct = totalInvested > 0 ? (totalUsd / totalInvested) * 100 : 0;
   const winRate = Math.round((wins.length / rows.length) * 100);
-  const avgProfit = wins.length  > 0 ? wins.reduce((s, x)   => s + x.tp.pct, 0) / wins.length   : 0;
-  const avgLoss   = losses.length > 0 ? losses.reduce((s, x) => s + x.tp.pct, 0) / losses.length : 0;
+  const avgProfit = wins.length  > 0 ? wins.reduce((s, e)   => s + (e.pnl_pct ?? 0), 0) / wins.length   : 0;
+  const avgLoss   = losses.length > 0 ? losses.reduce((s, e) => s + (e.pnl_pct ?? 0), 0) / losses.length : 0;
 
   const suT = totalUsd >= 0 ? "+" : "";
   const ssT = totalSol >= 0 ? "+" : "";
   const spT = totalPct >= 0 ? "+" : "";
 
   const stratMap = {};
-  for (const x of rows) {
-    const s = x.e.strategy ?? "unknown";
+  for (const e of rows) {
+    const s = e.strategy ?? "unknown";
     if (!stratMap[s]) stratMap[s] = [];
-    stratMap[s].push(x.tp.pct);
+    stratMap[s].push(e.pnl_pct ?? 0);
   }
   let bestStrat = null, bestStratAvg = -Infinity;
   for (const [s, pcts] of Object.entries(stratMap)) {
@@ -297,10 +292,11 @@ function fmtEntry(e) {
     return `📗 [${t}] OPEN ${e.pool_name} — ${(e.amount_sol ?? 0).toFixed(4)} SOL`;
   }
   if (e.type === "close") {
-    const tp = computeTruePnl(e) || { usd: 0, pct: 0 };
-    const sp = tp.pct >= 0 ? "+" : "";
-    const su = tp.usd >= 0 ? "+" : "";
-    return `📕 [${t}] CLOSE ${e.pool_name} — ${su}$${tp.usd.toFixed(2)} (${sp}${tp.pct.toFixed(2)}%) ${e.close_reason ? `· ${e.close_reason}` : ""}`;
+    const pct = e.pnl_pct ?? 0;
+    const usd = e.pnl_usd ?? 0;
+    const sp = pct >= 0 ? "+" : "";
+    const su = usd >= 0 ? "+" : "";
+    return `📕 [${t}] CLOSE ${e.pool_name} — ${su}$${usd.toFixed(2)} (${sp}${pct.toFixed(2)}%) ${e.close_reason ? `· ${e.close_reason}` : ""}`;
   }
   if (e.type === "claim") {
     return `💸 [${t}] CLAIM ${e.pool_name} — $${(e.fees_usd ?? 0).toFixed(2)}`;
@@ -335,18 +331,15 @@ async function handleCommand(text) {
   if (cmd === "/stats") {
     const closes = getJournalEntries({ type: "close" });
     if (!closes.length) return sendMessage("No closed positions yet.");
-    // Fee-inclusive (true_pnl) stats
-    const rows = closes.map(e => computeTruePnl(e)).filter(tp => tp !== null);
-    if (!rows.length) return sendMessage("No closed positions yet.");
-    const wins = rows.filter(tp => tp.is_win).length;
-    const totalPnlUsd = rows.reduce((s, tp) => s + tp.usd, 0);
-    const totalPnlSol = rows.reduce((s, tp) => s + tp.sol, 0);
-    const winRate = ((wins / rows.length) * 100).toFixed(0);
+    const wins = closes.filter(e => (e.pnl_usd ?? 0) >= 0).length;
+    const totalPnlUsd = closes.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
+    const totalPnlSol = closes.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+    const winRate = ((wins / closes.length) * 100).toFixed(0);
     const su = totalPnlUsd >= 0 ? "+" : "";
     const ss = totalPnlSol >= 0 ? "+" : "";
     return sendMessage(
       `📊 Journal Stats\n\n` +
-      `Trades: ${rows.length} | Win rate: ${winRate}%\n` +
+      `Trades: ${closes.length} | Win rate: ${winRate}%\n` +
       `Total PnL: ${su}$${totalPnlUsd.toFixed(2)} | ${ss}${totalPnlSol.toFixed(4)} SOL`
     );
   }

@@ -13,7 +13,6 @@ import { log } from "./logger.js";
 import { recordJournalClose } from "./journal.js";
 import { notifyThresholdEvolved, isEnabled as telegramEnabled } from "./telegram.js";
 import { loadGoals, calculateProgress } from "./scripts/goals.js";
-import { computeTruePnl } from "./true-pnl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -175,9 +174,6 @@ export async function recordPerformance(perf) {
       pnl_usd: entry.pnl_usd,
       pnl_sol: perf.pnl_sol ?? null,
       pnl_pct: entry.pnl_pct,
-      pnl_usd_total: perf.pnl_usd_total ?? null,
-      pnl_sol_total: perf.pnl_sol_total ?? null,
-      pnl_pct_total: perf.pnl_pct_total ?? null,
       sol_price: perf.sol_price ?? 0,
       minutes_held: entry.minutes_held,
       range_efficiency: entry.range_efficiency,
@@ -1726,27 +1722,21 @@ export function getPerformanceHistory({ hours = 24, limit = 50 } = {}) {
 
   const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 
-  // All returned PnL is fee-inclusive (true_pnl). Individual records expose
-  // pnl_usd / pnl_pct as the fee-inclusive totals; fees_earned_usd kept as
-  // supplementary info.
   const filtered = p
     .filter((r) => r.recorded_at >= cutoff)
     .slice(-limit)
-    .map((r) => {
-      const tp = computeTruePnl(r) || { usd: 0, pct: 0, fees_usd: r.fees_earned_usd ?? 0 };
-      return {
-        pool_name: r.pool_name,
-        pool: r.pool,
-        strategy: r.strategy,
-        pnl_usd: tp.usd,          // fee-inclusive
-        pnl_pct: tp.pct,          // fee-inclusive
-        fees_earned_usd: tp.fees_usd,
-        range_efficiency: r.range_efficiency,
-        minutes_held: r.minutes_held,
-        close_reason: r.close_reason,
-        closed_at: r.recorded_at,
-      };
-    });
+    .map((r) => ({
+      pool_name: r.pool_name,
+      pool: r.pool,
+      strategy: r.strategy,
+      pnl_usd: r.pnl_usd,
+      pnl_pct: r.pnl_pct,
+      fees_earned_usd: r.fees_earned_usd ?? 0,
+      range_efficiency: r.range_efficiency,
+      minutes_held: r.minutes_held,
+      close_reason: r.close_reason,
+      closed_at: r.recorded_at,
+    }));
 
   const totalPnl = filtered.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
   const wins = filtered.filter((r) => r.pnl_usd > 0).length;
@@ -1769,19 +1759,17 @@ export function getPerformanceSummary() {
 
   if (p.length === 0) return null;
 
-  // All aggregates are fee-inclusive (true_pnl).
-  const tps = p.map(x => computeTruePnl(x)).filter(tp => tp !== null);
-  const totalPnl = tps.reduce((s, tp) => s + tp.usd, 0);
-  const avgPnlPct = tps.length > 0 ? tps.reduce((s, tp) => s + tp.pct, 0) / tps.length : 0;
+  const totalPnl = p.reduce((s, x) => s + (x.pnl_usd ?? 0), 0);
+  const avgPnlPct = p.length > 0 ? p.reduce((s, x) => s + (x.pnl_pct ?? 0), 0) / p.length : 0;
   const avgRangeEfficiency = p.reduce((s, x) => s + (x.range_efficiency ?? 0), 0) / p.length;
-  const wins = tps.filter(tp => tp.is_win).length;
+  const wins = p.filter(x => (x.pnl_usd ?? 0) >= 0).length;
 
   return {
     total_positions_closed: p.length,
     total_pnl_usd: Math.round(totalPnl * 100) / 100,
     avg_pnl_pct: Math.round(avgPnlPct * 100) / 100,
     avg_range_efficiency_pct: Math.round(avgRangeEfficiency * 10) / 10,
-    win_rate_pct: tps.length > 0 ? Math.round((wins / tps.length) * 100) : 0,
+    win_rate_pct: p.length > 0 ? Math.round((wins / p.length) * 100) : 0,
     total_lessons: data.lessons.length,
   };
 }

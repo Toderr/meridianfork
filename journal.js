@@ -151,9 +151,6 @@ export function recordOpen(d) {
  * @param {number} d.fees_earned_usd
  * @param {number} d.pnl_usd
  * @param {number} d.pnl_pct
- * @param {number} [d.pnl_usd_total]  Meteora canonical fee-inclusive USD PnL
- * @param {number} [d.pnl_sol_total]  Meteora canonical fee-inclusive SOL PnL
- * @param {number} [d.pnl_pct_total]  Meteora canonical fee-inclusive %
  * @param {number} d.sol_price
  * @param {number} d.minutes_held
  * @param {number} d.range_efficiency
@@ -212,9 +209,6 @@ export function recordJournalClose(d) {
       pnl_usd: Math.round(d.pnl_usd * 100) / 100,
       pnl_sol,
       pnl_pct: d.pnl_pct,
-      pnl_usd_total: d.pnl_usd_total != null ? Math.round(d.pnl_usd_total * 100) / 100 : null,
-      pnl_sol_total: d.pnl_sol_total != null ? Math.round(d.pnl_sol_total * 10000) / 10000 : null,
-      pnl_pct_total: d.pnl_pct_total != null ? Math.round(d.pnl_pct_total * 100) / 100 : null,
       sol_price: d.sol_price || 0,
       minutes_held: minutesHeld,
       range_efficiency: d.range_efficiency,

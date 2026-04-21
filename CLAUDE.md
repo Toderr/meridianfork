@@ -98,40 +98,14 @@ Three keys (`HELIUS_API_KEY`, `HELIUS_API_KEY_2`, `HELIUS_API_KEY_3`). On 429, r
 
 **On-chain PnL fallback**: When Meteora datapi fails (or returns `balances: 0`), `getOnChainPositionValue()` fetches real position value from DLMM SDK + Jupiter Price API.
 
-## PnL Display — Meteora UI Formula (true_pnl)
+## PnL Display
 
-**UI formula** (what Meteora's LP dashboard actually displays):
-```
-PnL ($) = (Current Balance + All-time Withdraw + Claimable Fees + Claimed Fees) − All-time Deposits
-```
+Every user-facing surface reads `pnl_usd` / `pnl_sol` / `pnl_pct` straight from the Meteora datapi (via `getPositionPnl` / `getMyPositions`) or from the journal close entry. Fees are displayed separately via `fees_earned_usd` / `unclaimed_fees_usd`.
 
-For Meridian's data shapes this reduces to:
-- Closed: `final_value_usd + fees_earned_usd − initial_value_usd`
-- Live:   `total_value_usd + (unclaimed_fees_usd + collected_fees_usd) − initial_value_usd`
-
-**Important: do NOT use Meteora datapi's `p.pnlUsd`.** That field is IL/HODL-adjusted (it reprices the initial deposit at current token prices) and drifts from what the LP UI shows. Verified against PEACE-SOL on 2026-04-21: datapi said +$1.32 while UI showed +$0.95. We compute the UI formula explicitly in `true-pnl.js` → this matches the UI to within rounding.
-
-**Storage layer**:
-- Journal close entries persist `initial_value_usd`, `final_value_usd`, `fees_earned_usd` (the UI formula inputs) plus legacy price-only `pnl_usd`/`pnl_sol`/`pnl_pct`.
-- `pnl_usd_total` / `pnl_sol_total` / `pnl_pct_total` are still written for forensic comparison (datapi IL-adjusted totals) but **not read by any display surface**.
-- Live positions expose `initial_value_usd` (authoritative, from `tracked` state), `initial_value_usd_api` (datapi-derived, fallback), `total_value_usd`, `unclaimed_fees_usd`, `collected_fees_usd`.
-- Legacy entries missing `final_value_usd` fall back to `pnl_usd + fees_earned_usd` reconstruction.
-
-**Every user-facing surface displays fee-inclusive (`true_pnl`) as the single PnL number** via the `true-pnl.js` helper:
-- `computeTruePnl(entry)` → computes `value + fees − initial` (UI formula), legacy fallback for ancient entries; returns `{ usd, sol, pct, is_win, fees_usd }`
-- `aggregateTruePnl(entries)` → `{ count, total_usd, avg_pct, true_win_rate_pct, profit_factor, best, worst, … }`
-
-Consumers:
-- Telegram `notifyJournalClose`, `/recent`, `/today`, `/closes`, `/stats`, `notifyInstructionClose`
-- Telegram `/status` (per-position PnL block in `index.js`) and hourly health check log
-- `reports.js` daily/weekly/monthly (totals, avg profit/loss, best/worst, tail risk, strategy/variant breakdown)
-- `dashboard/api.js` `computePortfolio` (net PnL, cumulative, calendar) + `lessons.js` `getPerformanceSummary`/`getPerformanceHistory`
-- `dashboard/index.html` open-position PnL %, history table PnL %, journal table PnL USD/SOL and CLOSE± badge
-- `scripts/goals.js` `calculateProgress` (win rate, max loss, profit factor, avg)
-- `scripts/claude-lesson-updater.js` + `scripts/autoresearch-loop.js` close-line summaries and biggest-win/loss picks
-
-PnL checker (`index.js` line ~965) still composes `pnl_pct + feePct` inline for TP/SL threshold comparisons — same fee-inclusive semantics, but lives at the rule boundary, not the display boundary. Tool outputs for agents/CLI (`getPositionPnl`, cli.js JSON) keep the raw storage shape.
-- `feesSol` uses `fees_earned_usd / sol_price` (SOL price threaded from `closePosition` through the notification chain)
+- Storage layer: journal close entries persist `initial_value_usd`, `final_value_usd`, `fees_earned_usd`, `pnl_usd`, `pnl_sol`, `pnl_pct`. Live positions expose `initial_value_usd_api` (datapi-derived), `total_value_usd`, `unclaimed_fees_usd`, `collected_fees_usd`.
+- `pnl_usd` from `getPositionPnl` / `getMyPositions` is **price-only** (datapi's fee-inclusive `pnlUsd` minus `unclaimedUsd`). `pnl_pct` is price-only %. Fees are tracked separately.
+- PnL checker (`index.js`) composes `pnl_pct + feePct` inline for TP/SL threshold comparisons — fee-inclusive at the rule boundary.
+- `feesSol` uses `fees_earned_usd / sol_price` (SOL price threaded from `closePosition` through the notification chain).
 
 ## PnL Checker (every 15s, no LLM)
 

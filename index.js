@@ -28,7 +28,6 @@ import { startDashboard } from "./dashboard/server.js";
 import { extractRules, checkPositionCompliance, filterCandidatesByRules } from "./lesson-rules.js";
 import { cacheTokenProfile } from "./screening-cache.js";
 import { appendDecision, getRecentDecisions } from "./decision-log.js";
-import { computeTruePnl } from "./true-pnl.js";
 
 // ─── PID lock — prevent multiple instances ───────────────────────
 import { fileURLToPath } from "url";
@@ -511,13 +510,15 @@ REPORT FORMAT (one line per position, no markdown):
           lines.push(`💵 Invested: ~$${p.initial_value_usd.toFixed(2)}`);
         }
         if (pnl?.pnl_usd != null) {
-          // Fee-inclusive (true_pnl) — single user-facing PnL number.
-          const tp = computeTruePnl(p) || { usd: pnl.pnl_usd, sol: pnl.pnl_sol ?? 0, pct: pnl.pnl_pct ?? 0, fees_usd: pnl.unclaimed_fee_usd ?? 0 };
-          const su = tp.usd >= 0 ? "+" : "";
-          const ss = tp.sol >= 0 ? "+" : "";
-          const sp = tp.pct >= 0 ? "+" : "";
-          lines.push(`💰 PnL: ${su}$${tp.usd.toFixed(2)} | ${ss}${tp.sol.toFixed(4)} SOL | ${sp}${tp.pct.toFixed(2)}%`);
-          if (tp.fees_usd > 0) lines.push(`💸 Fees included: $${tp.fees_usd.toFixed(2)}`);
+          const usd = pnl.pnl_usd;
+          const sol = pnl.pnl_sol ?? 0;
+          const pct = pnl.pnl_pct ?? 0;
+          const fees = pnl.unclaimed_fee_usd ?? 0;
+          const su = usd >= 0 ? "+" : "";
+          const ss = sol >= 0 ? "+" : "";
+          const sp = pct >= 0 ? "+" : "";
+          lines.push(`💰 PnL: ${su}$${usd.toFixed(2)} | ${ss}${sol.toFixed(4)} SOL | ${sp}${pct.toFixed(2)}%`);
+          if (fees > 0) lines.push(`💸 Unclaimed fees: $${fees.toFixed(2)}`);
         }
         if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 🎯 ${p.strategy}` : ""}`);
 
@@ -1079,17 +1080,17 @@ export function startCronJobs() {
           if (pnl) {
             const val = parseFloat(pnl.current_value_usd) || 0;
             const fees = parseFloat(pnl.unclaimed_fee_usd) || 0;
-            // Fee-inclusive (true_pnl) — single PnL number.
-            const tp = computeTruePnl({ pnl }) || { usd: 0, pct: 0, fees_usd: fees };
-            totalValue += val; totalFees += fees; totalPnlUsd += tp.usd;
-            lines.push(`${p.pair || p.pool_address.slice(0,8)}: $${val.toFixed(2)} | pnl ${tp.pct.toFixed(2)}% ($${tp.usd.toFixed(2)}) | fees incl $${fees.toFixed(2)}`);
+            const pctVal = parseFloat(pnl.pnl_pct) || 0;
+            const usdVal = parseFloat(pnl.pnl_usd) || 0;
+            totalValue += val; totalFees += fees; totalPnlUsd += usdVal;
+            lines.push(`${p.pair || p.pool_address.slice(0,8)}: $${val.toFixed(2)} | pnl ${pctVal.toFixed(2)}% ($${usdVal.toFixed(2)}) | unclaimed fees $${fees.toFixed(2)}`);
           }
         } catch { /* skip failed pnl fetch */ }
       }
       const solBal = wallet?.sol?.toFixed(3) ?? "?";
       const summary = [
         `Health Check — ${positions.length} positions`,
-        `SOL: ${solBal} | Total value: $${totalValue.toFixed(2)} | PnL (fee-inclusive): $${totalPnlUsd.toFixed(2)} | Unclaimed fees: $${totalFees.toFixed(2)}`,
+        `SOL: ${solBal} | Total value: $${totalValue.toFixed(2)} | PnL: $${totalPnlUsd.toFixed(2)} | Unclaimed fees: $${totalFees.toFixed(2)}`,
         ...lines,
       ].join("\n");
       log("health", summary);
