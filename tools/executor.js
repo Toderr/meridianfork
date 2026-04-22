@@ -318,19 +318,51 @@ export async function executeTool(name, args) {
     args = rest;
   }
 
+  // ─── HARDCODED: variant null-guard (rec #4, 2026-04-22). Block any LLM-driven
+  // deploy_position where variant is unset/empty. Internal automation paths
+  // (retry/hive_*/exp_*/screening) always set variant explicitly, so they pass.
+  // Data basis (2026-04-22 audit): variant=null bucket NET -$19.58 (8 trades, wr 57%)
+  // vs lper_proven NET +$16.44 — null is the worst-performing bucket.
+  if (name === "deploy_position" && args && typeof args === "object") {
+    if (!args.variant || typeof args.variant !== "string" || !args.variant.trim()) {
+      log("executor", `Deploy blocked: variant is null/undefined`);
+      return {
+        blocked: true,
+        reason: "deploy blocked: variant is null/undefined. Set variant to a strategy label (e.g. 'lper_proven') so performance can be attributed.",
+      };
+    }
+  }
+
   // ─── HARDCODED: +1 confidence for lper-proven/LPerProven/pullback-entry variants.
+  // Normalize casing/punctuation (rec #6, 2026-04-22) so lper_proven, lper-proven,
+  // LPerProven, lperproven all match — the screener LLM emits any of these forms.
   // Data basis (2026-04-21 audit): LPerProven 100% net wr / +1.63%, pullback-entry
   // 92% net wr / +0.80%, lper-proven +0.33% net. Applied before the confidence gate
   // so a 7 → 8 bump on a bonused variant passes the > 7 threshold.
   if (name === "deploy_position" && args && typeof args === "object") {
-    const LPER_BONUS_VARIANTS = new Set(["lper-proven", "LPerProven", "pullback-entry"]);
-    if (LPER_BONUS_VARIANTS.has(args.variant) && typeof args.confidence_level === "number") {
+    const LPER_BONUS_NORMALIZED = new Set(["lperproven", "pullbackentry"]);
+    const norm = v => (v || "").toLowerCase().replace(/[-_]/g, "");
+    if (LPER_BONUS_NORMALIZED.has(norm(args.variant)) && typeof args.confidence_level === "number") {
       const original = args.confidence_level;
       const bumped = Math.min(10, original + 1);
       if (bumped !== original) {
         args = { ...args, confidence_level: bumped };
         log("executor", `Confidence bump: variant=${args.variant} ${original} → ${bumped} (hardcoded lper variant bonus)`);
       }
+    }
+  }
+
+  // ─── HARDCODED: cap effective confidence used for sizing (rec #5, 2026-04-22).
+  // Data basis (2026-04-22 audit): conf=8 NET +$23.89 / 88% wr (n=26) vs
+  // conf>=8.5 NET -$19.32 / 36% wr (n=9) — high LLM confidence is anti-correlated
+  // with realized PnL in current regime. Cap sizing at maxEffectiveConfidence
+  // while preserving the original value in logs.
+  if (name === "deploy_position" && args && typeof args === "object") {
+    const maxEff = config.maxEffectiveConfidence;
+    if (typeof args.confidence_level === "number" && typeof maxEff === "number" && args.confidence_level > maxEff) {
+      const original = args.confidence_level;
+      args = { ...args, confidence_level: maxEff };
+      log("executor", `Confidence cap: ${original} → ${maxEff} (maxEffectiveConfidence)`);
     }
   }
 
