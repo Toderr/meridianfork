@@ -132,7 +132,7 @@ Handled by `management-rules.js` rule engine (`evaluateAll()`). LLM only called 
 3. instruction set AND condition NOT met → HOLD
 4. unparseable instruction → **LLM fallback** (only these positions, max 3 steps)
 5. hold-time cut: **DISABLED** (30-Mar baseline restore). Original rules (age ≥15m & pnl<-0.3% → CLOSE; age ≥30m & pnl<0% → CLOSE) commented out in `management-rules.js`.
-6. **HARDCODED 120m hold cap (Rule 3b)**: `age ≥ 120m` → CLOSE **unless** fees/hr over the last 30m ≥ $2 (computed from `getRecentFeeRate()` in `pool-memory.js` using `collected_fees_usd` deltas in snapshots). Constants live at the top of `management-rules.js` — `HARD_HOLD_CAP_MIN`, `HARD_HOLD_FEE_WINDOW_MIN`, `HARD_HOLD_MIN_FEE_RATE_USD_HR`.
+6. **HARDCODED 120m hold cap (Rule 3b)**: `age ≥ 120m` → CLOSE **unless** fees/hr over the last 30m ≥ $4 (raised from $2 on 2026-04-23 after full-data audit confirmed the 120m+ bucket only loses on average; productive fee compounders still allowed to extend). Computed from `getRecentFeeRate()` in `pool-memory.js` using `collected_fees_usd` deltas in snapshots. Constants live at the top of `management-rules.js` — `HARD_HOLD_CAP_MIN`, `HARD_HOLD_FEE_WINDOW_MIN`, `HARD_HOLD_MIN_FEE_RATE_USD_HR`.
 7. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
 8. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
 9. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
@@ -144,7 +144,10 @@ NOTE: Health check is also deterministic (no LLM) — logs portfolio summary hou
 
 Deploys only if confidence > 7. Amount scales: `deployAmount × (confidence/10)`, minimum 0.1 SOL.
 
-**HARDCODED variant bonus** (`tools/executor.js`, early in `executeTool`): when `variant ∈ {lper-proven, LPerProven, pullback-entry}`, `confidence_level` is bumped by +1 (capped at 10) before the confidence gate and before sizing. Data basis (2026-04-21 fee-inclusive audit): these three variants were the top net-return performers (LPerProven 100% net wr / +1.63%, pullback-entry 92% net wr / +0.80%, lper-proven +0.33% net).
+**HARDCODED variant bonus** (`tools/executor.js`, early in `executeTool`): `confidence_level` is bumped by +1 (capped at 10) before the confidence gate and before sizing for these variants:
+- `LPerProven`, `LPer-Proven` (case-sensitive — lowercase/underscore siblings excluded after 2026-04-23 audit dropped them for dragging the family below baseline)
+- `pullback-entry` (case-insensitive, hyphens/underscores stripped)
+- `upper-biased` (case-insensitive — provisional, added 2026-04-23 after full-data audit showed 100% wr / +3.15% avg on n=5; re-evaluate at n≥15)
 
 ## Transaction Retry
 

@@ -347,6 +347,9 @@ export async function executeTool(name, args) {
       if (v === "LPerProven" || v === "LPer-Proven") return true;
       // pullback-entry: match regardless of casing/punctuation (single clean pattern).
       if (v.toLowerCase().replace(/[-_]/g, "") === "pullbackentry") return true;
+      // upper-biased: 2026-04-23 full-data audit showed 100% wr / +3.15% avg (n=5).
+      // Provisional bonus pending more samples — re-evaluate at n>=15.
+      if (v.toLowerCase().replace(/[-_]/g, "") === "upperbiased") return true;
       return false;
     };
     if (variantHasBonus(args.variant) && typeof args.confidence_level === "number") {

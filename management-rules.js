@@ -8,15 +8,16 @@
 import { config } from "./config.js";
 import { getRecentFeeRate } from "./pool-memory.js";
 
-// HARDCODED: force-close at 120m hold. Fee-rate exemption disabled per 2026-04-23
-// big-loss audit: 4 of the worst stale positions (COPPERINU 1120m, Iroha 1815m,
-// abcdefg 1472m, milkers 1015m) bypassed the cap via the $2/hr fee backdoor while
-// the 120-240m cohort averaged -0.38% and 120m+ held 22 of 62 big losses overall.
-// Setting the threshold to a sentinel 999 keeps the fee-rate plumbing in place for
-// future re-enablement but makes the cap a true hard ceiling.
+// HARDCODED: force-close at 120m hold unless fees are still accruing fast.
+// History: original $2/hr backdoor allowed 4 worst stale positions (COPPERINU 1120m,
+// Iroha 1815m, abcdefg 1472m, milkers 1015m) to bypass the cap; locked to 999 sentinel
+// on 2026-04-23. Re-opened later same day to $4/hr after full-data audit confirmed
+// the 120m+ bucket only loses on average — productive positions earning ≥$4/hr over
+// the last 30m are still allowed to extend (high enough bar to exclude the prior
+// stale-loser pattern but permits genuine fee compounders).
 const HARD_HOLD_CAP_MIN = 120;
 const HARD_HOLD_FEE_WINDOW_MIN = 30;
-const HARD_HOLD_MIN_FEE_RATE_USD_HR = 999;
+const HARD_HOLD_MIN_FEE_RATE_USD_HR = 4;
 
 /**
  * @param {Object} p  — enriched position (from positionData in index.js)
