@@ -20,6 +20,9 @@ export const config = {
   risk: {
     maxPositions:    u.maxPositions    ?? 10,
     maxDeployAmount: u.maxDeployAmount ?? 50,
+    // Block deploying into a token that's already open in another pool.
+    // Guards against correlated IL across fee tiers on the same base_mint.
+    uniqueTokenAcrossPools: u.uniqueTokenAcrossPools ?? true,
   },
 
   // ─── Pool Screening Thresholds ───────────
@@ -239,6 +242,7 @@ export function reloadConfig() {
     const r = config.risk;
     if (f.maxPositions    != null) r.maxPositions    = f.maxPositions;
     if (f.maxDeployAmount != null) r.maxDeployAmount = f.maxDeployAmount;
+    if (f.uniqueTokenAcrossPools != null) r.uniqueTokenAcrossPools = f.uniqueTokenAcrossPools;
 
     const st = config.strategy;
     if (f.strategy      != null) st.strategy      = f.strategy;

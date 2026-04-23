@@ -4,6 +4,7 @@ import { isDevBlocked } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { getRiskFlags } from "./okx.js";
 import { isInPostLossCooldown } from "../pool-memory.js";
+import { appendDecision } from "../decision-log.js";
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
@@ -88,10 +89,17 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const { positions } = await getMyPositions();
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
+  const positionsByMint = new Map(
+    positions.filter((p) => p.base_mint).map((p) => [p.base_mint, p])
+  );
 
   // Post-loss cooldown — block re-entry on pools/tokens that just lost ≤ -5%
   const cooldownMin = config.screening.postLossCooldownMin ?? 120;
   const cooldownThresholdPct = config.screening.postLossCooldownPct ?? -5;
+
+  // Cross-pool uniqueness — block candidate if its base_mint is already open elsewhere.
+  // Default true; set config.risk.uniqueTokenAcrossPools = false to allow same-token/different-pool.
+  const uniqueTokenAcrossPools = config.risk?.uniqueTokenAcrossPools !== false;
 
   // HARDCODED: reject volatility > 5. Per 2026-04-21 fee-inclusive audit
   // (SLICE 5), vol >= 10 bucket is -7.12% net and vol 5-10 is +0.08% net —
@@ -99,7 +107,25 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const MAX_VOLATILITY_HARDCODED = 5;
 
   const eligible = pools
-    .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
+    .filter((p) => {
+      if (occupiedPools.has(p.pool)) return false;
+      const mint = p.base?.mint;
+      if (mint && uniqueTokenAcrossPools && occupiedMints.has(mint)) {
+        const existing = positionsByMint.get(mint);
+        log("screening", `Unique-token guard: ${p.name} blocked — base_mint already open in ${existing?.pool_name || existing?.pool?.slice(0, 8) || "another pool"}`);
+        appendDecision({
+          type: "skip",
+          actor: "RULE_ENGINE",
+          pool: p.pool,
+          pool_name: p.name,
+          summary: `Skipped ${p.name} — duplicate base_mint across pools`,
+          reason: `uniqueTokenAcrossPools: base_mint ${mint.slice(0, 8)} already open in ${existing?.pool_name || existing?.pool?.slice(0, 8) || "another pool"}`,
+          metrics: { base_mint: mint, existing_position: existing?.position || null, existing_pool: existing?.pool || null },
+        });
+        return false;
+      }
+      return true;
+    })
     .filter((p) => {
       if (p.volatility != null && p.volatility > MAX_VOLATILITY_HARDCODED) {
         log("screening", `Volatility cap: ${p.name} blocked — volatility ${p.volatility} > ${MAX_VOLATILITY_HARDCODED}`);

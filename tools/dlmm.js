@@ -602,11 +602,20 @@ export async function getMyPositions({ force = false } = {}) {
         : null;
       const ageMinutes = Math.max(ageFromPnlApi ?? 0, ageFromState ?? 0) || null;
 
+      // base_mint enrichment: prefer tracked state (set at deploy time), then
+      // Meteora PnL API fields. Without this, getMyPositions returns null and
+      // the cross-pool duplicate-token guard silently passes.
+      const enrichedMint =
+        tracked?.base_mint ||
+        p?.tokenXAddress || p?.tokenMintX || p?.mintX ||
+        p?.tokenX?.mint || p?.tokenX?.address ||
+        r.base_mint;
+
       return {
         position: r.position,
         pool: r.pool,
         pair: resolvedPair,
-        base_mint: r.base_mint,
+        base_mint: enrichedMint,
         lower_bin: lowerBin,
         upper_bin: upperBin,
         active_bin: activeBin,
