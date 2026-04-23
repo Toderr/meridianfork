@@ -45,6 +45,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `scripts/autoresearch-bridge.js` | Bridge to autoresearch-dlmm — pool selection, backtest runner, output parser |
 | `scripts/autoresearch-loop.js` | Daily research review — biggest win vs loss analysis at 23:30 UTC+7 |
 | `scripts/goals.js` | Goals system — progress tracking, prompt/notification formatting |
+| `scripts/compare-periods.js` | A/B period comparison — headline metrics, per-dimension delta, composition shift, standalone variant breakdown, ranked hypotheses |
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
