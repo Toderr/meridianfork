@@ -225,6 +225,28 @@ export async function notifyError(source, message) {
   );
 }
 
+// ─── SL slippage alert (throttled: once per 30 min, global) ─────
+// 2026-04-23 big-loss audit: 43% of SL closes realized past trigger, several
+// by >5% (gap-through on meme dumps). Alert fires when realized is >3% worse
+// than the SL trigger value parsed from close_reason.
+let _slSlippageNotifiedAt = 0;
+
+export async function notifySlSlippage({ pair, triggerPct, realizedPct, feesUsd, closeReason }) {
+  if (!TOKEN || !chatId) return;
+  const now = Date.now();
+  if (now - _slSlippageNotifiedAt < 30 * 60_000) return;
+  _slSlippageNotifiedAt = now;
+  const slippage = (triggerPct - realizedPct).toFixed(2);
+  await sendMessage(
+    `🔴 SL SLIPPAGE — ${pair || "?"}\n\n` +
+    `Trigger: ${triggerPct.toFixed(2)}%\n` +
+    `Realized: ${realizedPct.toFixed(2)}%\n` +
+    `Slippage: ${slippage}pp past trigger\n` +
+    `Fees: $${(feesUsd ?? 0).toFixed(2)}\n\n` +
+    `Reason: ${String(closeReason || "").slice(0, 200)}`
+  );
+}
+
 // ─── RPC limit notice (throttled: once per hour) ─────────────────
 let _rpcLimitNotifiedAt = 0;
 

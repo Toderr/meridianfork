@@ -125,6 +125,16 @@ let _pnlCheckerInterval = null;
 let _dustSweepInterval = null;
 // Map: position_address → { peak: number } — tracks peak PnL for trailing stop
 const _trailingStops = new Map();
+// Map: position_address → { last_pct: number, last_check_ts: number } — used by the
+// tiered PnL checker to poll hurt/volatile positions at the full 5s tick and
+// cool positions at ~15s (every 3rd tick). 2026-04-23 big-loss audit showed
+// 43% of SL closes realized past their trigger — tighter cadence on at-risk
+// positions narrows the slippage window.
+const _pnlPollState = new Map();
+const PNL_TICK_MS = 5_000;
+const PNL_COLD_INTERVAL_MS = 15_000;
+const PNL_HOT_PCT_THRESHOLD = -2;
+const PNL_HOT_VOLATILITY_THRESHOLD = 3;
 
 async function runBriefing() {
   log("cron", "Starting morning briefing");
@@ -762,14 +772,25 @@ async function runScreeningCycle() {
 
           return {
             block: lines.join("\n"),
+            pool: pool.pool,
+            poolName: pool.name,
             botHoldersPct: ti?.audit?.bot_holders_pct ?? null,
             okxAdvanced: okx?.advanced ?? null,
+            priceVsAthPct: okx?.price?.price_vs_ath_pct ?? null,
+            momentum1h: ti?.stats_1h?.price_change ?? null,
           };
         })
       );
 
-      // Hard-filter bot-heavy, honeypot, and dev-rugger tokens
+      // Hard-filter bot-heavy, honeypot, dev-rugger, active-drawdown, and
+      // pump-chasing tokens before they reach the screener LLM.
       const maxBotPct = config.screening.maxBotHoldersPct;
+      // 2026-04-23 big-loss audit: price_vs_ATH 30-60% bucket = 36.4% big-loss
+      // rate / 9.1% win rate / -3.98% avg (tokens in active downtrend keep falling).
+      // momentum_1h >= 20% = 20% big-loss rate / -1.99% avg (buying local blow-off top).
+      const ATH_REJECT_MIN = 30;
+      const ATH_REJECT_MAX = 60;
+      const MOMENTUM_1H_REJECT = 20;
       const candidateBlocks = candidateResults
         .filter(r => {
           if (maxBotPct != null && r.botHoldersPct != null && r.botHoldersPct > maxBotPct) {
@@ -782,6 +803,36 @@ async function runScreeningCycle() {
           }
           if (r.okxAdvanced?.dev_rug_count > 0) {
             log("lesson_enforce", `Filtered candidate — dev has ${r.okxAdvanced.dev_rug_count} prior rug(s)`);
+            return false;
+          }
+          if (r.priceVsAthPct != null && r.priceVsAthPct >= ATH_REJECT_MIN && r.priceVsAthPct <= ATH_REJECT_MAX) {
+            log("screening", `Filtered ${r.poolName} — price_vs_ATH ${r.priceVsAthPct}% in drop-zone [${ATH_REJECT_MIN}-${ATH_REJECT_MAX}%]`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — in ATH drop-zone`,
+                reason: `price_vs_ATH ${r.priceVsAthPct}% in [${ATH_REJECT_MIN}-${ATH_REJECT_MAX}%] — historical 36.4% big-loss rate in this bucket`,
+                metrics: { price_vs_ath_pct: r.priceVsAthPct },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          if (r.momentum1h != null && r.momentum1h >= MOMENTUM_1H_REJECT) {
+            log("screening", `Filtered ${r.poolName} — momentum_1h ${r.momentum1h}% >= ${MOMENTUM_1H_REJECT}%`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — pump-chase`,
+                reason: `momentum_1h ${r.momentum1h}% >= ${MOMENTUM_1H_REJECT}% — historical 20% big-loss rate in this bucket`,
+                metrics: { momentum_1h: r.momentum1h },
+              });
+            } catch { /**/ }
             return false;
           }
           return true;
@@ -894,10 +945,13 @@ async function runPnlChecker() {
     return;
   }
 
-  // Clean stale trailing-stop entries (position was closed externally)
+  // Clean stale trailing-stop + poll-state entries (position was closed externally)
   const openAddresses = new Set(openPositions.map(p => p.position));
   for (const addr of _trailingStops.keys()) {
     if (!openAddresses.has(addr)) _trailingStops.delete(addr);
+  }
+  for (const addr of _pnlPollState.keys()) {
+    if (!openAddresses.has(addr)) _pnlPollState.delete(addr);
   }
 
   _pnlCheckerBusy = true;
@@ -907,8 +961,18 @@ async function runPnlChecker() {
       if (tracked.instruction) {
         log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: has instruction "${tracked.instruction}" — skipping pnl checker`);
         _trailingStops.delete(tracked.position); // clear any trailing stop too
+        _pnlPollState.delete(tracked.position);
         continue;
       }
+
+      // Tiered cadence: hot positions (last pnl ≤ -2% or volatility ≥ 3) check
+      // every tick (~5s). Cold positions check every PNL_COLD_INTERVAL_MS (~15s).
+      const pollNow = Date.now();
+      const pollSt  = _pnlPollState.get(tracked.position);
+      const volHot  = (tracked.volatility ?? 0) >= PNL_HOT_VOLATILITY_THRESHOLD;
+      const pctHot  = pollSt && pollSt.last_pct != null && pollSt.last_pct <= PNL_HOT_PCT_THRESHOLD;
+      const elapsed = pollSt ? pollNow - pollSt.last_check_ts : Infinity;
+      if (!volHot && !pctHot && elapsed < PNL_COLD_INTERVAL_MS) continue;
 
       // Resolve thresholds — experiment positions use their own rules
       let SL_PCT           = config.management.emergencyPriceDropPct;
@@ -969,6 +1033,9 @@ async function runPnlChecker() {
         ? (pnl.unclaimed_fee_usd ?? 0) / pnl.initial_value_usd * 100 : 0;
       const pct = pnl.pnl_pct + feePct;
 
+      // Update tiered-cadence state so hurt positions get the fast tick
+      _pnlPollState.set(tracked.position, { last_pct: pct, last_check_ts: Date.now() });
+
       // Track peak for journal duration metrics (cleared at close in lessons.js)
       recordPeak(tracked.position, pct);
 
@@ -1019,10 +1086,22 @@ async function runPnlChecker() {
       }
 
       const stop = _trailingStops.get(tracked.position);
-      if (stop && pct < expTrailFloor) {
-        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${expTrailFloor}% — CLOSE`);
-        _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}%`, _decision_source: "PNL_CHECKER" });
+      if (stop) {
+        // 2026-04-23 big-loss audit: 2 trailing closes realized -13%/-15%
+        // after peaks of +6.46% / +6.33% (≈19% drop from peak). A flat floor
+        // lets gains evaporate once peak gets meaningful. Once peak > +4%,
+        // lock in at least 50% of the peak — trailing floor can never dip
+        // below that. Below +4% peak we keep the configured behaviour.
+        let effectiveFloor = expTrailFloor;
+        if (stop.peak > 4) {
+          const peakRatchet = stop.peak * 0.5;
+          if (peakRatchet > effectiveFloor) effectiveFloor = peakRatchet;
+        }
+        if (pct < effectiveFloor) {
+          log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: trailing stop — peak ${stop.peak}%, now ${pct}% < ${effectiveFloor}% (base ${expTrailFloor}%) — CLOSE`);
+          _trailingStops.delete(tracked.position);
+          await executeTool("close_position", { position_address: tracked.position, close_reason: `Trailing stop: peak ${stop.peak}%, dropped to ${pct}% (floor ${effectiveFloor}%)`, _decision_source: "PNL_CHECKER" });
+        }
       }
     }
   } finally {
@@ -1153,7 +1232,7 @@ export function startCronJobs() {
   _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(e => {
     log("cron_error", `PnL checker failed: ${e.message}`);
     notifyError("PnL checker", e.message);
-  }), 15_000);
+  }), PNL_TICK_MS);
 
   // Periodic dust sweep — every 10 minutes, retry any tokens still in wallet
   _dustSweepInterval = setInterval(async () => {

@@ -333,21 +333,28 @@ export async function executeTool(name, args) {
     }
   }
 
-  // ─── HARDCODED: +1 confidence for lper-proven/LPerProven/pullback-entry variants.
-  // Normalize casing/punctuation (rec #6, 2026-04-22) so lper_proven, lper-proven,
-  // LPerProven, lperproven all match — the screener LLM emits any of these forms.
-  // Data basis (2026-04-21 audit): LPerProven 100% net wr / +1.63%, pullback-entry
-  // 92% net wr / +0.80%, lper-proven +0.33% net. Applied before the confidence gate
-  // so a 7 → 8 bump on a bonused variant passes the > 7 threshold.
+  // ─── HARDCODED: +1 confidence for proven variants. 2026-04-23 big-loss audit
+  // split the lper family by casing: LPerProven (n=29, 0% big, +0.23% avg) and
+  // LPer-Proven (n=9, 0% big, +0.76% avg) stay bonused; lowercase lper-proven
+  // (n=167, 5.4% big, -0.42% avg) and lper_proven (n=61, 3.3% big, -0.54% avg)
+  // lose the bonus — they were the dominant sample and dragged the family
+  // below baseline. pullback-entry (n=12, 92% wr, +0.80%) keeps the bonus.
   if (name === "deploy_position" && args && typeof args === "object") {
-    const LPER_BONUS_NORMALIZED = new Set(["lperproven", "pullbackentry"]);
-    const norm = v => (v || "").toLowerCase().replace(/[-_]/g, "");
-    if (LPER_BONUS_NORMALIZED.has(norm(args.variant)) && typeof args.confidence_level === "number") {
+    const variantHasBonus = (v) => {
+      if (!v) return false;
+      // Case-sensitive match for the two proven lper forms — lowercase/underscore
+      // siblings are intentionally excluded (they underperform baseline).
+      if (v === "LPerProven" || v === "LPer-Proven") return true;
+      // pullback-entry: match regardless of casing/punctuation (single clean pattern).
+      if (v.toLowerCase().replace(/[-_]/g, "") === "pullbackentry") return true;
+      return false;
+    };
+    if (variantHasBonus(args.variant) && typeof args.confidence_level === "number") {
       const original = args.confidence_level;
       const bumped = Math.min(10, original + 1);
       if (bumped !== original) {
         args = { ...args, confidence_level: bumped };
-        log("executor", `Confidence bump: variant=${args.variant} ${original} → ${bumped} (hardcoded lper variant bonus)`);
+        log("executor", `Confidence bump: variant=${args.variant} ${original} → ${bumped} (hardcoded proven-variant bonus)`);
       }
     }
   }
@@ -532,6 +539,31 @@ export async function executeTool(name, args) {
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || result.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, solPrice: result.sol_price ?? 0, reason: args.close_reason }).catch(() => {});
+
+        // SL slippage alert — fires when realized pnl is >3pp worse than the
+        // trigger value embedded in the close_reason. 2026-04-23 big-loss audit
+        // showed 43% of SL closes slipped past trigger by 2-30+pp on meme dumps.
+        try {
+          const reason = args.close_reason || "";
+          if (/stop.?loss/i.test(reason)) {
+            const m = reason.match(/-?\d+(?:\.\d+)?/);
+            if (m && result?.pnl_pct != null) {
+              const triggerPct = parseFloat(m[0]);
+              const realizedPct = result.pnl_pct;
+              if (!Number.isNaN(triggerPct) && triggerPct - realizedPct > 3) {
+                import("../telegram-journal.js")
+                  .then(j => j.notifySlSlippage({
+                    pair: _pair,
+                    triggerPct,
+                    realizedPct,
+                    feesUsd: result.fees_earned_usd,
+                    closeReason: reason,
+                  }))
+                  .catch(() => {});
+              }
+            }
+          }
+        } catch (_e) { /**/ }
         try {
           const pnlPct = result.pnl_pct ?? 0;
           const pnlUsd = result.pnl_usd ?? 0;
@@ -733,15 +765,16 @@ async function runSafetyChecks(name, args) {
         log("warn", `reserve_slot check failed (non-fatal): ${slotErr.message}`);
       }
 
-      // Block same base token across different pools (experiments exempt — same pool, iterating)
-      if (!isExperiment && args.base_mint) {
+      // Block same base token across different pools (experiments exempt — same pool, iterating).
+      // Gated on config.risk.uniqueTokenAcrossPools (default true).
+      if (!isExperiment && args.base_mint && config.risk?.uniqueTokenAcrossPools !== false) {
         const alreadyHasMint = positions.positions.some(
           (p) => p.base_mint === args.base_mint
         );
         if (alreadyHasMint) {
           return {
             pass: false,
-            reason: `Already holding base token ${args.base_mint} in another pool. One position per token only.`,
+            reason: `Already holding base token ${args.base_mint} in another pool. uniqueTokenAcrossPools=true — one position per token. Set false in user-config.json to override.`,
           };
         }
       }
