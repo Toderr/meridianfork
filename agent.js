@@ -14,7 +14,7 @@ function getToolsForRole(agentType) {
 }
 import { getWalletBalances } from "./tools/wallet.js";
 import { getMyPositions } from "./tools/dlmm.js";
-import { log } from "./logger.js";
+import { log, logLlmCall } from "./logger.js";
 import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
@@ -106,6 +106,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
       const toolChoice = (step === 0 && ACTION_INTENTS.test(goal)) ? "required" : "auto";
       for (let attempt = 0; attempt < 3; attempt++) {
+        const _t0 = Date.now();
         try {
           response = await usedClient.chat.completions.create({
             model: usedModel,
@@ -115,9 +116,39 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           });
+          logLlmCall({
+            agent_type: agentType,
+            step,
+            attempt: attempt + 1,
+            provider: activeProvider,
+            model: usedModel,
+            duration_ms: Date.now() - _t0,
+            system_prompt_len: systemPrompt.length,
+            messages_count: messages.length,
+            tokens_in: response?.usage?.prompt_tokens ?? null,
+            tokens_out: response?.usage?.completion_tokens ?? null,
+            tool_calls_count: response?.choices?.[0]?.message?.tool_calls?.length ?? 0,
+            fallback_used: false,
+            error: null,
+          });
         } catch (apiErr) {
           // Network / timeout errors count as a failed attempt
           log("agent", `API error on attempt ${attempt + 1}/3: ${apiErr.message}`);
+          logLlmCall({
+            agent_type: agentType,
+            step,
+            attempt: attempt + 1,
+            provider: activeProvider,
+            model: usedModel,
+            duration_ms: Date.now() - _t0,
+            system_prompt_len: systemPrompt.length,
+            messages_count: messages.length,
+            tokens_in: null,
+            tokens_out: null,
+            tool_calls_count: 0,
+            fallback_used: false,
+            error: apiErr.message,
+          });
           response = { choices: null, error: { message: apiErr.message, code: apiErr.status } };
         }
         if (response.choices?.length) break;
@@ -132,6 +163,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         log("agent", `Primary model failed 3 times — falling back to ${FALLBACK_MODEL} for this turn`);
         usedModel = FALLBACK_MODEL;
         usedClient = getClient("openrouter");
+        const _t0 = Date.now();
         try {
           response = await usedClient.chat.completions.create({
             model: usedModel,
@@ -141,8 +173,26 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           });
+          logLlmCall({
+            agent_type: agentType, step, attempt: 4,
+            provider: "openrouter", model: usedModel,
+            duration_ms: Date.now() - _t0,
+            system_prompt_len: systemPrompt.length, messages_count: messages.length,
+            tokens_in: response?.usage?.prompt_tokens ?? null,
+            tokens_out: response?.usage?.completion_tokens ?? null,
+            tool_calls_count: response?.choices?.[0]?.message?.tool_calls?.length ?? 0,
+            fallback_used: true, error: null,
+          });
         } catch (apiErr) {
           log("error", `Fallback model also failed: ${apiErr.message}`);
+          logLlmCall({
+            agent_type: agentType, step, attempt: 4,
+            provider: "openrouter", model: usedModel,
+            duration_ms: Date.now() - _t0,
+            system_prompt_len: systemPrompt.length, messages_count: messages.length,
+            tokens_in: null, tokens_out: null, tool_calls_count: 0,
+            fallback_used: true, error: apiErr.message,
+          });
           response = { choices: null, error: { message: apiErr.message } };
         }
       }

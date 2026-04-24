@@ -7,7 +7,7 @@ import {
 import BN from "bn.js";
 import bs58 from "bs58";
 import { config } from "../config.js";
-import { log } from "../logger.js";
+import { log, logGasEvent } from "../logger.js";
 import { getTokenProfile } from "../screening-cache.js";
 import {
   trackPosition,
@@ -157,9 +157,14 @@ async function getOnChainPositionValue(poolAddress, positionAddress) {
 
 // ─── Transaction retry wrapper ─────────────────────────────────
 async function sendWithRetry(connection, tx, signers, label = "tx", maxAttempts = 5) {
+  const payerKey = signers?.[0]?.publicKey ?? null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await sendAndConfirmTransaction(connection, tx, signers, { skipPreflight: true });
+      const sig = await sendAndConfirmTransaction(connection, tx, signers, { skipPreflight: true });
+      // Fire-and-forget — captures gas fee + wallet SOL delta in one RPC call
+      // by reading pre/post balances from tx meta. Doesn't block the hot path.
+      logTxMeta(connection, sig, label, payerKey).catch(() => {});
+      return sig;
     } catch (e) {
       if (attempt === maxAttempts) throw e;
       const delay = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s, 8s
@@ -167,6 +172,43 @@ async function sendWithRetry(connection, tx, signers, label = "tx", maxAttempts 
       await new Promise(r => setTimeout(r, delay));
     }
   }
+}
+
+async function logTxMeta(connection, sig, label, payerKey) {
+  // Wait a beat for the tx to be indexed, then fetch parsed tx meta.
+  await new Promise(r => setTimeout(r, 3000));
+  try {
+    const parsed = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0 });
+    if (!parsed?.meta) return;
+    const feeLamports = parsed.meta.fee ?? null;
+
+    // Wallet SOL delta from preBalances/postBalances — exact wallet impact.
+    // For claim_fees: positive delta = fees actually received by wallet (SOL side).
+    // For close_position: positive = SOL returned from position minus gas.
+    // For deploy_position: negative = SOL deposited + gas.
+    let walletDeltaSol = null;
+    if (payerKey) {
+      const keys = parsed.transaction?.message?.accountKeys ?? [];
+      const payerStr = payerKey.toString();
+      const idx = keys.findIndex(k => (k.pubkey?.toString?.() ?? k.toString?.()) === payerStr);
+      if (idx >= 0) {
+        const pre = parsed.meta.preBalances?.[idx];
+        const post = parsed.meta.postBalances?.[idx];
+        if (pre != null && post != null) {
+          walletDeltaSol = (post - pre) / 1e9;
+        }
+      }
+    }
+
+    logGasEvent({
+      label,
+      tx: sig,
+      fee_lamports: feeLamports,
+      fee_sol: feeLamports != null ? feeLamports / 1e9 : null,
+      wallet_sol_delta: walletDeltaSol,
+      slot: parsed.slot ?? null,
+    });
+  } catch (_) { /* swallow — observability-only */ }
 }
 
 // ─── Get Active Bin ────────────────────────────────────────────

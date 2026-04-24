@@ -292,11 +292,21 @@ async function runManagementCycle(tier = null) {
       const totalValueUsd = positionData.reduce((s, p) => s + (p.pnl?.current_value_usd ?? 0), 0);
       const totalPnlUsd = positionData.reduce((s, p) => s + (p.pnl?.pnl_usd ?? 0), 0);
       const totalFeesUsd = positionData.reduce((s, p) => s + (p.pnl?.unclaimed_fee_usd ?? 0), 0);
+      // sol_price — try cheapest sources first, fall back to wallet balance fetch
+      let solPrice = positionData.find(p => p.pnl?.sol_price != null)?.pnl?.sol_price ?? null;
+      if (solPrice == null) {
+        try {
+          const { getWalletBalances } = await import("./tools/wallet.js");
+          const w = await getWalletBalances({});
+          solPrice = w?.sol_price ?? null;
+        } catch { /* fallback: null */ }
+      }
       logSnapshot({
         positions: positionData.length,
         total_value_usd: Math.round(totalValueUsd * 100) / 100,
         total_pnl_usd: Math.round(totalPnlUsd * 100) / 100,
         total_unclaimed_fees_usd: Math.round(totalFeesUsd * 100) / 100,
+        sol_price: solPrice,
         tier: tier?.name ?? "all",
       });
     } catch { /* non-fatal */ }

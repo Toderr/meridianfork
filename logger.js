@@ -75,6 +75,34 @@ export function logAction(action) {
 }
 
 /**
+ * Log an LLM API call — captures decision-chain ground truth without
+ * saving full prompts (too big). Goes to logs/llm-YYYY-MM-DD.jsonl.
+ * Fields: timestamp, agent_type, model, provider, duration_ms, tokens_in,
+ * tokens_out, tool_calls_count, step, fallback_used, error, system_prompt_len.
+ */
+export function logLlmCall(entry) {
+  try {
+    const timestamp = new Date().toISOString();
+    const dateStr = timestamp.split("T")[0];
+    const file = path.join(LOG_DIR, `llm-${dateStr}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify({ timestamp, ...entry }) + "\n");
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * Log a per-transaction gas fee. Fire-and-forget after tx confirmation.
+ * Fields: timestamp, label, tx, fee_lamports, fee_sol.
+ */
+export function logGasEvent(entry) {
+  try {
+    const timestamp = new Date().toISOString();
+    const dateStr = timestamp.split("T")[0];
+    const file = path.join(LOG_DIR, `gas-${dateStr}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify({ timestamp, ...entry }) + "\n");
+  } catch { /* non-fatal */ }
+}
+
+/**
  * Log a portfolio snapshot (for tracking performance over time).
  */
 export function logSnapshot(snapshot) {

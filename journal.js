@@ -9,7 +9,26 @@ import fs from "fs";
 import { log } from "./logger.js";
 import { notifyJournalClose, isEnabled as journalBotEnabled } from "./telegram-journal.js";
 
-const JOURNAL_FILE = "./journal.json";
+// 2026-04-24: moved journal out of repo root to prevent git-checkout-overwrite.
+// journal.json was tracked at commits pre-c6824cc (2026-04-11); rolling back to
+// them wiped live data once. `data/` has never been tracked at any commit, so
+// git checkout cannot touch it.
+const JOURNAL_FILE = "./data/journal.json";
+const LEGACY_FILE  = "./journal.json";
+
+// One-time migration on module load.
+(function migrateLegacyJournal() {
+  try {
+    if (fs.existsSync(JOURNAL_FILE)) return;
+    if (!fs.existsSync(LEGACY_FILE)) return;
+    const dir = "./data";
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.renameSync(LEGACY_FILE, JOURNAL_FILE);
+    log("journal", `Migrated ${LEGACY_FILE} → ${JOURNAL_FILE}`);
+  } catch (e) {
+    log("journal_warn", `Migration skipped: ${e.message}`);
+  }
+})();
 
 function load() {
   if (!fs.existsSync(JOURNAL_FILE)) return { entries: [] };
@@ -21,6 +40,8 @@ function load() {
 }
 
 function save(data) {
+  const dir = "./data";
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const tmp = JOURNAL_FILE + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
   fs.renameSync(tmp, JOURNAL_FILE);
