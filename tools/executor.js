@@ -342,14 +342,16 @@ export async function executeTool(name, args) {
   if (name === "deploy_position" && args && typeof args === "object") {
     const variantHasBonus = (v) => {
       if (!v) return false;
-      // Case-sensitive match for the two proven lper forms — lowercase/underscore
-      // siblings are intentionally excluded (they underperform baseline).
-      if (v === "LPerProven" || v === "LPer-Proven") return true;
-      // pullback-entry: match regardless of casing/punctuation (single clean pattern).
-      if (v.toLowerCase().replace(/[-_]/g, "") === "pullbackentry") return true;
+      const norm = v.toLowerCase().replace(/[-_]/g, "");
+      // 2026-04-24: casing-insensitive match — prior case-sensitive gate missed
+      // 70% of deploys emitted as `lper_proven`/`lper-proven` (the dominant
+      // screener label) and silently dropped the +1 bonus. lperproven family
+      // unified.
+      if (norm === "lperproven") return true;
+      if (norm === "pullbackentry") return true;
       // upper-biased: 2026-04-23 full-data audit showed 100% wr / +3.15% avg (n=5).
       // Provisional bonus pending more samples — re-evaluate at n>=15.
-      if (v.toLowerCase().replace(/[-_]/g, "") === "upperbiased") return true;
+      if (norm === "upperbiased") return true;
       return false;
     };
     if (variantHasBonus(args.variant) && typeof args.confidence_level === "number") {

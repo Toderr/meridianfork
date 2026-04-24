@@ -89,6 +89,11 @@ export function evaluatePosition(p) {
       // Skip if position is at a loss
       if (pnlPct !== null && pnlPct < 0) {
         // At loss — suppress yield-exit
+      } else if (pnlPct !== null && pnlPct >= 0.5 && age < (config.management.minAgeForYieldExit + 30)) {
+        // 2026-04-24: young+profitable grace. Period A→B audit showed 45% of
+        // closes were yield-exits @ avg +0.50% — too many cut before TP could
+        // trigger. Give positions a 30m runway past minAgeForYieldExit when
+        // already net-positive ≥0.5% (fee-incl).
       } else {
         // Grace zone: within 1% of threshold and profitable → hold
         const gap = config.management.minFeeTvl24h - feeTvl;
