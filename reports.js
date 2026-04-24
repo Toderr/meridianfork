@@ -114,6 +114,9 @@ export async function generateReport(period = "daily") {
   lines.push(`💰 Net PnL: ${pnlSign}$${total_pnl_usd.toFixed(2)}${solPart}`);
   lines.push(`📈 PnL %: ${pnlSign}${total_pnl_pct.toFixed(2)}%`);
   lines.push(`💎 Fees Earned: $${total_fees_usd.toFixed(2)}`);
+  const total_combined_usd = total_pnl_usd + total_fees_usd;
+  const combinedSign = total_combined_usd >= 0 ? "+" : "";
+  lines.push(`💼 Total (PnL + Fees): ${combinedSign}$${total_combined_usd.toFixed(2)}`);
   lines.push(win_rate !== null
     ? `🎯 Win Rate: ${win_rate}% (${wins.length}/${closes.length})`
     : `🎯 Win Rate: N/A`);

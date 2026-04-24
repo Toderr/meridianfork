@@ -271,6 +271,8 @@ function buildSummaryReport(closes, header) {
   const losses = rows.filter(e => (e.pnl_usd ?? 0) <  0);
   const totalUsd = rows.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
   const totalSol = rows.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+  const totalFeesUsd = rows.reduce((s, e) => s + (e.fees_earned_usd ?? 0), 0);
+  const totalNetUsd = totalUsd + totalFeesUsd;
   const totalInvested = rows.reduce((s, e) => s + (e.initial_value_usd ?? 0), 0);
   const totalPct = totalInvested > 0 ? (totalUsd / totalInvested) * 100 : 0;
   const winRate = Math.round((wins.length / rows.length) * 100);
@@ -280,6 +282,7 @@ function buildSummaryReport(closes, header) {
   const suT = totalUsd >= 0 ? "+" : "";
   const ssT = totalSol >= 0 ? "+" : "";
   const spT = totalPct >= 0 ? "+" : "";
+  const snT = totalNetUsd >= 0 ? "+" : "";
 
   const stratMap = {};
   for (const e of rows) {
@@ -300,6 +303,8 @@ function buildSummaryReport(closes, header) {
     `${header}\n`,
     `📊 ${rows.length} trades | ${wins.length}W ${losses.length}L`,
     `💰 PnL: ${suT}$${totalUsd.toFixed(2)} | ${ssT}${totalSol.toFixed(4)} SOL | ${spT}${totalPct.toFixed(2)}%`,
+    `🏦 Fees: $${totalFeesUsd.toFixed(2)}`,
+    `💼 Total (PnL + Fees): ${snT}$${totalNetUsd.toFixed(2)}`,
     `📈 Win rate: ${winRate}%`,
     `✅ Avg profit: ${avgProfit >= 0 ? "+" : ""}${avgProfit.toFixed(2)}%`,
     `❌ Avg loss: ${avgLoss.toFixed(2)}%`,
@@ -356,13 +361,18 @@ async function handleCommand(text) {
     const wins = closes.filter(e => (e.pnl_usd ?? 0) >= 0).length;
     const totalPnlUsd = closes.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
     const totalPnlSol = closes.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+    const totalFeesUsd = closes.reduce((s, e) => s + (e.fees_earned_usd ?? 0), 0);
+    const totalNetUsd = totalPnlUsd + totalFeesUsd;
     const winRate = ((wins / closes.length) * 100).toFixed(0);
     const su = totalPnlUsd >= 0 ? "+" : "";
     const ss = totalPnlSol >= 0 ? "+" : "";
+    const sn = totalNetUsd >= 0 ? "+" : "";
     return sendMessage(
       `📊 Journal Stats\n\n` +
       `Trades: ${closes.length} | Win rate: ${winRate}%\n` +
-      `Total PnL: ${su}$${totalPnlUsd.toFixed(2)} | ${ss}${totalPnlSol.toFixed(4)} SOL`
+      `Total PnL: ${su}$${totalPnlUsd.toFixed(2)} | ${ss}${totalPnlSol.toFixed(4)} SOL\n` +
+      `Fees: $${totalFeesUsd.toFixed(2)}\n` +
+      `Total (PnL + Fees): ${sn}$${totalNetUsd.toFixed(2)}`
     );
   }
 
