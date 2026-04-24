@@ -106,6 +106,12 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   // only vol 2-5 (+1.51% net, 100% net wr) clears comfortably. Cap at 5.
   const MAX_VOLATILITY_HARDCODED = 5;
 
+  // HARDCODED: bin_step must be in [80, 125]. Restored 2026-04-24 after
+  // PnL drop post-11 Apr — commit 9837502 relaxed this to configurable,
+  // big-loss rate doubled. Original pre-9837502 constraint.
+  const BIN_STEP_MIN_HARDCODED = 80;
+  const BIN_STEP_MAX_HARDCODED = 125;
+
   const eligible = pools
     .filter((p) => {
       if (occupiedPools.has(p.pool)) return false;
@@ -129,6 +135,13 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     .filter((p) => {
       if (p.volatility != null && p.volatility > MAX_VOLATILITY_HARDCODED) {
         log("screening", `Volatility cap: ${p.name} blocked — volatility ${p.volatility} > ${MAX_VOLATILITY_HARDCODED}`);
+        return false;
+      }
+      return true;
+    })
+    .filter((p) => {
+      if (p.bin_step != null && (p.bin_step < BIN_STEP_MIN_HARDCODED || p.bin_step > BIN_STEP_MAX_HARDCODED)) {
+        log("screening", `Bin-step gate: ${p.name} blocked — bin_step ${p.bin_step} outside [${BIN_STEP_MIN_HARDCODED}, ${BIN_STEP_MAX_HARDCODED}]`);
         return false;
       }
       return true;

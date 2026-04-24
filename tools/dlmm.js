@@ -801,6 +801,61 @@ export async function closePosition({ position_address, close_reason }) {
     // Must happen before transactions — position no longer exists on-chain after close.
     const freshPnl = await getPositionPnl({ pool_address: poolAddress.toString(), position_address }).catch(() => null);
 
+    // ─── Idempotent fast-path: empty/already-closed position ───
+    // Bug pre-2026-04-24: PnL checker detected value=0, called close_position,
+    // removeLiquidity failed with 5× retries, threw before recordClose → stuck
+    // in loop re-trying every 15s. Now: if position has no liquidity AND was
+    // triggered by the empty-position rule, skip on-chain txs and clean up state.
+    const isEmptyTrigger = close_reason && /^empty position/i.test(close_reason);
+    let positionIsEmpty = false;
+    try {
+      const posData = await pool.getPosition(positionPubKey);
+      const bins = Array.isArray(posData?.positionData?.positionBinData) ? posData.positionData.positionBinData : [];
+      const hasLiquidity = bins.some(b => new BN(b.positionLiquidity || "0").gt(new BN(0)));
+      if (!hasLiquidity) positionIsEmpty = true;
+    } catch (e) {
+      // getPosition throws when position account is gone — treat as empty
+      if (/not found|does not exist|account.*closed/i.test(e.message || "")) {
+        positionIsEmpty = true;
+      }
+    }
+    if (isEmptyTrigger && positionIsEmpty) {
+      log("close", `Fast-path empty close: ${position_address} — skip on-chain txs, cleanup state only`);
+      const trackedPre = getTrackedPosition(position_address);
+      const poolName = trackedPre?.pool_name || freshPnl?.pair_name || poolAddress.toString().slice(0, 8);
+      recordClose(position_address, close_reason);
+      await recordPerformance({
+        position: position_address,
+        pool: poolAddress.toString(),
+        pool_name: poolName,
+        strategy: trackedPre?.strategy || null,
+        initial_value_usd: trackedPre?.initial_value_usd || 0,
+        final_value_usd: 0,
+        fees_earned_usd: 0,
+        pnl_usd: 0,
+        pnl_pct: 0,
+        pnl_sol: 0,
+        minutes_held: trackedPre?.deployed_at
+          ? Math.floor((Date.now() - new Date(trackedPre.deployed_at).getTime()) / 60000) : 0,
+        range_efficiency: 0,
+        close_reason,
+      });
+      _positionsCacheAt = 0;
+      return {
+        success: true,
+        position: position_address,
+        pool: poolAddress.toString(),
+        pool_name: poolName,
+        txs: [],
+        pnl_usd: 0,
+        pnl_pct: 0,
+        pnl_sol: 0,
+        fees_earned_usd: 0,
+        base_mint: trackedPre?.base_mint || null,
+        fast_path: "empty_position_skip",
+      };
+    }
+
     const txHashes = [];
 
     // ─── Step 1: Claim Fees (to clear account state) ───────────

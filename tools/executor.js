@@ -672,10 +672,12 @@ async function runSafetyChecks(name, args) {
       }
 
       // Block low-confidence deploys (experiments always pass confidence=10)
-      if (!isExperiment && args.confidence_level != null && args.confidence_level <= 7) {
+      // Configurable via config.risk.minConfidenceToDeploy (default 8, meaning strict > 7).
+      const minConfidence = config.risk?.minConfidenceToDeploy ?? 8;
+      if (!isExperiment && args.confidence_level != null && args.confidence_level < minConfidence) {
         return {
           pass: false,
-          reason: `Confidence ${args.confidence_level}/10 is too low (must be > 7). Do not deploy.`,
+          reason: `Confidence ${args.confidence_level}/10 is too low (must be >= ${minConfidence}). Do not deploy.`,
         };
       }
 

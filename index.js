@@ -778,6 +778,11 @@ async function runScreeningCycle() {
             okxAdvanced: okx?.advanced ?? null,
             priceVsAthPct: okx?.price?.price_vs_ath_pct ?? null,
             momentum1h: ti?.stats_1h?.price_change ?? null,
+            topPct: h?.top_10_real_holders_pct != null ? Number(h.top_10_real_holders_pct) : null,
+            bundlersPct: h?.bundlers_pct_in_top_100 != null ? Number(h.bundlers_pct_in_top_100) : null,
+            lperCount: lps?.patterns?.top_lper_count ?? null,
+            lperWinRate: lps?.patterns?.avg_win_rate ?? null,
+            lperDisabled: lps?.message?.includes("LPAGENT_API_KEY not set") || false,
           };
         })
       );
@@ -791,6 +796,15 @@ async function runScreeningCycle() {
       const ATH_REJECT_MIN = 30;
       const ATH_REJECT_MAX = 60;
       const MOMENTUM_1H_REJECT = 20;
+      // HARDCODED gates restored 2026-04-24 (pre-9837502 values):
+      const TOP10_REJECT = 60;
+      const BUNDLERS_REJECT = 30;
+      // LPAgent top-LPer hard gate restored 2026-04-24:
+      // commit f6cd32a (11 Apr) removed LPAgent from live-pnl pipeline but
+      // kept study_top_lpers for screening as SOFT signal. We promote it back
+      // to HARD gate — proven pools only. Skipped if API not configured.
+      const LPER_MIN_COUNT = 3;      // need >= 3 credible LPers for pattern to be meaningful
+      const LPER_MIN_WIN_RATE = 0.50; // >= 50% — prompt already says "<50% pool is hard even for pros"
       const candidateBlocks = candidateResults
         .filter(r => {
           if (maxBotPct != null && r.botHoldersPct != null && r.botHoldersPct > maxBotPct) {
@@ -834,6 +848,71 @@ async function runScreeningCycle() {
               });
             } catch { /**/ }
             return false;
+          }
+          if (r.topPct != null && r.topPct > TOP10_REJECT) {
+            log("screening", `Filtered ${r.poolName} — top_10_pct ${r.topPct}% > ${TOP10_REJECT}%`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — concentration`,
+                reason: `top_10_pct ${r.topPct}% > ${TOP10_REJECT}% (hardcoded, restored 2026-04-24)`,
+                metrics: { top_10_pct: r.topPct },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          if (r.bundlersPct != null && r.bundlersPct > BUNDLERS_REJECT) {
+            log("screening", `Filtered ${r.poolName} — bundlers_pct ${r.bundlersPct}% > ${BUNDLERS_REJECT}%`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — bundlers`,
+                reason: `bundlers_pct ${r.bundlersPct}% > ${BUNDLERS_REJECT}% (hardcoded, restored 2026-04-24)`,
+                metrics: { bundlers_pct: r.bundlersPct },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          // LPAgent HARD gate — only enforce when API returned data. If API not
+          // configured (lperDisabled=true), this gate is bypassed so the system
+          // degrades gracefully without blocking all deploys.
+          if (!r.lperDisabled) {
+            if (r.lperCount != null && r.lperCount < LPER_MIN_COUNT) {
+              log("screening", `Filtered ${r.poolName} — top_lper_count ${r.lperCount} < ${LPER_MIN_COUNT}`);
+              try {
+                appendDecision({
+                  type: "skip",
+                  actor: "RULE_ENGINE",
+                  pool: r.pool,
+                  pool_name: r.poolName,
+                  summary: `Skipped ${r.poolName} — too few credible LPers`,
+                  reason: `top_lper_count ${r.lperCount} < ${LPER_MIN_COUNT} (LPAgent hard gate, restored 2026-04-24)`,
+                  metrics: { top_lper_count: r.lperCount },
+                });
+              } catch { /**/ }
+              return false;
+            }
+            if (r.lperWinRate != null && r.lperWinRate < LPER_MIN_WIN_RATE) {
+              log("screening", `Filtered ${r.poolName} — avg_win_rate ${(r.lperWinRate*100).toFixed(0)}% < ${(LPER_MIN_WIN_RATE*100).toFixed(0)}%`);
+              try {
+                appendDecision({
+                  type: "skip",
+                  actor: "RULE_ENGINE",
+                  pool: r.pool,
+                  pool_name: r.poolName,
+                  summary: `Skipped ${r.poolName} — top LPers losing on this pool`,
+                  reason: `avg_win_rate ${(r.lperWinRate*100).toFixed(1)}% < ${(LPER_MIN_WIN_RATE*100).toFixed(0)}% (LPAgent hard gate, restored 2026-04-24)`,
+                  metrics: { avg_win_rate: r.lperWinRate },
+                });
+              } catch { /**/ }
+              return false;
+            }
           }
           return true;
         })
