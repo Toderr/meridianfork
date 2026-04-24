@@ -11,7 +11,7 @@
  */
 import { config } from "./config.js";
 
-export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null) {
+export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null, recentDecisions = null) {
   const s = config.screening;
 
   let basePrompt = `You are an autonomous DLMM LP (Liquidity Provider) agent operating on Meteora, Solana.
@@ -26,7 +26,14 @@ Open Positions: ${JSON.stringify(positions, null, 2)}
 Memory: ${JSON.stringify(stateSummary, null, 2)}
 Performance: ${perfSummary ? JSON.stringify(perfSummary, null, 2) : "No closed positions yet"}
 
-${lessons ? `═══════════════════════════════════════════
+${recentDecisions ? `═══════════════════════════════════════════
+ RECENT DECISIONS (last 6)
+═══════════════════════════════════════════
+Use get_recent_decisions for details. Prefer this over guessing from logs when answering "why did you…?".
+
+${recentDecisions}
+
+` : ""}${lessons ? `═══════════════════════════════════════════
  LEARNED RULES — HARD RULES ARE SYSTEM-ENFORCED
 ═══════════════════════════════════════════
 HARD RULES at the top are enforced by the executor — violations are BLOCKED before the tool executes.

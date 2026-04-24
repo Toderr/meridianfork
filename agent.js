@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { buildSystemPrompt } from "./prompt.js";
+import { getDecisionSummary } from "./decision-log.js";
 import { executeTool } from "./tools/executor.js";
 import { tools } from "./tools/definitions.js";
 
@@ -41,7 +42,8 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const stateSummary = getStateSummary();
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
+  const recentDecisions = getDecisionSummary(6);
+  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, recentDecisions);
 
   const messages = [
     { role: "system", content: systemPrompt },

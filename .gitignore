@@ -22,6 +22,7 @@ experiments.json
 
 # Runtime
 .agent.pid
+decision-log.json
 
 # Logs
 logs/

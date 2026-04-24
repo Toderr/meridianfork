@@ -20,6 +20,7 @@ import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStra
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { syncToHive, isEnabled as hiveEnabled, getHivePulse, queryPoolConsensus, queryLessonConsensus } from "../hive-mind.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
+import { appendDecision, getRecentDecisions } from "../decision-log.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, resolveStrategy } from "../config.js";
 import { extractRules, checkDeployCompliance } from "../lesson-rules.js";
@@ -89,6 +90,7 @@ const toolMap = {
     }
   },
   get_performance_history: getPerformanceHistory,
+  get_recent_decisions: (args = {}) => ({ decisions: getRecentDecisions(args) }),
   add_strategy:        addStrategy,
   list_strategies:     listStrategies,
   get_strategy:        getStrategy,
@@ -330,6 +332,23 @@ export async function executeTool(name, args) {
       if (name === "deploy_position") {
         _stats.positionsDeployed++;
         notifyDeploy({ pair: args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, strategy: args.strategy, position: result.position, tx: result.tx }).catch(() => {});
+        appendDecision({
+          type: "deploy",
+          actor: "AGENT",
+          pool: args.pool_address,
+          pool_name: args.pool_name,
+          position: result.position,
+          summary: `deploy ${args.strategy || "?"} ${args.amount_y ?? args.amount_sol ?? 0} SOL → ${args.pool_name || args.pool_address?.slice(0, 8)}`,
+          reason: args.reason || args.variant || null,
+          metrics: {
+            amount_sol: args.amount_y ?? args.amount_sol ?? 0,
+            bin_step: args.bin_step,
+            volatility: args.volatility,
+            fee_tvl_ratio: args.fee_tvl_ratio,
+            confidence: args.confidence_level,
+            variant: args.variant,
+          },
+        });
         // Record open to trading journal — retry up to 3 times in case of transient failure
         (async () => {
           let journalSuccess = false;
@@ -373,6 +392,24 @@ export async function executeTool(name, args) {
         const _tracked = getTrackedPosition(args.position_address);
         const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
         notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
+        appendDecision({
+          type: "close",
+          actor: "AGENT",
+          pool: _tracked?.pool,
+          pool_name: _pair,
+          position: args.position_address,
+          summary: `close ${_pair} pnl ${(result.pnl_pct ?? 0).toFixed(2)}% ($${(result.pnl_usd ?? 0).toFixed(2)})`,
+          reason: args.close_reason || null,
+          metrics: {
+            pnl_usd: result.pnl_usd ?? 0,
+            pnl_sol: result.pnl_sol ?? 0,
+            pnl_pct: result.pnl_pct ?? 0,
+            fees_earned_usd: result.fees_earned_usd ?? 0,
+            minutes_held: result.minutes_held ?? 0,
+            strategy: _tracked?.strategy,
+            variant: _tracked?.variant,
+          },
+        });
         _flags.gasLowNotified = false;       // position closed — SOL may have returned, allow fresh gas warning
         _flags.maxPositionsNotified = false; // slot freed — allow next max-positions warning
         if (hiveEnabled()) syncToHive().catch(() => {});
