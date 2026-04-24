@@ -113,8 +113,11 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_s
   const sp = pctVal >= 0 ? "+" : "";
   const stratLine = [strategy, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
   const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
+  const netVal = usdVal + feesVal;
+  const sn = netVal >= 0 ? "+" : "";
   await sendMessage(
     `📍 ${pool_name}\n` +
+    (feesVal > 0 ? `💼 Total (PnL + Fees): ${sn}$${netVal.toFixed(2)}\n` : ``) +
     `💰 ${sp}${pctVal.toFixed(2)}% | ${su}$${usdVal.toFixed(2)} | ${ss}${solVal.toFixed(4)} SOL\n` +
     (feesVal > 0 ? `🏦 Fees Earned: $${feesVal.toFixed(2)}\n` : ``) +
     `\n` +
