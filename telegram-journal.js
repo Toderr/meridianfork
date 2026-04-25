@@ -101,6 +101,14 @@ function fmtBins(bin_range, bin_step) {
   return `${bin_range} bins`;
 }
 
+function fmtShape(bin_range) {
+  if (!bin_range || typeof bin_range !== "object") return null;
+  const below = bin_range.bins_below ?? 0;
+  const above = bin_range.bins_above ?? 0;
+  if (below + above === 0) return null;
+  return (below === 0 || above === 0) ? "single-sided" : "double-sided";
+}
+
 // ─── Notification ────────────────────────────────────────────────
 export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, sol_price = 0, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
@@ -111,7 +119,9 @@ export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_s
   const su = usdVal >= 0 ? "+" : "";
   const ss = solVal >= 0 ? "+" : "";
   const sp = pctVal >= 0 ? "+" : "";
-  const stratLine = [strategy, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
+  const shape = fmtShape(bin_range);
+  const stratHead = [strategy, shape].filter(Boolean).join(" · ");
+  const stratLine = [stratHead, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
   const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
   const netVal = usdVal + feesVal;
   const sn = netVal >= 0 ? "+" : "";

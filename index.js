@@ -284,7 +284,8 @@ async function runManagementCycle(tier = null) {
       const initial_value_usd = tracked?.initial_value_usd ?? pnl?.initial_value_usd ?? p.initial_value_usd_api ?? null;
       const volatility = tracked?.volatility ?? null;
       const variant = tracked?.variant ?? null;
-      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd, volatility, variant };
+      const bin_range = tracked?.bin_range ?? null;
+      return { ...p, pnl, recall, instruction, feeTvl24h, binsAbove, strategy, invested_sol, initial_value_usd, volatility, variant, bin_range };
     }));
 
     // Log portfolio snapshot for equity curve tracking
@@ -540,7 +541,19 @@ REPORT FORMAT (one line per position, no markdown):
           lines.push(`💰 PnL: ${su}$${usd.toFixed(2)} | ${ss}${sol.toFixed(4)} SOL | ${sp}${pct.toFixed(2)}%`);
           if (fees > 0) lines.push(`💸 Unclaimed fees: $${fees.toFixed(2)}`);
         }
-        if (p.age_minutes != null) lines.push(`⏱️ Age: ${p.age_minutes}m${p.strategy ? ` | 🎯 ${p.strategy}` : ""}`);
+        if (p.age_minutes != null) {
+          let stratPart = "";
+          if (p.strategy) {
+            const br = p.bin_range;
+            const below = br?.bins_below ?? 0;
+            const above = br?.bins_above ?? 0;
+            const shape = (below + above) > 0
+              ? ((below === 0 || above === 0) ? "single-sided" : "double-sided")
+              : null;
+            stratPart = ` | 🎯 ${p.strategy}${shape ? ` · ${shape}` : ""}`;
+          }
+          lines.push(`⏱️ Age: ${p.age_minutes}m${stratPart}`);
+        }
 
         if (pnl?.lower_bin != null) {
           const bar = formatRangeBar(pnl.lower_bin, pnl.upper_bin, pnl.active_bin);
