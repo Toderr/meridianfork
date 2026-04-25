@@ -247,12 +247,14 @@ export async function deployPosition({
   const activeStrategy = strategy || config.strategy.strategy;
 
   const activeBinsBelow = bins_below ?? config.strategy.binsBelow;
-  // HARDCODED: always single-sided SOL (downside-only). bins_above requests are ignored.
-  // Rationale: upside bin exposure amplifies IL on volatile meme-coin dumps. The config
-  // flag forceSolSingleSided is now moot — enforcement is unconditional.
-  const activeBinsAbove = 0;
-  if ((bins_above ?? 0) !== 0) {
-    log("deploy", `bins_above=${bins_above} requested but forced to 0 (single-sided SOL hardcoded)`);
+  // bins_above gate: when forceSolSingleSided=true, override to 0 (single-sided SOL).
+  // Otherwise respect caller (LLM/experiment). Data audit 2026-04-26 across 2,118 closes
+  // showed double-sided SPOT had higher win-rate (84.8% vs 74.5%) and a much smaller
+  // worst-case (-12% vs -100%) than single-sided BIDASK, justifying re-opening.
+  const force = config.strategy.forceSolSingleSided;
+  const activeBinsAbove = force ? 0 : (bins_above ?? 0);
+  if (force && (bins_above ?? 0) !== 0) {
+    log("deploy", `bins_above=${bins_above} requested but forced to 0 (forceSolSingleSided=true)`);
   }
 
   if (process.env.DRY_RUN === "true") {
