@@ -25,6 +25,7 @@ import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, resolveStrategy } from "../config.js";
 import { extractRules, checkDeployCompliance } from "../lesson-rules.js";
 import { appendDecision, getRecentDecisions } from "../decision-log.js";
+import { lookupStrategy, resolveBinsAbove, isMatrixEnabled } from "../strategy-matrix.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -415,6 +416,34 @@ export async function executeTool(name, args) {
       if (!args.strategy || args.strategy === config.strategy.strategy) {
         args = { ...args, strategy: resolveStrategy(args.volatility) };
       }
+
+      // ─── Layer B — Strategy Matrix hard gate (2026-04-26) ───────────────
+      // Silent override using data-derived recommendation. No bypass for LLM
+      // or experiments — only explicit user OVERRIDE (_decision_source=USER)
+      // skips the gate. Toggle via config.strategy.strategyMatrixEnabled.
+      if (_decisionSource !== "USER" && isMatrixEnabled(config)) {
+        const rec = lookupStrategy({
+          volatility: args.volatility,
+          bin_step: args.bin_step,
+          fee_tvl_ratio: args.fee_tvl_ratio,
+        });
+        if (rec) {
+          const wantedStrategy = rec.strategy;
+          if (args.strategy !== wantedStrategy) {
+            log("executor", `Strategy matrix override: ${args.strategy} → ${wantedStrategy} (cell=${rec.source_key} level=${rec.level} n=${rec.n} score=${rec.score?.toFixed(1)})`);
+            args = { ...args, strategy: wantedStrategy };
+          }
+          const wantedBinsAbove = resolveBinsAbove({
+            bins_above_pct: rec.bins_above_pct,
+            bins_below: args.bins_below ?? config.strategy.binsBelow,
+          });
+          if ((args.bins_above ?? 0) !== wantedBinsAbove) {
+            log("executor", `Strategy matrix override: bins_above ${args.bins_above ?? 0} → ${wantedBinsAbove} (shape=${rec.shape})`);
+            args = { ...args, bins_above: wantedBinsAbove };
+          }
+        }
+      }
+
       // Always compute initial_value_usd from wallet sol_price × deposit size.
       // LLM-provided values have been observed to hallucinate (e.g. 137.44 where
       // 2 SOL × $85.90 = $171.80), which poisons tracked state and every downstream

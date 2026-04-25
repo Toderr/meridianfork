@@ -142,13 +142,13 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
 8. CHOOSE BIN RANGE — call get_pool_detail, read volatility:
    Total bins (tighter is better — research shows 20-40 bins outperform):
    - Low vol (0-1): 25-35 bins. Med vol (1-3): 35-50. High vol (3-5): 50-60. Extreme: 60-69.
-   SHAPE — bins_above is configurable again (forceSolSingleSided=false). Audit 2026-04-26
-   over 2,118 closes (fee-incl): single-sided BIDASK delivered the largest aggregate $ profit
-   but with a -100% tail; double-sided SPOT delivered higher win-rate (84.8%) and the smallest
-   worst-case (-12%). Default heuristic:
-   - Volatile / meme / momentum tokens → single-sided SOL (bins_above=0), strategy bid_ask
-   - Stable / tight bin_step / strong fundamentals → double-sided, strategy spot,
-     keep bins_above ≤ bins_below (downside-weighted, e.g. 35↓ / 15↑).
+
+   STRATEGY MATRIX (HARD GATE) — every candidate carries forced_strategy and
+   forced_bins_above_pct, derived from 2,108 historical closes (avg×wr − 0.5×|worst| score).
+   These fields are AUTHORITATIVE — pass them through to deploy_position. The executor
+   will silently override your strategy/bins_above if they don't match the matrix, so
+   contradicting them is wasted reasoning. forced_bins_above_pct=0 means single-sided SOL;
+   forced_bins_above_pct=25 means double-sided 75/25 (bins_above ≈ bins_below/3).
 
 9. PRE-DEPLOY: Check get_wallet_balance. If token needed, call swap_token first. Ensure SOL remaining >= gasReserve.
 

@@ -70,6 +70,7 @@ export const config = {
     strategy:  u.strategy  ?? "bid_ask",
     binsBelow: u.binsBelow ?? 69,
     forceSolSingleSided: u.forceSolSingleSided ?? false,
+    strategyMatrixEnabled: u.strategyMatrixEnabled ?? true,
     strategyRules: u.strategyRules ?? {
       highVol: "bid_ask",   // volatility >= 5
       medVol:  "bid_ask",   // volatility 2-5
@@ -248,6 +249,7 @@ export function reloadConfig() {
     if (f.strategy      != null) st.strategy      = f.strategy;
     if (f.binsBelow     != null) st.binsBelow     = f.binsBelow;
     if (f.forceSolSingleSided != null) st.forceSolSingleSided = f.forceSolSingleSided;
+    if (f.strategyMatrixEnabled != null) st.strategyMatrixEnabled = f.strategyMatrixEnabled;
     if (f.strategyRules != null) st.strategyRules = f.strategyRules;
 
     const le = config.learning;

@@ -5,6 +5,7 @@ import { log } from "../logger.js";
 import { getRiskFlags } from "./okx.js";
 import { isInPostLossCooldown } from "../pool-memory.js";
 import { appendDecision } from "../decision-log.js";
+import { lookupStrategy, isMatrixEnabled } from "../strategy-matrix.js";
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
@@ -179,8 +180,31 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     return true;
   });
 
+  // ─── Layer A — Strategy Matrix annotation (data-derived hard gate, 2026-04-26) ──
+  // Per-candidate lookup of forced (strategy, shape) from data/strategy-matrix.json.
+  // Built from 2,108 outlier-filtered closes (|net%|>30 dropped). LLM sees these
+  // as REQUIRED — Layer B in the executor enforces them with silent override.
+  const matrixOn = isMatrixEnabled(config);
+  const annotated = filtered.map(p => {
+    if (!matrixOn) return p;
+    const rec = lookupStrategy({
+      volatility: p.volatility,
+      bin_step: p.bin_step,
+      fee_tvl_ratio: p.fee_tvl_ratio,
+    });
+    if (!rec) return p;
+    return {
+      ...p,
+      forced_strategy: rec.strategy,
+      forced_bins_above_pct: rec.bins_above_pct,
+      matrix_score: rec.score,
+      matrix_level: rec.level,
+      matrix_n: rec.n,
+    };
+  });
+
   return {
-    candidates: filtered,
+    candidates: annotated,
     total_screened: pools.length,
   };
 }

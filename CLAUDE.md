@@ -34,11 +34,13 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 | `hive-mind.js` | Opt-in collective intelligence network |
 | `stats.js` | Shared in-memory counters + flags |
 | `strategy-library.js` | LP strategy template storage |
+| `strategy-matrix.js` | Data-derived (volatility, bin_step, fee_tvl) → (strategy, shape) hard-gate lookup |
 | `pool-memory.js` | Per-pool deploy history and notes |
 | `screening-cache.js` | In-memory cache of token characteristics from screening → used at close for lesson derivation |
 | `management-rules.js` | Deterministic management rule engine — replaces LLM for position decisions |
 | `decision-log.js` | Structured why-log of every deploy/close/skip/no-deploy — answers "why did you…?" without re-deriving from logs |
 | `scripts/patch-anchor.js` | Postinstall: patches `@coral-xyz/anchor` + `@meteora-ag/dlmm` for Node ESM |
+| `scripts/build-strategy-matrix.js` | Rebuild `data/strategy-matrix.json` from journal closes |
 | `scripts/claude-ask.js` | Telegram `/claude` Q&A agent via `claude --print` |
 | `scripts/claude-lesson-updater.js` | Auto lesson updater — runs every 5 closes, enriched with autoresearch backtest |
 | `scripts/claude-lesson-summarizer.js` | Daily lesson cleanup at 23:59 UTC+7 |
@@ -49,7 +51,7 @@ Node.js autonomous agent managing liquidity positions on Meteora DLMM pools (Sol
 
 ## Runtime Files (gitignored, never overwrite on VPS)
 
-`user-config.json`, `state.json`, `journal.json`, `lessons.json`, `experiment-lessons.json`, `strategy-library.json`, `pool-memory.json`, `experiments.json`, `decision-log.json`, `.env`, `.agent.pid`, `wiki/`
+`user-config.json`, `state.json`, `journal.json`, `lessons.json`, `experiment-lessons.json`, `strategy-library.json`, `pool-memory.json`, `experiments.json`, `decision-log.json`, `data/strategy-matrix.json`, `.env`, `.agent.pid`, `wiki/`
 
 All runtime JSON files use **atomic writes** (write to `.tmp` then `fs.renameSync`) to prevent corruption on crash.
 
@@ -160,6 +162,7 @@ All on-chain calls go through `sendWithRetry()` — 5 attempts with exponential 
 - **Max positions**: `config.risk.maxPositions` (default 10)
 - **Gas reserve**: `gasReserve` SOL (default 0.2) always kept
 - **Position shape (`forceSolSingleSided`)**: Hot-reloadable config flag in `tools/dlmm.js`. When `true`, `bins_above` is overridden to 0 (single-sided SOL / downside-only). When `false` (current default since 2026-04-26), the LLM/experiment's `bins_above` is respected. Re-opened after a 2,118-close audit: single-sided BIDASK still wins on absolute $ profit but carries a -100% tail; double-sided SPOT had the highest win-rate (84.8%) and worst-case only -12%. Set `true` again to re-enforce single-sided-only.
+- **Strategy Matrix (HARD GATE, 2026-04-26)**: `strategy-matrix.js` + `data/strategy-matrix.json` — data-derived (volatility, bin_step, fee_tvl_ratio) → (strategy, bins_above_pct) lookup, built from 2,108 outlier-filtered closes (|net%|>30 dropped). Score: `avg_net_pct × win_rate − 0.5 × |worst|`. MIN_N=10 per cell with parent-bucket fallback (drop fee_tvl → bin_step → vol). **Two enforcement layers**: (A) `tools/screening.js` annotates every candidate with `forced_strategy` and `forced_bins_above_pct`; (B) `tools/executor.js` silently overrides `args.strategy` and `args.bins_above` at deploy time if they don't match. **No bypass** for LLM or experiments — only `_decision_source: "USER"` (explicit user override) skips the gate. Toggle via `strategyMatrixEnabled` config flag (default `true`, hot-reloadable). Rebuild matrix from journal: `node scripts/build-strategy-matrix.js`. Headline result: DOUBLE-sided wins at L1 in every volatility bucket — vol_low/med → spot+DOUBLE, vol_high/unk → bid_ask+DOUBLE.
 - **Post-loss cooldown**: `isInPostLossCooldown(pool, mint, cooldownMin, thresholdPct)` in `pool-memory.js` blocks re-entry on pools or base_mints that closed ≤ `postLossCooldownPct` (default -5%) within `postLossCooldownMin` minutes (default 120). Enforced in `tools/screening.js` `getTopCandidates` before the LLM sees the candidate list. Both config keys are hot-reloadable.
 - **Unique token across pools**: `risk.uniqueTokenAcrossPools` (default `true`, hot-reloadable) blocks deploying into a `base_mint` that's already held in any open position, regardless of pool. Guards against correlated IL / drawdown across different fee tiers on the same token. Enforced at two layers: screening pre-filter drops duplicate-mint candidates before the LLM sees them and logs a `RULE_ENGINE` skip to the decision log; executor safety net re-checks at `deploy_position` and rejects the tool call. Experiment tier bypasses (experiments redeploy the same pool by design).
 - **Volatility cap (HARDCODED)**: `tools/screening.js` `getTopCandidates` rejects any candidate with `volatility > 5` pre-LLM (constant `MAX_VOLATILITY_HARDCODED = 5`). Basis: 2026-04-21 fee-inclusive audit SLICE 5 — vol 2–5 bucket was 100% net wr / +1.51%, vol 5–10 was +0.08% net (marginal), vol ≥10 was −7.12% net. Not configurable.
