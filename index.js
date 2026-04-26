@@ -135,6 +135,23 @@ const PNL_TICK_MS = 5_000;
 const PNL_COLD_INTERVAL_MS = 15_000;
 const PNL_HOT_PCT_THRESHOLD = -2;
 const PNL_HOT_VOLATILITY_THRESHOLD = 3;
+// 2026-04-27: post-rebuild audit showed `<15m` close bucket = 57.1% wr / -0.43%
+// avg (n=14, includes 6 stop_loss @ -4.39% avg). Some early SL fires crystallize
+// a loss that may have stabilized — give the position MIN_HOLD_BEFORE_SL_MIN
+// minutes to settle before any SL fires. Cap is intentionally short so genuine
+// crashes still cut quickly. Only applies to non-experiment positions.
+const MIN_HOLD_BEFORE_SL_MIN = 5;
+
+// 2026-04-27 give-back analysis: positions with peak in [1%, 2%) realized only
+// +0.36% (give back 71% of peak). Trailing stop only activates above
+// `trailingActivate` (config), which is too high to capture peaks of +1.5%.
+// Soft-peak guard: if pnl ever crossed SOFT_PEAK_THRESHOLD and has fallen back
+// to ≤ SOFT_PEAK_GIVE_BACK_RATIO × peak after SOFT_PEAK_DELAY_MS, exit before
+// yield_exit/oor cut at +0.20%. Non-experiment only.
+const _softPeakTracker = new Map(); // position → { peak, peak_ts }
+const SOFT_PEAK_THRESHOLD = 1.5;
+const SOFT_PEAK_GIVE_BACK_RATIO = 0.5;
+const SOFT_PEAK_DELAY_MS = 10 * 60 * 1000;
 
 async function runBriefing() {
   log("cron", "Starting morning briefing");
@@ -1055,6 +1072,9 @@ async function runPnlChecker() {
   for (const addr of _pnlPollState.keys()) {
     if (!openAddresses.has(addr)) _pnlPollState.delete(addr);
   }
+  for (const addr of _softPeakTracker.keys()) {
+    if (!openAddresses.has(addr)) _softPeakTracker.delete(addr);
+  }
 
   _pnlCheckerBusy = true;
   try {
@@ -1143,10 +1163,22 @@ async function runPnlChecker() {
 
       // Rule 1: Stop loss
       if (pct <= SL_PCT) {
-        log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% <= ${SL_PCT}% — STOP LOSS`);
-        _trailingStops.delete(tracked.position);
-        await executeTool("close_position", { position_address: tracked.position, close_reason: `Stop loss: pnl ${pct}%`, _decision_source: "PNL_CHECKER" });
-        continue;
+        // Min-hold guard (non-experiment only): defer SL for the first
+        // MIN_HOLD_BEFORE_SL_MIN minutes after deploy. Audit showed early SL
+        // fires (<15m) realized -4.39% avg with no recovery upside — but
+        // settling time often saves marginal dips.
+        const isExp = tracked.variant?.startsWith("exp_");
+        const minutesHeld = tracked.deployed_at
+          ? Math.floor((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000)
+          : Infinity;
+        if (!isExp && minutesHeld < MIN_HOLD_BEFORE_SL_MIN) {
+          log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% <= ${SL_PCT}% but age ${minutesHeld}m < ${MIN_HOLD_BEFORE_SL_MIN}m — SL deferred`);
+        } else {
+          log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: pnl ${pct}% <= ${SL_PCT}% — STOP LOSS`);
+          _trailingStops.delete(tracked.position);
+          await executeTool("close_position", { position_address: tracked.position, close_reason: `Stop loss: pnl ${pct}%`, _decision_source: "PNL_CHECKER" });
+          continue;
+        }
       }
 
       // Rule 2: Hard take-profit (fast TP)
@@ -1163,6 +1195,30 @@ async function runPnlChecker() {
         _trailingStops.delete(tracked.position);
         await executeTool("close_position", { position_address: tracked.position, close_reason: `Take profit: pnl ${pct}%`, _decision_source: "PNL_CHECKER" });
         continue;
+      }
+
+      // Rule 3.5: Soft-peak give-back (non-experiment only). Captures peaks in
+      // the [1.5%, trailingActivate) zone that today get given back via
+      // yield_exit/oor at +0.20%.
+      if (!tracked.variant?.startsWith("exp_")) {
+        if (pct >= SOFT_PEAK_THRESHOLD) {
+          const cur = _softPeakTracker.get(tracked.position);
+          if (!cur || pct > cur.peak) {
+            _softPeakTracker.set(tracked.position, { peak: pct, peak_ts: Date.now() });
+          }
+        }
+        const soft = _softPeakTracker.get(tracked.position);
+        if (soft) {
+          const elapsed = Date.now() - soft.peak_ts;
+          const giveBackThresh = soft.peak * SOFT_PEAK_GIVE_BACK_RATIO;
+          if (elapsed >= SOFT_PEAK_DELAY_MS && pct <= giveBackThresh) {
+            log("pnl_check", `${tracked.pool_name || tracked.position.slice(0, 8)}: soft-peak give-back — peak ${soft.peak.toFixed(2)}%, now ${pct.toFixed(2)}% ≤ ${giveBackThresh.toFixed(2)}% (${Math.floor(elapsed/60000)}m since peak) — CLOSE`);
+            _softPeakTracker.delete(tracked.position);
+            _trailingStops.delete(tracked.position);
+            await executeTool("close_position", { position_address: tracked.position, close_reason: `Soft-peak give-back: peak ${soft.peak.toFixed(2)}%, dropped to ${pct.toFixed(2)}%`, _decision_source: "PNL_CHECKER" });
+            continue;
+          }
+        }
       }
 
       // Rule 4: Lesson-based take-profit (skip for experiment positions — they use experiment rules)

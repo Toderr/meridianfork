@@ -40,16 +40,29 @@ export function calculateProgress(goals, perfRecords) {
   const recent = perfRecords.slice(-lookback);
   if (recent.length < 5) return null;
 
-  const wins = recent.filter(p => (p.pnl_pct ?? 0) >= 0);
-  const losses = recent.filter(p => (p.pnl_pct ?? 0) <  0);
-  const winPnlSum = wins.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
-  const lossPnlSum = losses.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
+  // 2026-04-27 fix: compute fee-inclusive total return (`pnl_pct + fees/initial`)
+  // instead of price-only `pnl_pct`. Matches PnL checker (index.js Rule 1/2/3
+  // threshold comparison) and full-data audit analyzer. Price-only metric was
+  // under-reporting win rate by ~20pp and treating fee-rebated SL closes
+  // (e.g. -4% price + +4% fees → 0%) as losses.
+  const totalPct = (p) => {
+    const init = p.initial_value_usd || 0;
+    const fees = p.fees_earned_usd || 0;
+    const feePct = init > 0 ? (fees / init) * 100 : 0;
+    return (p.pnl_pct ?? 0) + feePct;
+  };
+
+  const totals = recent.map(totalPct);
+  const wins = totals.filter(t => t >= 0);
+  const losses = totals.filter(t => t < 0);
+  const winPnlSum = wins.reduce((s, t) => s + t, 0);
+  const lossPnlSum = losses.reduce((s, t) => s + t, 0);
 
   const current = {
     win_rate_pct: recent.length > 0 ? (wins.length / recent.length) * 100 : 0,
-    max_loss_pct: recent.length > 0 ? Math.min(...recent.map(p => p.pnl_pct ?? 0)) : 0,
+    max_loss_pct: recent.length > 0 ? Math.min(...totals) : 0,
     profit_factor: lossPnlSum !== 0 ? winPnlSum / Math.abs(lossPnlSum) : (winPnlSum > 0 ? Infinity : 0),
-    avg_pnl_pct: recent.reduce((s, p) => s + (p.pnl_pct ?? 0), 0) / recent.length,
+    avg_pnl_pct: totals.reduce((s, t) => s + t, 0) / recent.length,
     sample_size: recent.length,
   };
 

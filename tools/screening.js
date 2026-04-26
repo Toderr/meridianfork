@@ -102,10 +102,16 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   // Default true; set config.risk.uniqueTokenAcrossPools = false to allow same-token/different-pool.
   const uniqueTokenAcrossPools = config.risk?.uniqueTokenAcrossPools !== false;
 
-  // HARDCODED: reject volatility > 5. Per 2026-04-21 fee-inclusive audit
-  // (SLICE 5), vol >= 10 bucket is -7.12% net and vol 5-10 is +0.08% net —
-  // only vol 2-5 (+1.51% net, 100% net wr) clears comfortably. Cap at 5.
-  const MAX_VOLATILITY_HARDCODED = 5;
+  // HARDCODED: reject volatility > MAX_VOLATILITY_HARDCODED.
+  // 2026-04-21: cap was 5 (vol 2-5 = +1.51% net wr 100%, vol 5-10 = +0.08%
+  // marginal, vol >= 10 = -7.12% disastrous).
+  // 2026-04-27: raised to 7 to capture the missing upside in [+1%, +3%]
+  // PnL band — current distribution is collapsed at +0.2%. Trade-off
+  // controlled by Layer A annotation below: any candidate with vol > 5 is
+  // forced to strategy=bid_ask (asymmetric capture, single-sided when
+  // matrix permits). vol >= 10 still rejected.
+  const MAX_VOLATILITY_HARDCODED = 7;
+  const HIGH_VOL_BID_ASK_THRESHOLD = 5;
 
   // HARDCODED: bin_step must be in [80, 125]. Restored 2026-04-24 after
   // PnL drop post-11 Apr — commit 9837502 relaxed this to configurable,
@@ -193,9 +199,18 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       fee_tvl_ratio: p.fee_tvl_ratio,
     });
     if (!rec) return p;
+    // 2026-04-27: high-vol override — vol > HIGH_VOL_BID_ASK_THRESHOLD must
+    // use bid_ask regardless of matrix recommendation. Asymmetric upside
+    // capture is the only way these candidates earn their place above the
+    // pre-2026-04-27 vol cap of 5.
+    let strategy = rec.strategy;
+    if (p.volatility != null && p.volatility > HIGH_VOL_BID_ASK_THRESHOLD && strategy !== "bid_ask") {
+      log("screening", `High-vol override: ${p.name} (vol ${p.volatility}) — forcing strategy=bid_ask (matrix said ${strategy})`);
+      strategy = "bid_ask";
+    }
     return {
       ...p,
-      forced_strategy: rec.strategy,
+      forced_strategy: strategy,
       forced_bins_above_pct: rec.bins_above_pct,
       matrix_score: rec.score,
       matrix_level: rec.level,

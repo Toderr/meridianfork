@@ -116,15 +116,20 @@ Runs via `setInterval`, skips when `_managementBusy` or position has `instructio
 
 ```
 empty position (value=0, fees=0)     → CLOSE
-pnl_pct <= emergencyPriceDropPct     → CLOSE (stop loss)
+pnl_pct <= emergencyPriceDropPct     → CLOSE (stop loss, deferred if age < MIN_HOLD_BEFORE_SL_MIN)
 pnl_pct >= fastTpPct                 → CLOSE (hard TP)
 pnl_pct >= takeProfitFeePct          → CLOSE (regular TP)
+soft-peak give-back                  → CLOSE (peak ≥ 1.5%, 10m elapsed, dropped to ≤ 50% of peak)
 lesson min_profit_pct rule           → CLOSE (lesson TP)
 pnl_pct > trailingActivate           → activate trailing, track peak
 trailing active AND < trailingFloor  → CLOSE (trailing stop)
 ```
 
 Empty-position closes report `pnl_pct = 0` (not -100%). Thresholds hot-reload from config. Peak stored in-memory (`_trailingStops` Map, resets on restart). **Per-strategy TP**: if strategy library has `exit.take_profit_pct`, it overrides global `takeProfitFeePct` for non-experiment positions.
+
+**Min-hold SL guard (HARDCODED, 2026-04-27)**: `MIN_HOLD_BEFORE_SL_MIN = 5` in `index.js`. Non-experiment positions defer SL fires for the first 5 minutes after deploy — early SL fires (<15m bucket) realized −4.39% avg with no recovery upside in audit, and short settling time often saves marginal dips. Experiment positions still cut immediately.
+
+**Soft-peak give-back (HARDCODED, 2026-04-27, Rule 3.5)**: `index.js` `_softPeakTracker` Map tracks any non-experiment position whose fee-incl pct crosses `SOFT_PEAK_THRESHOLD = 1.5%`. If `Date.now() - peak_ts >= 10 min` AND current pct has dropped to ≤ `peak × 0.5`, force-close. Captures peaks in the [1.5%, trailingActivate) zone that previously got given back via yield_exit/oor at +0.20%. Audit basis: positions with peak ∈ [1%, 2%) realized only +0.36% (give back 71% of peak).
 
 ### Management Decision Rules (deterministic — no LLM)
 
@@ -135,9 +140,9 @@ Handled by `management-rules.js` rule engine (`evaluateAll()`). LLM only called 
 3. instruction set AND condition NOT met → HOLD
 4. unparseable instruction → **LLM fallback** (only these positions, max 3 steps)
 5. hold-time cut: **DISABLED** (30-Mar baseline restore). Original rules (age ≥15m & pnl<-0.3% → CLOSE; age ≥30m & pnl<0% → CLOSE) commented out in `management-rules.js`.
-6. **HARDCODED 120m hold cap (Rule 3b)**: `age ≥ 120m` → CLOSE **unless** fees/hr over the last 30m ≥ $4 (raised from $2 on 2026-04-23 after full-data audit confirmed the 120m+ bucket only loses on average; productive fee compounders still allowed to extend). Computed from `getRecentFeeRate()` in `pool-memory.js` using `collected_fees_usd` deltas in snapshots. Constants live at the top of `management-rules.js` — `HARD_HOLD_CAP_MIN`, `HARD_HOLD_FEE_WINDOW_MIN`, `HARD_HOLD_MIN_FEE_RATE_USD_HR`.
-7. yield-exit: `fee_tvl_24h < minFeeTvl24h` (suppressed when `pnl_pct < 0`, 1% grace zone)
-8. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins)
+6. **HARDCODED 90m hold cap (Rule 3b)**: `age ≥ 90m` → CLOSE **unless** fees/hr over the last 30m ≥ $4. Tightened from 120 → 90 on 2026-04-27 after post-rebuild audit (n=108) showed `120m+` bucket = 30.8% wr / −0.26% avg (n=13) and `60-120m` = 93.1% wr / +0.21% avg (n=58) — the sweet spot ends near 90m. Fee-rate escape ($4/hr over last 30m, raised from $2 on 2026-04-23) still permits productive compounders to extend. Computed from `getRecentFeeRate()` in `pool-memory.js`. Constants live at the top of `management-rules.js` — `HARD_HOLD_CAP_MIN`, `HARD_HOLD_FEE_WINDOW_MIN`, `HARD_HOLD_MIN_FEE_RATE_USD_HR`.
+7. yield-exit: `fee_tvl_24h < minFeeTvl24h` → CLOSE. Suppressed when `pnl_pct < 0` or **`pnl_pct ≥ +0.5%`** (2026-04-27 peak-preservation grace — was previously a 30m runway grace). Within 1% of threshold + profitable also stays.
+8. OOR: `bins_above_range >= outOfRangeBinsToClose` → CLOSE (high-volatility young positions tolerate +2 extra bins). 2026-04-27: profitable positions (`pnl_pct ≥ +0.5%`) get **2× threshold** — same peak-preservation principle as yield-exit grace.
 9. `unclaimed_fee_usd >= minClaimAmount` → claim_fees
 
 NOTE: Stop loss / take profit handled by PnL checker, not management cycle.
@@ -150,7 +155,7 @@ Deploys only if confidence > 7. Amount scales: `deployAmount × (confidence/10)`
 **HARDCODED variant bonus** (`tools/executor.js`, early in `executeTool`): `confidence_level` is bumped by +1 (capped at 10) before the confidence gate and before sizing for these variants:
 - `LPerProven`, `LPer-Proven` (case-sensitive — lowercase/underscore siblings excluded after 2026-04-23 audit dropped them for dragging the family below baseline)
 - `pullback-entry` (case-insensitive, hyphens/underscores stripped)
-- `upper-biased` (case-insensitive — provisional, added 2026-04-23 after full-data audit showed 100% wr / +3.15% avg on n=5; re-evaluate at n≥15)
+- ~~`upper-biased`~~ — **REMOVED 2026-04-27**. Initial bonus added 2026-04-23 on n=5 (100% wr / +3.15%). At n=16 it underperforms: 68.8% wr / -0.03%. Sample expansion invalidated the original signal.
 
 ## Transaction Retry
 
@@ -165,7 +170,7 @@ All on-chain calls go through `sendWithRetry()` — 5 attempts with exponential 
 - **Strategy Matrix (HARD GATE, 2026-04-26)**: `strategy-matrix.js` + `data/strategy-matrix.json` — data-derived (volatility, bin_step, fee_tvl_ratio) → (strategy, bins_above_pct) lookup, built from 2,108 outlier-filtered closes (|net%|>30 dropped). Score: `avg_net_pct × win_rate − 0.5 × |worst|`. MIN_N=10 per cell with parent-bucket fallback (drop fee_tvl → bin_step → vol). **Two enforcement layers**: (A) `tools/screening.js` annotates every candidate with `forced_strategy` and `forced_bins_above_pct`; (B) `tools/executor.js` silently overrides `args.strategy` and `args.bins_above` at deploy time if they don't match. **No bypass** for LLM or experiments — only `_decision_source: "USER"` (explicit user override) skips the gate. Toggle via `strategyMatrixEnabled` config flag (default `true`, hot-reloadable). Rebuild matrix from journal: `node scripts/build-strategy-matrix.js`. Headline result: DOUBLE-sided wins at L1 in every volatility bucket — vol_low/med → spot+DOUBLE, vol_high/unk → bid_ask+DOUBLE.
 - **Post-loss cooldown**: `isInPostLossCooldown(pool, mint, cooldownMin, thresholdPct)` in `pool-memory.js` blocks re-entry on pools or base_mints that closed ≤ `postLossCooldownPct` (default -5%) within `postLossCooldownMin` minutes (default 120). Enforced in `tools/screening.js` `getTopCandidates` before the LLM sees the candidate list. Both config keys are hot-reloadable.
 - **Unique token across pools**: `risk.uniqueTokenAcrossPools` (default `true`, hot-reloadable) blocks deploying into a `base_mint` that's already held in any open position, regardless of pool. Guards against correlated IL / drawdown across different fee tiers on the same token. Enforced at two layers: screening pre-filter drops duplicate-mint candidates before the LLM sees them and logs a `RULE_ENGINE` skip to the decision log; executor safety net re-checks at `deploy_position` and rejects the tool call. Experiment tier bypasses (experiments redeploy the same pool by design).
-- **Volatility cap (HARDCODED)**: `tools/screening.js` `getTopCandidates` rejects any candidate with `volatility > 5` pre-LLM (constant `MAX_VOLATILITY_HARDCODED = 5`). Basis: 2026-04-21 fee-inclusive audit SLICE 5 — vol 2–5 bucket was 100% net wr / +1.51%, vol 5–10 was +0.08% net (marginal), vol ≥10 was −7.12% net. Not configurable.
+- **Volatility cap (HARDCODED)**: `tools/screening.js` `getTopCandidates` rejects any candidate with `volatility > MAX_VOLATILITY_HARDCODED`. **Raised 5 → 7 on 2026-04-27** to capture missing upside in [+1%, +3%] PnL band — distribution was collapsed at +0.2%. Trade-off enforced by Layer A annotation: any candidate with `volatility > HIGH_VOL_BID_ASK_THRESHOLD = 5` is force-overridden to `forced_strategy = "bid_ask"` regardless of matrix recommendation (asymmetric upside is the only way these candidates earn their place above the prior cap). Original 2026-04-21 audit SLICE 5: vol 2–5 = 100% net wr / +1.51%; vol 5–10 = +0.08% net (marginal — gated by bid_ask requirement); vol ≥10 still rejected (−7.12% net). Not configurable.
 - **Hold-time cut**: Currently **DISABLED** (30-Mar baseline restore). Originally a deterministic early-exit in management-rules.js: ≥15m at <-0.3% → close, ≥30m at <0% → close. Re-enable by un-commenting Rule 3.
 - **Evolution guardrails**: `emergencyPriceDropPct` clamped [-15, -3], `takeProfitFeePct` [2, 5], `fastTpPct` [5, 15], `positionSizePct` [0.15, 0.3]. Prevents threshold evolution from drifting to dangerous values.
 - **Anti-scam**: Only hardcoded gate: `global_fees_sol < 30` (cannot be lowered). All other screening thresholds (top_10_pct, bundlers, organic, mcap, bin_step, etc.) are configurable and learnable — the agent can adjust them via `update_config` or lessons.
@@ -262,7 +267,7 @@ Trading goals in `user-config.json` direct lesson generation toward specific tar
 "goals": { "win_rate_pct": 80, "max_loss_pct": -10, "profit_factor": 2, "lookback": 50 }
 ```
 
-**How it works**: `scripts/goals.js` calculates current performance vs targets (✅/❌ per goal). Goals are deeply integrated across the entire learning pipeline:
+**How it works**: `scripts/goals.js` calculates current performance vs targets (✅/❌ per goal). Metrics are **fee-inclusive** (fixed 2026-04-27 — was previously price-only `pnl_pct`, which under-reported win rate by ~20pp because positions where fees offset price loss were counted as losses). Computation: `total_pct = pnl_pct + (fees_earned_usd / initial_value_usd) × 100` — same formula as PnL checker (`index.js` Rule 1/2/3) and full-data audit analyzer. Goals are deeply integrated across the entire learning pipeline:
 
 - **System prompt** (`prompt.js`): Goals injected into all agent prompts (screener/manager/general) so every decision is goal-aligned.
 - **Lesson derivation** (`lessons.js` `derivLesson()`): Auto-derived lessons are goal-aware — losses exceeding `max_loss_pct` generate explicit stop-loss rules; unmet win rate appends entry filter guidance; unmet profit factor appends cut-losses-faster guidance. Tagged `goal_driven`.

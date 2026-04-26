@@ -350,9 +350,9 @@ export async function executeTool(name, args) {
       // unified.
       if (norm === "lperproven") return true;
       if (norm === "pullbackentry") return true;
-      // upper-biased: 2026-04-23 full-data audit showed 100% wr / +3.15% avg (n=5).
-      // Provisional bonus pending more samples — re-evaluate at n>=15.
-      if (norm === "upperbiased") return true;
+      // upper-biased: REMOVED 2026-04-27. Initial bonus added 2026-04-23 on
+      // n=5 (100% wr / +3.15%). At n=16 it underperforms: 68.8% wr / -0.03%.
+      // Sample expansion invalidated the original signal — drop the bonus.
       return false;
     };
     if (variantHasBonus(args.variant) && typeof args.confidence_level === "number") {

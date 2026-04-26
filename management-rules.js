@@ -8,14 +8,18 @@
 import { config } from "./config.js";
 import { getRecentFeeRate } from "./pool-memory.js";
 
-// HARDCODED: force-close at 120m hold unless fees are still accruing fast.
+// HARDCODED: force-close at HARD_HOLD_CAP_MIN minutes hold unless fees are still
+// accruing fast.
 // History: original $2/hr backdoor allowed 4 worst stale positions (COPPERINU 1120m,
 // Iroha 1815m, abcdefg 1472m, milkers 1015m) to bypass the cap; locked to 999 sentinel
 // on 2026-04-23. Re-opened later same day to $4/hr after full-data audit confirmed
 // the 120m+ bucket only loses on average — productive positions earning ≥$4/hr over
-// the last 30m are still allowed to extend (high enough bar to exclude the prior
-// stale-loser pattern but permits genuine fee compounders).
-const HARD_HOLD_CAP_MIN = 120;
+// the last 30m are still allowed to extend.
+// 2026-04-27: tightened 120 → 90 after post-rebuild audit (n=108) showed `120m+`
+// bucket = 30.8% wr / -0.26% avg (n=13) and `60-120m` = 93.1% wr / +0.21% avg
+// (n=58). The fee-rate escape ($4/hr over last 30m) still permits genuine
+// compounders to extend past 90m.
+const HARD_HOLD_CAP_MIN = 90;
 const HARD_HOLD_FEE_WINDOW_MIN = 30;
 const HARD_HOLD_MIN_FEE_RATE_USD_HR = 4;
 
@@ -89,11 +93,12 @@ export function evaluatePosition(p) {
       // Skip if position is at a loss
       if (pnlPct !== null && pnlPct < 0) {
         // At loss — suppress yield-exit
-      } else if (pnlPct !== null && pnlPct >= 0.5 && age < (config.management.minAgeForYieldExit + 30)) {
-        // 2026-04-24: young+profitable grace. Period A→B audit showed 45% of
-        // closes were yield-exits @ avg +0.50% — too many cut before TP could
-        // trigger. Give positions a 30m runway past minAgeForYieldExit when
-        // already net-positive ≥0.5% (fee-incl).
+      } else if (pnlPct !== null && pnlPct >= 0.5) {
+        // 2026-04-27 audit (n=108): yield_exit fired on 50% of closes at
+        // avg +0.32% while peak_avg was +0.48%. Profitable positions are
+        // being cut at half their peak. Skip yield_exit entirely while
+        // pnl_pct ≥ +0.5% — let TP / soft-peak / hard-hold cap handle exit.
+        // (Subsumes the older "+30m runway" grace.)
       } else {
         // Grace zone: within 1% of threshold and profitable → hold
         const gap = config.management.minFeeTvl24h - feeTvl;
@@ -111,6 +116,12 @@ export function evaluatePosition(p) {
     // High-volatility young positions get +2 bins tolerance
     if (vol !== null && vol >= 5 && age < 60) {
       threshold += 2;
+    }
+    // 2026-04-27 audit: oor fired on 30% of closes at avg +0.31% while
+    // peak_avg was +0.44%. Profitable positions need 2x more drift before
+    // OOR cuts them — same peak-preservation principle as yield_exit grace.
+    if (pnlPct !== null && pnlPct >= 0.5) {
+      threshold *= 2;
     }
     if (bins >= threshold) {
       return { action: "close", reason: `OOR ${bins} bins above range (threshold ${threshold})` };
