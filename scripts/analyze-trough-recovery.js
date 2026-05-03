@@ -30,7 +30,14 @@ const EMIT_CSV = args.has("--csv");
 
 // 1. Load journal closes
 const journal = JSON.parse(fs.readFileSync(JOURNAL, "utf8"));
-const allCloses = (journal.entries || []).filter(e => e.type === "close");
+const SINCE_MS = process.env.AUDIT_SINCE ? Date.parse(process.env.AUDIT_SINCE) : null;
+if (process.env.AUDIT_SINCE && Number.isNaN(SINCE_MS)) {
+  console.error(`AUDIT_SINCE invalid: ${process.env.AUDIT_SINCE}`); process.exit(1);
+}
+const allClosesUnfiltered = (journal.entries || []).filter(e => e.type === "close");
+const allCloses = SINCE_MS
+  ? allClosesUnfiltered.filter(e => Date.parse(e.timestamp || e.duration?.closed_at || 0) >= SINCE_MS)
+  : allClosesUnfiltered;
 
 // 2. Identify experiment positions
 const experimentPubkeys = new Set();
@@ -198,7 +205,16 @@ const at5 = joined.filter(c => c.trough <= -5);
 const at5rec = at5.filter(c => c.feeInclPct > 0);
 const at3 = joined.filter(c => c.trough <= -3);
 const at3rec = at3.filter(c => c.feeInclPct > 0);
-log(`- Current \`emergencyPriceDropPct = -10%\`: ${at10.length} touched ≤ −10%; ${at10rec.length} (${at10.length ? (at10rec.length/at10.length*100).toFixed(1) : "–"}%) closed fee-inclusive positive.`);
+
+let currentSL = null;
+try {
+  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "user-config.json"), "utf8"));
+  if (typeof cfg.emergencyPriceDropPct === "number") currentSL = cfg.emergencyPriceDropPct;
+} catch {}
+const slBucket = joined.filter(c => currentSL != null && c.trough <= currentSL);
+const slRec = slBucket.filter(c => c.feeInclPct > 0);
+log(`- Current \`emergencyPriceDropPct = ${currentSL != null ? currentSL + "%" : "(unset)"}\`: ${slBucket.length} touched ≤ ${currentSL != null ? currentSL : "?"}%; ${slRec.length} (${slBucket.length ? (slRec.length/slBucket.length*100).toFixed(1) : "–"}%) closed fee-inclusive positive.`);
+log(`- At ≤ −10%: ${at10.length} touched; ${at10rec.length} (${at10.length ? (at10rec.length/at10.length*100).toFixed(1) : "–"}%) recovered.`);
 log(`- At ≤ −5%: ${at5.length} touched; ${at5rec.length} (${at5.length ? (at5rec.length/at5.length*100).toFixed(1) : "–"}%) recovered.`);
 log(`- At ≤ −3%: ${at3.length} touched; ${at3rec.length} (${at3.length ? (at3rec.length/at3.length*100).toFixed(1) : "–"}%) recovered.`);
 

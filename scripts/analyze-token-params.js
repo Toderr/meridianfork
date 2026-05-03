@@ -25,7 +25,14 @@ const MIN_BOTH_BUCKETS_N = 15;   // both ends need n≥15 before recommending
 
 // ── Load + outlier exclude (same policy as analyze-full-data.js) ──────────
 const journal = J("journal.json");
-const allCloses = (journal.entries || []).filter(e => e.type === "close");
+const SINCE_MS = process.env.AUDIT_SINCE ? Date.parse(process.env.AUDIT_SINCE) : null;
+if (process.env.AUDIT_SINCE && Number.isNaN(SINCE_MS)) {
+  console.error(`AUDIT_SINCE invalid: ${process.env.AUDIT_SINCE}`); process.exit(1);
+}
+const allClosesUnfiltered = (journal.entries || []).filter(e => e.type === "close");
+const allCloses = SINCE_MS
+  ? allClosesUnfiltered.filter(e => Date.parse(e.timestamp || e.duration?.closed_at || 0) >= SINCE_MS)
+  : allClosesUnfiltered;
 const config = J("user-config.json");
 
 const expPubkeys = new Set();
