@@ -9,7 +9,7 @@ import { config } from "./config.js";
 import { getRecentFeeRate } from "./pool-memory.js";
 
 // HARDCODED: force-close at HARD_HOLD_CAP_MIN minutes hold unless fees are still
-// accruing fast.
+// accruing fast OR position is fee-inclusive profitable.
 // History: original $2/hr backdoor allowed 4 worst stale positions (COPPERINU 1120m,
 // Iroha 1815m, abcdefg 1472m, milkers 1015m) to bypass the cap; locked to 999 sentinel
 // on 2026-04-23. Re-opened later same day to $4/hr after full-data audit confirmed
@@ -19,9 +19,20 @@ import { getRecentFeeRate } from "./pool-memory.js";
 // bucket = 30.8% wr / -0.26% avg (n=13) and `60-120m` = 93.1% wr / +0.21% avg
 // (n=58). The fee-rate escape ($4/hr over last 30m) still permits genuine
 // compounders to extend past 90m.
+// 2026-04-29: added pnl-based escape after audit (n=40 since config change) showed
+// 4/10 hard-cap kills were profitable @ avg +1.04% — fee rate had dried up but
+// fee-incl pnl remained positive. If fee-incl pnl ≥ HARD_HOLD_PROFITABLE_PCT,
+// extend cap by HARD_HOLD_PROFITABLE_EXTEND_MIN (so absolute max hold = 110m).
+// 2026-04-30: tightened threshold 0.5 → 1.0 after 30h delta audit (n=21 in extend
+// window): 8 profitable kills avg +1.24%, 13 negative kills avg -0.63% — extend
+// at 0.5% peak captured upside ~half the time but became a give-back trap the
+// other half. Net contribution -4.8 pp across 21 positions. Raising threshold
+// keeps extension only for clearly-profitable peaks.
 const HARD_HOLD_CAP_MIN = 90;
 const HARD_HOLD_FEE_WINDOW_MIN = 30;
 const HARD_HOLD_MIN_FEE_RATE_USD_HR = 4;
+const HARD_HOLD_PROFITABLE_PCT = 1.0;
+const HARD_HOLD_PROFITABLE_EXTEND_MIN = 20;
 
 /**
  * @param {Object} p  — enriched position (from positionData in index.js)
@@ -69,20 +80,28 @@ export function evaluatePosition(p) {
   // Original hold-time cut rules (age>=30 & pnl<0; age>=15 & pnl<-0.3)
   // disabled per user request to match March 30 behavior.
 
-  // ── Rule 3b: HARDCODED 120m hold cap with fee-rate escape ─────────
-  // After HARD_HOLD_CAP_MIN minutes, force-close unless fees are still
-  // accruing above HARD_HOLD_MIN_FEE_RATE_USD_HR in the last
-  // HARD_HOLD_FEE_WINDOW_MIN minutes. Data-driven from fee-inclusive audit.
+  // ── Rule 3b: HARDCODED 90m hold cap with fee-rate + pnl escapes ──────
+  // After HARD_HOLD_CAP_MIN minutes, force-close unless either:
+  //   (a) fees still accruing ≥ HARD_HOLD_MIN_FEE_RATE_USD_HR in the last
+  //       HARD_HOLD_FEE_WINDOW_MIN minutes, OR
+  //   (b) fee-inclusive pnl ≥ HARD_HOLD_PROFITABLE_PCT and age within
+  //       HARD_HOLD_PROFITABLE_EXTEND_MIN of the cap (absolute ceiling).
+  // Data-driven from fee-inclusive audit.
   if (age >= HARD_HOLD_CAP_MIN && p.pool && p.position) {
     const rate = getRecentFeeRate(p.pool, p.position, HARD_HOLD_FEE_WINDOW_MIN);
-    if (rate !== null && rate >= HARD_HOLD_MIN_FEE_RATE_USD_HR) {
-      // Still fee-productive — let it run, but mark the decision
-      // (fall through to other rules)
+    const feeRateEscape = rate !== null && rate >= HARD_HOLD_MIN_FEE_RATE_USD_HR;
+    const pnlEscape =
+      pnlPct !== null &&
+      pnlPct >= HARD_HOLD_PROFITABLE_PCT &&
+      age < HARD_HOLD_CAP_MIN + HARD_HOLD_PROFITABLE_EXTEND_MIN;
+    if (feeRateEscape || pnlEscape) {
+      // Still productive — let it run (fall through to other rules)
     } else {
       const reasonRate = rate === null ? "insufficient snapshot history" : `${rate.toFixed(2)} $/hr`;
+      const pnlPart = pnlPct !== null ? ` and pnl ${pnlPct.toFixed(2)}% < ${HARD_HOLD_PROFITABLE_PCT}%` : "";
       return {
         action: "close",
-        reason: `Hard hold cap: ${age}m >= ${HARD_HOLD_CAP_MIN}m and last-${HARD_HOLD_FEE_WINDOW_MIN}m fee rate ${reasonRate} < $${HARD_HOLD_MIN_FEE_RATE_USD_HR}/hr`,
+        reason: `Hard hold cap: ${age}m >= ${HARD_HOLD_CAP_MIN}m, last-${HARD_HOLD_FEE_WINDOW_MIN}m fee rate ${reasonRate} < $${HARD_HOLD_MIN_FEE_RATE_USD_HR}/hr${pnlPart}`,
       };
     }
   }
