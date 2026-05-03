@@ -816,10 +816,13 @@ async function runScreeningCycle() {
             poolName: pool.name,
             botHoldersPct: ti?.audit?.bot_holders_pct ?? null,
             okxAdvanced: okx?.advanced ?? null,
+            okxBundlePct: okx?.advanced?.bundle_pct ?? null,
             priceVsAthPct: okx?.price?.price_vs_ath_pct ?? null,
             momentum1h: ti?.stats_1h?.price_change ?? null,
             topPct: h?.top_10_real_holders_pct != null ? Number(h.top_10_real_holders_pct) : null,
             bundlersPct: h?.bundlers_pct_in_top_100 != null ? Number(h.bundlers_pct_in_top_100) : null,
+            swapCount: pool.swap_count ?? null,
+            uniqueTraders: pool.unique_traders ?? null,
             lperCount: lps?.patterns?.top_lper_count ?? null,
             lperWinRate: lps?.patterns?.avg_win_rate ?? null,
             lperDisabled: lps?.message?.includes("LPAGENT_API_KEY not set") || false,
@@ -839,6 +842,14 @@ async function runScreeningCycle() {
       // HARDCODED gates restored 2026-04-24 (pre-9837502 values):
       const TOP10_REJECT = 60;
       const BUNDLERS_REJECT = 30;
+      // 2026-04-28 audit (n=172, token_profile coverage):
+      // okx_bundle_pct >= 2.30% bucket (n=20) → -0.63% avg / 60% wr;
+      // <0.09% bucket (n=19) → +0.73% avg / 89.5% wr (gap 1.36pp, only param
+      // that cleared composite gate). swap_count and unique_traders both show
+      // a clean break at 6: ≤6 → positive avg / 80%+ wr, >6 → negative avg.
+      const OKX_BUNDLE_PCT_REJECT = 2.30;
+      const SWAP_COUNT_REJECT = 6;
+      const UNIQUE_TRADERS_REJECT = 6;
       // LPAgent top-LPer hard gate restored 2026-04-24:
       // commit f6cd32a (11 Apr) removed LPAgent from live-pnl pipeline but
       // kept study_top_lpers for screening as SOFT signal. We promote it back
@@ -915,6 +926,51 @@ async function runScreeningCycle() {
                 summary: `Skipped ${r.poolName} — bundlers`,
                 reason: `bundlers_pct ${r.bundlersPct}% > ${BUNDLERS_REJECT}% (hardcoded, restored 2026-04-24)`,
                 metrics: { bundlers_pct: r.bundlersPct },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          if (r.okxBundlePct != null && r.okxBundlePct >= OKX_BUNDLE_PCT_REJECT) {
+            log("screening", `Filtered ${r.poolName} — okx_bundle_pct ${r.okxBundlePct}% >= ${OKX_BUNDLE_PCT_REJECT}%`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — okx_bundle_pct`,
+                reason: `okx_bundle_pct ${r.okxBundlePct}% >= ${OKX_BUNDLE_PCT_REJECT}% (2026-04-28 audit: -0.63% avg / 60% wr)`,
+                metrics: { okx_bundle_pct: r.okxBundlePct },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          if (r.swapCount != null && r.swapCount > SWAP_COUNT_REJECT) {
+            log("screening", `Filtered ${r.poolName} — swap_count ${r.swapCount} > ${SWAP_COUNT_REJECT}`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — swap_count`,
+                reason: `swap_count ${r.swapCount} > ${SWAP_COUNT_REJECT} (2026-04-28 audit: -0.53% avg / 60.5% wr in this bucket)`,
+                metrics: { swap_count: r.swapCount },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          if (r.uniqueTraders != null && r.uniqueTraders > UNIQUE_TRADERS_REJECT) {
+            log("screening", `Filtered ${r.poolName} — unique_traders ${r.uniqueTraders} > ${UNIQUE_TRADERS_REJECT}`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — unique_traders`,
+                reason: `unique_traders ${r.uniqueTraders} > ${UNIQUE_TRADERS_REJECT} (2026-04-28 audit: -0.42% avg / 65.1% wr in this bucket)`,
+                metrics: { unique_traders: r.uniqueTraders },
               });
             } catch { /**/ }
             return false;
