@@ -275,6 +275,38 @@ export async function notifyRpcLimit() {
   );
 }
 
+// ─── Helius key rotation notices ─────────────────────────────────
+// rotated: throttled 5 min (noisy if keys keep flipping)
+// allFailed: throttled 15 min (more urgent, fire sooner)
+let _heliusRotatedNotifiedAt = 0;
+let _heliusAllFailedNotifiedAt = 0;
+
+export async function notifyHeliusRotated({ fromKey, toKey, totalKeys }) {
+  if (!TOKEN || !chatId) return;
+  if (Date.now() - _heliusRotatedNotifiedAt < 5 * 60_000) return;
+  _heliusRotatedNotifiedAt = Date.now();
+  await sendMessage(
+    `🔄 HELIUS KEY ROTATED\n\n` +
+    `Key ${fromKey} → Key ${toKey} (${totalKeys} keys available)\n` +
+    `Reason: key ${fromKey} hit 429 rate limit.`
+  );
+}
+
+export async function notifyHeliusAllFailed({ totalKeys, fallback }) {
+  if (!TOKEN || !chatId) return;
+  if (Date.now() - _heliusAllFailedNotifiedAt < 15 * 60_000) return;
+  _heliusAllFailedNotifiedAt = Date.now();
+  const fallbackNote = fallback === "rpc"
+    ? "Using RPC fallback — SOL balance only, token data unavailable."
+    : "No fallback available.";
+  await sendMessage(
+    `🚨 HELIUS ALL KEYS RATE LIMITED\n\n` +
+    `All ${totalKeys} Helius API key(s) returned 429.\n` +
+    `${fallbackNote}\n\n` +
+    `Consider upgrading Helius plan or adding more API keys.`
+  );
+}
+
 // ─── Shared report builder ───────────────────────────────────────
 function buildSummaryReport(closes, header) {
   if (!closes.length) return `${header}\n\nNo closed positions.`;

@@ -160,11 +160,20 @@ async function swapWithRetry(wallet, connection, input_mint, output_mint, amount
   }
 }
 
+// Dedup concurrent calls — all callers in the same tick share one in-flight request
+let _walletBalancesInflight = null;
+
 /**
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
  */
 export async function getWalletBalances() {
+  if (_walletBalancesInflight) return _walletBalancesInflight;
+  _walletBalancesInflight = _fetchWalletBalances().finally(() => { _walletBalancesInflight = null; });
+  return _walletBalancesInflight;
+}
+
+async function _fetchWalletBalances() {
   let walletAddress;
   try {
     walletAddress = getWallet().publicKey.toString();
@@ -205,47 +214,53 @@ export async function getWalletBalances() {
         await _checkRpcHealth();
         data = await fetchBalances();
       } else if (e.message.includes("429")) {
-        // Rate limited — rotate key and retry, then fall back to RPC
-        const rotated = rotateHeliusKey();
-        if (rotated) {
-          log("wallet", `Helius rate limited (429) on key ${((_heliusKeyIndex + _heliusKeys.length - 1) % _heliusKeys.length) + 1}, trying key ${_heliusKeyIndex + 1}...`);
+        // Rate limited — try all remaining keys before falling back to RPC
+        let recovered = false;
+        const keysToTry = _heliusKeys.length > 1 ? _heliusKeys.length - 1 : 1;
+        for (let attempt = 0; attempt < keysToTry; attempt++) {
+          const prevIdx = _heliusKeyIndex;
+          const rotated = rotateHeliusKey();
+          const prevKey = prevIdx + 1;
+          if (rotated) {
+            log("wallet", `Helius rate limited (429) on key ${prevKey}, trying key ${_heliusKeyIndex + 1}...`);
+          } else {
+            log("wallet", `Helius rate limited (429), retrying in 2s...`);
+            await new Promise(r => setTimeout(r, 2000));
+          }
           try {
             data = await fetchBalances();
+            recovered = true;
+            // notify rotation success only when we had multiple keys to try
+            if (rotated) {
+              import("../telegram-journal.js").then(m => m.notifyHeliusRotated({
+                fromKey: prevKey,
+                toKey: _heliusKeyIndex + 1,
+                totalKeys: _heliusKeys.length,
+              })).catch(() => {});
+            }
+            break;
           } catch (e2) {
-            log("wallet", `Key ${_heliusKeyIndex + 1} also failed: ${e2.message}`);
-            import("../telegram-journal.js").then(m => m.notifyRpcLimit()).catch(() => {});
-            const solViaRpc = await fetchSolBalanceViaRpc();
-            return {
-              wallet: walletAddress,
-              sol: Math.round(solViaRpc * 1e6) / 1e6,
-              sol_price: 0,
-              sol_usd: 0,
-              usdc: 0,
-              tokens: [],
-              total_usd: 0,
-              rpc_fallback: true,
-            };
+            if (!e2.message.includes("429")) throw e2;
+            log("wallet", `Key ${_heliusKeyIndex + 1} also rate limited: ${e2.message}`);
+            if (attempt < keysToTry - 1) await new Promise(r => setTimeout(r, 500));
           }
-        } else {
-          // Only one key — retry after 2s
-          log("wallet", `Helius rate limited (429), retrying in 2s...`);
-          import("../telegram-journal.js").then(m => m.notifyRpcLimit()).catch(() => {});
-          await new Promise(r => setTimeout(r, 2000));
-          try {
-            data = await fetchBalances();
-          } catch {
-            const solViaRpc = await fetchSolBalanceViaRpc();
-            return {
-              wallet: walletAddress,
-              sol: Math.round(solViaRpc * 1e6) / 1e6,
-              sol_price: 0,
-              sol_usd: 0,
-              usdc: 0,
-              tokens: [],
-              total_usd: 0,
-              rpc_fallback: true,
-            };
-          }
+        }
+        if (!recovered) {
+          import("../telegram-journal.js").then(m => Promise.all([
+            m.notifyHeliusAllFailed({ totalKeys: _heliusKeys.length, fallback: "rpc" }),
+            m.notifyRpcLimit(),
+          ])).catch(() => {});
+          const solViaRpc = await fetchSolBalanceViaRpc();
+          return {
+            wallet: walletAddress,
+            sol: Math.round(solViaRpc * 1e6) / 1e6,
+            sol_price: 0,
+            sol_usd: 0,
+            usdc: 0,
+            tokens: [],
+            total_usd: 0,
+            rpc_fallback: true,
+          };
         }
       } else {
         throw e;
