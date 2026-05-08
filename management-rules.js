@@ -31,7 +31,7 @@ import { getRecentFeeRate } from "./pool-memory.js";
 const HARD_HOLD_CAP_MIN = 90;
 const HARD_HOLD_FEE_WINDOW_MIN = 30;
 const HARD_HOLD_MIN_FEE_RATE_USD_HR = 4;
-const HARD_HOLD_PROFITABLE_PCT = 1.0;
+const HARD_HOLD_PROFITABLE_PCT = 1.5;
 const HARD_HOLD_PROFITABLE_EXTEND_MIN = 20;
 
 /**

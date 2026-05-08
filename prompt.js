@@ -124,6 +124,11 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
      * BAD narrative: generic hype ("next 100x", "community token") with no identifiable subject or story
      * DEPLOY if global_fees_sol passes, distribution looks healthy for the token type, and narrative has a real specific catalyst
 
+   MOMENTUM SIGNAL (stats_1h.buyers from get_token_info, = momentum_buyers_1h):
+   - ≥ 8 buyers → strong buy-side pressure, +1 confidence (audit: +1.04% avg, n=66)
+   - < 1 buyer  → weak demand, −1 confidence (audit: −0.03% avg, n=45)
+   This is a SOFT signal — adjust confidence, do not hard-skip.
+
 6. CHOOSE STRATEGY based on token data:
    - Strong momentum (net_buyers > 0, price up) → custom_ratio_spot with bullish token ratio
    - High volatility + strong narrative + degen → bid_ask
