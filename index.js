@@ -823,6 +823,7 @@ async function runScreeningCycle() {
             bundlersPct: h?.bundlers_pct_in_top_100 != null ? Number(h.bundlers_pct_in_top_100) : null,
             swapCount: pool.swap_count ?? null,
             uniqueTraders: pool.unique_traders ?? null,
+            volume: pool.volume_window ?? null,
             lperCount: lps?.patterns?.top_lper_count ?? null,
             lperWinRate: lps?.patterns?.avg_win_rate ?? null,
             lperDisabled: lps?.message?.includes("LPAGENT_API_KEY not set") || false,
@@ -846,10 +847,14 @@ async function runScreeningCycle() {
       // okx_bundle_pct >= 2.30% bucket (n=20) → -0.63% avg / 60% wr;
       // <0.09% bucket (n=19) → +0.73% avg / 89.5% wr (gap 1.36pp, only param
       // that cleared composite gate). swap_count and unique_traders both show
-      // a clean break at 6: ≤6 → positive avg / 80%+ wr, >6 → negative avg.
+      // a clean break at 6: <6 → positive avg / 80%+ wr, ≥6 → negative avg.
+      // 2026-05-08: changed > to >= (boundary case swap_count=6 caused -8.37% loss).
       const OKX_BUNDLE_PCT_REJECT = 2.30;
       const SWAP_COUNT_REJECT = 6;
       const UNIQUE_TRADERS_REJECT = 6;
+      // 2026-05-08: volume < $500 hardgate — $271 volume pool caused 7pp SL gap-through
+      // due to extreme illiquidity; closing a $70 position moved the market itself.
+      const VOLUME_MIN_USD = 500;
       // LPAgent top-LPer hard gate restored 2026-04-24:
       // commit f6cd32a (11 Apr) removed LPAgent from live-pnl pipeline but
       // kept study_top_lpers for screening as SOFT signal. We promote it back
@@ -945,8 +950,8 @@ async function runScreeningCycle() {
             } catch { /**/ }
             return false;
           }
-          if (r.swapCount != null && r.swapCount > SWAP_COUNT_REJECT) {
-            log("screening", `Filtered ${r.poolName} — swap_count ${r.swapCount} > ${SWAP_COUNT_REJECT}`);
+          if (r.swapCount != null && r.swapCount >= SWAP_COUNT_REJECT) {
+            log("screening", `Filtered ${r.poolName} — swap_count ${r.swapCount} >= ${SWAP_COUNT_REJECT}`);
             try {
               appendDecision({
                 type: "skip",
@@ -954,8 +959,23 @@ async function runScreeningCycle() {
                 pool: r.pool,
                 pool_name: r.poolName,
                 summary: `Skipped ${r.poolName} — swap_count`,
-                reason: `swap_count ${r.swapCount} > ${SWAP_COUNT_REJECT} (2026-04-28 audit: -0.53% avg / 60.5% wr in this bucket)`,
+                reason: `swap_count ${r.swapCount} >= ${SWAP_COUNT_REJECT} (2026-04-28 audit: -0.53% avg / 60.5% wr in this bucket; boundary fixed 2026-05-08)`,
                 metrics: { swap_count: r.swapCount },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          if (r.volume != null && r.volume < VOLUME_MIN_USD) {
+            log("screening", `Filtered ${r.poolName} — volume $${r.volume.toFixed(0)} < $${VOLUME_MIN_USD}`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — low volume`,
+                reason: `volume $${r.volume.toFixed(0)} < $${VOLUME_MIN_USD} — illiquid pool causes gap-through on SL (2026-05-08 hardgate)`,
+                metrics: { volume: r.volume },
               });
             } catch { /**/ }
             return false;
