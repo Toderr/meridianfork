@@ -41,6 +41,10 @@ import { _stats, _flags } from "../stats.js";
 let _cronRestarter = null;
 export function registerCronRestarter(fn) { _cronRestarter = fn; }
 
+// Registered by index.js — called after a successful deploy to verify position isn't empty
+let _postDeployChecker = null;
+export function registerPostDeployChecker(fn) { _postDeployChecker = fn; }
+
 // Prevents two deploys in the same screening cycle (reset by runScreeningCycle at start)
 let _deployedThisCycle = false;
 export function resetDeployGuard() { _deployedThisCycle = false; }
@@ -566,6 +570,10 @@ export async function executeTool(name, args) {
             log("executor", `CRITICAL: Position ${result.position} deployed on-chain but journal recording failed — manual reconciliation needed`);
           }
         })();
+        // Fire-and-forget: verify position isn't empty after deploy settles
+        if (_postDeployChecker && result.position) {
+          _postDeployChecker(result.position, args.pool_address, args.pool_name || result.pool_name).catch(() => {});
+        }
       } else if (name === "claim_fees") {
         _stats.feesClaimed++;
       } else if (name === "close_position") {

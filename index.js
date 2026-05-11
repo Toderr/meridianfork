@@ -9,7 +9,7 @@ import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
 import { evolveThresholds, getPerformanceSummary, addLesson, updateLesson, listAllLessons, removeLesson } from "./lessons.js";
-import { registerCronRestarter, executeTool, resetDeployGuard } from "./tools/executor.js";
+import { registerCronRestarter, registerPostDeployChecker, executeTool, resetDeployGuard } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
 import { startJournalPolling, stopJournalPolling, startJournalCrons, notifyError } from "./telegram-journal.js";
 import { generateBriefing } from "./briefing.js";
@@ -1571,6 +1571,32 @@ function appendHistory(userMsg, assistantMsg) {
 
 // Register restarter — when update_config changes intervals, running cron jobs get replaced
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });
+
+// After a successful deploy, wait 8s then verify position has value.
+// If empty (liquidity didn't land), close it immediately and re-run screening.
+registerPostDeployChecker(async (positionAddress, poolAddress, poolName) => {
+  await new Promise(r => setTimeout(r, 8_000));
+  try {
+    const pnl = await getPositionPnl({ pool_address: poolAddress, position_address: positionAddress }).catch(() => null);
+    const value = pnl?.current_value_usd ?? 0;
+    const fees  = pnl?.unclaimed_fees_usd ?? 0;
+    if (value > 0 || fees > 0) return; // position has funds — all good
+    log("post_deploy", `Empty position detected after deploy: ${positionAddress.slice(0, 8)} (${poolName || poolAddress?.slice(0, 8)}) — closing and re-screening`);
+    notifyError("post_deploy", `Empty position after deploy — closing ${poolName || positionAddress.slice(0, 8)} and re-screening`);
+    await executeTool("close_position", {
+      position_address: positionAddress,
+      pool_address: poolAddress,
+      close_reason: "empty position after deploy — liquidity not landed",
+      _decision_source: "RULE_ENGINE",
+    }).catch(e => log("post_deploy", `Close failed: ${e.message}`));
+    if (!_screeningBusy) {
+      log("post_deploy", "Triggering re-screening after empty-deploy close");
+      setTimeout(() => { runScreeningCycle(); }, 2_000);
+    }
+  } catch (e) {
+    log("post_deploy", `Post-deploy check error: ${e.message}`);
+  }
+});
 
 // ── Shared Telegram command handler ──────────────────────────────────────────
 // Called from both TTY and non-TTY polling handlers to keep commands in sync.
