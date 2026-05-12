@@ -819,6 +819,9 @@ async function runScreeningCycle() {
             okxBundlePct: okx?.advanced?.bundle_pct ?? null,
             priceVsAthPct: okx?.price?.price_vs_ath_pct ?? null,
             momentum1h: ti?.stats_1h?.price_change ?? null,
+            momentumBuyers1h: ti?.stats_1h?.buyers != null ? Number(ti.stats_1h.buyers) : null,
+            globalFeesSol: h?.global_fees_sol != null ? Number(h.global_fees_sol) : null,
+            okxPriceChange1h: okx?.price?.price_change_1h != null ? Number(okx.price.price_change_1h) : null,
             topPct: h?.top_10_real_holders_pct != null ? Number(h.top_10_real_holders_pct) : null,
             bundlersPct: h?.bundlers_pct_in_top_100 != null ? Number(h.bundlers_pct_in_top_100) : null,
             swapCount: pool.swap_count ?? null,
@@ -855,6 +858,14 @@ async function runScreeningCycle() {
       // 2026-05-08: volume < $500 hardgate — $271 volume pool caused 7pp SL gap-through
       // due to extreme illiquidity; closing a $70 position moved the market itself.
       const VOLUME_MIN_USD = 500;
+      // 2026-05-12: SL vs Profit analysis (n=38 SL, n=629 profit, full journal):
+      // okx_price_change_1h < -20% → 25.0% loss rate (n=24) — token in freefall.
+      // momentum_buyers_1h ≥ 15 AND global_fees_sol < 80 → 17.9% loss rate (n=106)
+      //   = FOMO entry on illiquid token; high buyer pressure + shallow liquidity
+      //   means price already peaked, one seller dumps through position.
+      const OKX_PRICE_CHANGE_1H_DUMP = -20;
+      const MOMENTUM_BUYERS_FOMO = 15;
+      const GLOBAL_FEES_LIQUIDITY_MIN = 80;
       // LPAgent top-LPer hard gate restored 2026-04-24:
       // commit f6cd32a (11 Apr) removed LPAgent from live-pnl pipeline but
       // kept study_top_lpers for screening as SOFT signal. We promote it back
@@ -991,6 +1002,43 @@ async function runScreeningCycle() {
                 summary: `Skipped ${r.poolName} — unique_traders`,
                 reason: `unique_traders ${r.uniqueTraders} > ${UNIQUE_TRADERS_REJECT} (2026-04-28 audit: -0.42% avg / 65.1% wr in this bucket)`,
                 metrics: { unique_traders: r.uniqueTraders },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          // 2026-05-12: token in active dump — okx_price_change_1h < -20% → 25% loss rate (n=24).
+          // Only enforced when OKX data is available (17% coverage).
+          if (r.okxPriceChange1h != null && r.okxPriceChange1h < OKX_PRICE_CHANGE_1H_DUMP) {
+            log("screening", `Filtered ${r.poolName} — okx_price_change_1h ${r.okxPriceChange1h}% < ${OKX_PRICE_CHANGE_1H_DUMP}% (active dump)`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — token in active dump`,
+                reason: `okx_price_change_1h ${r.okxPriceChange1h}% < ${OKX_PRICE_CHANGE_1H_DUMP}% — 25% SL rate in this bucket (2026-05-12 audit, n=24)`,
+                metrics: { okx_price_change_1h: r.okxPriceChange1h },
+              });
+            } catch { /**/ }
+            return false;
+          }
+          // 2026-05-12: FOMO entry on illiquid token — momentum_buyers ≥ 15 AND
+          // global_fees_sol < 80 → 17.9% loss rate (n=106). Pattern: price already
+          // peaked, one seller dumps through the position on shallow liquidity.
+          if (r.momentumBuyers1h != null && r.globalFeesSol != null
+              && r.momentumBuyers1h >= MOMENTUM_BUYERS_FOMO
+              && r.globalFeesSol < GLOBAL_FEES_LIQUIDITY_MIN) {
+            log("screening", `Filtered ${r.poolName} — FOMO+illiquid: buyers=${r.momentumBuyers1h} >= ${MOMENTUM_BUYERS_FOMO} AND global_fees=${r.globalFeesSol.toFixed(0)} < ${GLOBAL_FEES_LIQUIDITY_MIN}`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — FOMO entry on illiquid token`,
+                reason: `momentum_buyers_1h ${r.momentumBuyers1h} >= ${MOMENTUM_BUYERS_FOMO} AND global_fees_sol ${r.globalFeesSol.toFixed(0)} < ${GLOBAL_FEES_LIQUIDITY_MIN} — 17.9% SL rate (2026-05-12 audit, n=106)`,
+                metrics: { momentum_buyers_1h: r.momentumBuyers1h, global_fees_sol: r.globalFeesSol },
               });
             } catch { /**/ }
             return false;

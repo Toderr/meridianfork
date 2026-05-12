@@ -291,6 +291,116 @@ if (deltas.length) {
   w("_No high-confidence filter delta — composite gate too strict or signal noisy._");
 }
 
+// ── SL vs Profit comparison ──────────────────────────────────────────────
+// Uses the full journal (not window-scoped) for maximum sample size.
+// SL = total_pct ≤ -3 (genuine stop-loss events). Profit = total_pct > 0.
+w("");
+w("## Stop-Loss vs Profit: parameter comparison (full journal)");
+w("Which parameters predict SL exits? Uses ALL closes with token_profile (no window filter).");
+w("SL = fee-inclusive total_pct ≤ −3%. Profit = total_pct > 0.");
+w("");
+
+const journalAll = J("journal.json");
+const allClosesForSL = (journalAll.entries || []).filter(e => e.type === "close" && e.token_profile);
+const withTotalPct = allClosesForSL.map(e => {
+  const initial = e.initial_value_usd || 0;
+  const fees = e.fees_earned_usd || 0;
+  const feePct = initial > 0 ? (fees / initial) * 100 : 0;
+  const total = (e.pnl_pct || 0) + feePct;
+  return { ...e, total_pct: total };
+}).filter(e => Number.isFinite(e.total_pct));
+
+const slCloses = withTotalPct.filter(e => e.total_pct <= -3);
+const profitCloses = withTotalPct.filter(e => e.total_pct > 0);
+
+w(`- Total closes with token_profile: ${withTotalPct.length}`);
+w(`- SL (total_pct ≤ −3%): **${slCloses.length}**`);
+w(`- Profit (total_pct > 0): **${profitCloses.length}**`);
+w("");
+
+const slMedian = (key) => {
+  const vals = slCloses.map(e => e.token_profile[key]).filter(v => v != null && Number.isFinite(+v)).map(Number).sort((a, b) => a - b);
+  if (!vals.length) return null;
+  const m = Math.floor(vals.length / 2);
+  return vals.length % 2 ? vals[m] : (vals[m - 1] + vals[m]) / 2;
+};
+const profMedian = (key) => {
+  const vals = profitCloses.map(e => e.token_profile[key]).filter(v => v != null && Number.isFinite(+v)).map(Number).sort((a, b) => a - b);
+  if (!vals.length) return null;
+  const m = Math.floor(vals.length / 2);
+  return vals.length % 2 ? vals[m] : (vals[m - 1] + vals[m]) / 2;
+};
+
+const SL_PARAMS = [
+  "global_fees_sol", "momentum_buyers_1h", "momentum_net_buyers_1h",
+  "bot_holders_pct", "okx_price_change_1h", "okx_lp_burned_pct",
+  "mcap", "holders", "volume", "tvl", "top_10_pct",
+  "smart_wallet_confidence", "okx_bundle_pct",
+];
+
+const slRows = SL_PARAMS.map(k => {
+  const slN = slCloses.filter(e => e.token_profile[k] != null && Number.isFinite(+e.token_profile[k])).length;
+  const profN = profitCloses.filter(e => e.token_profile[k] != null && Number.isFinite(+e.token_profile[k])).length;
+  const sm = slMedian(k);
+  const pm = profMedian(k);
+  if (slN < 5 || profN < 5 || sm == null || pm == null) return null;
+  return { key: k, slN, profN, slMedian: sm, profMedian: pm, delta: pm - sm };
+}).filter(Boolean).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+w("### Median comparison (SL vs Profit)");
+w("Sorted by absolute delta — larger delta = more predictive.");
+w("");
+w("| Parameter | SL n | SL median | Profit n | Profit median | Delta | Danger direction |");
+w("|---|---|---|---|---|---|---|");
+for (const r of slRows) {
+  const direction = r.delta > 0
+    ? "SL has lower value — higher is safer"
+    : "SL has higher value — lower is safer";
+  w(`| **${r.key}** | ${r.slN} | ${r.slMedian.toFixed(2)} | ${r.profN} | ${r.profMedian.toFixed(2)} | ${r.delta >= 0 ? "+" : ""}${r.delta.toFixed(2)} | ${direction} |`);
+}
+
+// Bucket loss-rate table for highest-impact params
+w("");
+w("### Bucket loss-rate table (key parameters)");
+w("Loss rate = SL_n / (SL_n + Profit_n) per bucket. High loss rate = avoid this range.");
+w("");
+
+const SL_BUCKET_DEFS = [
+  { key: "global_fees_sol",        buckets: [[0,30],[30,80],[80,200],[200,null]] },
+  { key: "momentum_buyers_1h",     buckets: [[0,5],[5,15],[15,30],[30,null]] },
+  { key: "momentum_net_buyers_1h", buckets: [[0,50],[50,200],[200,null]] },
+  { key: "bot_holders_pct",        buckets: [[0,15],[15,25],[25,40],[40,null]] },
+  { key: "okx_price_change_1h",    buckets: [[-100,-20],[-20,-5],[-5,0],[0,10],[10,null]] },
+  { key: "okx_lp_burned_pct",      buckets: [[0,50],[50,90],[90,98],[98,null]] },
+];
+
+for (const def of SL_BUCKET_DEFS) {
+  const hasSLData = slCloses.some(e => e.token_profile[def.key] != null);
+  const hasProfData = profitCloses.some(e => e.token_profile[def.key] != null);
+  if (!hasSLData && !hasProfData) continue;
+
+  w(`**\`${def.key}\`**`);
+  w("");
+  w("| Bucket | SL | Profit | Loss Rate |");
+  w("|---|---|---|---|");
+  for (const [lo, hi] of def.buckets) {
+    const inBucket = (e) => {
+      const v = e.token_profile[def.key];
+      if (v == null || !Number.isFinite(+v)) return false;
+      const n = Number(v);
+      return n >= lo && (hi == null || n < hi);
+    };
+    const sn = slCloses.filter(inBucket).length;
+    const pn = profitCloses.filter(inBucket).length;
+    const tot = sn + pn;
+    const lossRate = tot > 0 ? (sn / tot * 100).toFixed(1) + "%" : "-";
+    const label = hi == null ? `≥ ${lo}` : `${lo}–${hi}`;
+    const flag = tot >= 10 && sn / tot >= 0.15 ? " ⚠️" : "";
+    w(`| ${label} | ${sn} | ${pn} | ${lossRate}${flag} |`);
+  }
+  w("");
+}
+
 // ── Write ──────────────────────────────────────────────────────────────────
 const reportPath = path.join(LOGS_DIR, `token-param-analysis-${today}.md`);
 fs.writeFileSync(reportPath, out.join("\n"));
