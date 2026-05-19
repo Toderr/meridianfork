@@ -1626,8 +1626,9 @@ registerPostDeployChecker(async (positionAddress, poolAddress, poolName) => {
   await new Promise(r => setTimeout(r, 8_000));
   try {
     const pnl = await getPositionPnl({ pool_address: poolAddress, position_address: positionAddress }).catch(() => null);
-    const value = pnl?.current_value_usd ?? 0;
-    const fees  = pnl?.unclaimed_fees_usd ?? 0;
+    if (!pnl) { log("post_deploy", `PnL API unavailable at 8s for ${positionAddress.slice(0, 8)} — skipping empty check`); return; }
+    const value = pnl.current_value_usd ?? 0;
+    const fees  = pnl.unclaimed_fee_usd ?? 0;
     if (value > 0 || fees > 0) return; // position has funds — all good
     log("post_deploy", `Empty position detected after deploy: ${positionAddress.slice(0, 8)} (${poolName || poolAddress?.slice(0, 8)}) — closing and re-screening`);
     notifyError("post_deploy", `Empty position after deploy — closing ${poolName || positionAddress.slice(0, 8)} and re-screening`);

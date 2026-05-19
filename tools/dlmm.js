@@ -864,7 +864,7 @@ export async function closePosition({ position_address, close_reason }) {
       }
     }
     if (isEmptyTrigger && positionIsEmpty) {
-      log("close", `Fast-path empty close: ${position_address} — skip on-chain txs, cleanup state only`);
+      log("close", `Fast-path empty close: ${position_address} — cleanup state + close on-chain account`);
       const trackedPre = getTrackedPosition(position_address);
       const poolName = trackedPre?.pool_name || freshPnl?.pair_name || poolAddress.toString().slice(0, 8);
       recordClose(position_address, close_reason);
@@ -885,6 +885,12 @@ export async function closePosition({ position_address, close_reason }) {
         close_reason,
       });
       _positionsCacheAt = 0;
+      // Close the on-chain position account (recover rent) — safe no-op if account already gone.
+      // Fire-and-forget so the caller gets a fast response.
+      pool.closePositionIfEmpty({ owner: wallet.publicKey, position: { publicKey: positionPubKey } })
+        .then(tx => sendWithRetry(getConnection(), tx, [wallet], "close:empty_account"))
+        .then(() => log("close", `Empty account closed on-chain: ${position_address.slice(0, 8)}`))
+        .catch(e => log("close_warn", `closePositionIfEmpty failed (account may already be gone): ${e.message}`));
       return {
         success: true,
         position: position_address,
