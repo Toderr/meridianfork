@@ -129,6 +129,12 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
    - < 1 buyer  → weak demand, −1 confidence (audit: −0.03% avg, n=45)
    This is a SOFT signal — adjust confidence, do not hard-skip.
 
+   POOL QUALITY SIGNALS (soft — adjust confidence, do not hard-skip):
+   - global_fees_sol [38–61]: +1 confidence (audit 2026-05-26: +1.35% avg vs −0.19% worst, gap=1.54pp, n=20)
+   - global_fees_sol < 38 or > 61: neutral/slight penalty — outside the sweet spot
+   - unique_traders ≥ 13: +1 confidence (audit: +0.87% avg vs −0.52% for <2 traders, gap=1.39pp, n=21)
+   - tvl [2,485–4,600]: sweet spot, +1 confidence (audit: +0.96% avg vs −0.22%, gap=1.18pp, n=20–21)
+
 6. CHOOSE STRATEGY based on token data:
    - Strong momentum (net_buyers > 0, price up) → custom_ratio_spot with bullish token ratio
    - High volatility + strong narrative + degen → bid_ask
@@ -149,7 +155,7 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
    - Low vol (0-1): 25-35 bins. Med vol (1-3): 35-50. High vol (3-5): 50-60. Extreme: 60-69.
 
    STRATEGY MATRIX (HARD GATE) — every candidate carries forced_strategy and
-   forced_bins_above_pct, derived from 2,108 historical closes (avg×wr − 0.5×|worst| score).
+   forced_bins_above_pct, derived from 3,334 historical closes (avg×wr − 0.5×|worst| score).
    These fields are AUTHORITATIVE — pass them through to deploy_position. The executor
    will silently override your strategy/bins_above if they don't match the matrix, so
    contradicting them is wasted reasoning. forced_bins_above_pct=0 means single-sided SOL;

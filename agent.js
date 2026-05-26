@@ -98,7 +98,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       // Retry up to 3 times on transient provider errors or empty responses.
       // After 3 failures, fall back to FALLBACK_MODEL for this turn only.
-      const FALLBACK_MODEL = "z-ai/glm-5";
+      const FALLBACK_MODEL = "openai/gpt-oss-120b";
       let response;
       let usedModel = activeModel;
       let usedClient = getClient(activeProvider);
