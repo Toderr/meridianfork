@@ -153,6 +153,9 @@ const SOFT_PEAK_THRESHOLD = 1.5;
 const SOFT_PEAK_GIVE_BACK_RATIO = 0.5;
 const SOFT_PEAK_DELAY_MS = 10 * 60 * 1000;
 
+// Pending /close selection: stores numbered position list while waiting for user to pick
+const _pendingClose = { positions: null, expiresAt: 0 };
+
 async function runBriefing() {
   log("cron", "Starting morning briefing");
   try {
@@ -1664,6 +1667,44 @@ async function handleTelegramCommand(rawText, sendMessage, opts = {}) {
     log("telegram", `Command: "${text}" cmd="${cmd}" raw=${JSON.stringify(rawText)} bytes=${[...rawText].map(c=>c.charCodeAt(0).toString(16)).join(",").slice(0,120)}`);
   }
 
+  // ── /close selection interceptor ────────────────────────────────
+  if (_pendingClose.positions && Date.now() < _pendingClose.expiresAt) {
+    if (cmd === "/cancel") {
+      _pendingClose.positions = null;
+      sendMessage("❌ Close cancelled.").catch(() => {});
+      return true;
+    }
+    const pick = parseInt(text.trim(), 10);
+    if (!isNaN(pick) && pick >= 1 && pick <= _pendingClose.positions.length) {
+      const chosen = _pendingClose.positions[pick - 1];
+      _pendingClose.positions = null;
+      sendMessage(`⏳ Closing position #${pick}: ${chosen.pair}...`).catch(() => {});
+      try {
+        const result = await executeTool("close_position", {
+          position_address: chosen.position,
+          close_reason: "Manual close via /close command",
+          _decision_source: "USER",
+        });
+        if (result?.error) {
+          sendMessage(`❌ Close failed: ${result.error}`).catch(() => {});
+        }
+      } catch (e) {
+        sendMessage(`❌ Close error: ${e.message}`).catch(() => {});
+      }
+      return true;
+    }
+    if (!isNaN(pick)) {
+      sendMessage(`⚠️ Invalid number. Enter 1–${_pendingClose.positions.length}, or /cancel.`).catch(() => {});
+      return true;
+    }
+    // Not a number and not a slash command — let non-command messages fall through
+    if (!cmd.startsWith("/")) {
+      _pendingClose.positions = null; // cancel on unexpected input
+    }
+  } else if (_pendingClose.positions) {
+    _pendingClose.positions = null; // expired
+  }
+
   if (cmd === "/help") {
     sendMessage([
       "🤖 Meridian Commands",
@@ -1673,6 +1714,7 @@ async function handleTelegramCommand(rawText, sendMessage, opts = {}) {
       "/stop           Pause cron cycles",
       "/stats          Agent uptime, cycle counts, errors",
       "/status         Wallet balance + open positions",
+      "/close          Pick and close a specific position",
       "/withdraw       Close all positions, swap to SOL",
       "",
       "── Reports ──",
@@ -1747,6 +1789,32 @@ async function handleTelegramCommand(rawText, sendMessage, opts = {}) {
       sendMessage(lines.join("\n")).catch(() => {});
     } catch (e) {
       sendMessage(`Status error: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
+  if (cmd === "/close") {
+    try {
+      const positions = await getMyPositions({ force: true });
+      const list = positions.positions || [];
+      if (list.length === 0) {
+        sendMessage("No open positions to close.").catch(() => {});
+        return true;
+      }
+      const lines = ["📋 Open Positions — reply with number to close:\n"];
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        const rangeIcon = p.in_range ? "✅" : "⚠️";
+        const pnl = p.pnl_pct != null ? ` | pnl: ${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%` : "";
+        const fees = ` | fees: $${(p.unclaimed_fees_usd ?? 0).toFixed(2)}`;
+        lines.push(`${i + 1}. ${rangeIcon} ${p.pair}${pnl}${fees}`);
+      }
+      lines.push("\n/cancel to abort");
+      _pendingClose.positions = list;
+      _pendingClose.expiresAt = Date.now() + 2 * 60 * 1000; // 2 min timeout
+      sendMessage(lines.join("\n")).catch(() => {});
+    } catch (e) {
+      sendMessage(`❌ Error fetching positions: ${e.message}`).catch(() => {});
     }
     return true;
   }
@@ -2231,6 +2299,7 @@ Commands:
   1 / 2 / 3 ...  Deploy ${DEPLOY} SOL into that pool
   auto           Let the agent pick and deploy automatically
   /status        Refresh wallet + positions
+  /close         Pick and close a specific position
   /candidates    Refresh top pool list
   /briefing      Show morning briefing (last 24h)
   /report [daily|weekly|monthly]  Show trading report (default: daily)
