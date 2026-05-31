@@ -1063,6 +1063,7 @@ export async function closePosition({ position_address, close_reason }) {
         position: position_address,
         pool: poolAddress,
         pool_name: poolName,
+        base_mint: pool.lbPair.tokenXMint.toString(),
         strategy: tracked.strategy,
         bin_range: tracked.bin_range,
         bin_step: tracked.bin_step || null,
