@@ -843,9 +843,14 @@ async function runScreeningCycle() {
       // 2026-04-23 big-loss audit: price_vs_ATH 30-60% bucket = 36.4% big-loss
       // rate / 9.1% win rate / -3.98% avg (tokens in active downtrend keep falling).
       // momentum_1h >= 20% = 20% big-loss rate / -1.99% avg (buying local blow-off top).
+      // momentum_1h < -15% = token in active dump; 6/12 SL losses in 2026-05-28 window
+      // had momentum_1h <= -23% at entry (DATAHOUSE -31%, ballish -31%, MOMO -33%,
+      // genny -23%). OKX price_change_1h gate covers this when data available, but
+      // OKX coverage is ~17% — internal momentum_1h is always available.
       const ATH_REJECT_MIN = 30;
       const ATH_REJECT_MAX = 60;
       const MOMENTUM_1H_REJECT = 20;
+      const MOMENTUM_1H_DUMP = -15;
       // HARDCODED gates restored 2026-04-24 (pre-9837502 values):
       const TOP10_REJECT = 60;
       const BUNDLERS_REJECT = 30;
@@ -919,6 +924,25 @@ async function runScreeningCycle() {
             } catch { /**/ }
             return false;
           }
+          // 2026-05-31: token in active dump — momentum_1h < -15% → high SL rate.
+          // 6/12 SL losses in delta window had momentum_1h <= -23% at entry.
+          // OKX okx_price_change_1h gate only covers ~17% of tokens (OKX data often null);
+          // internal momentum_1h is always available and catches what OKX misses.
+          if (r.momentum1h != null && r.momentum1h < MOMENTUM_1H_DUMP) {
+            log("screening", `Filtered ${r.poolName} — momentum_1h ${r.momentum1h}% < ${MOMENTUM_1H_DUMP}% (active dump)`);
+            try {
+              appendDecision({
+                type: "skip",
+                actor: "RULE_ENGINE",
+                pool: r.pool,
+                pool_name: r.poolName,
+                summary: `Skipped ${r.poolName} — active dump`,
+                reason: `momentum_1h ${r.momentum1h}% < ${MOMENTUM_1H_DUMP}% — 6/12 SL losses in 2026-05-28 window had momentum <= -23% at entry (2026-05-31 hardgate)`,
+                metrics: { momentum_1h: r.momentum1h },
+              });
+            } catch { /**/ }
+            return false;
+          }
           if (r.topPct != null && r.topPct > TOP10_REJECT) {
             log("screening", `Filtered ${r.poolName} — top_10_pct ${r.topPct}% > ${TOP10_REJECT}%`);
             try {
@@ -979,16 +1003,20 @@ async function runScreeningCycle() {
             } catch { /**/ }
             return false;
           }
-          if (r.volume != null && r.volume < VOLUME_MIN_USD) {
-            log("screening", `Filtered ${r.poolName} — volume $${r.volume.toFixed(0)} < $${VOLUME_MIN_USD}`);
+          // 2026-05-31: treat null volume as failing the gate — pools that return no
+          // volume data from the 5m API are likely inactive/too-new and equally illiquid.
+          // Previously `r.volume != null` meant null silently bypassed the gate.
+          if (r.volume == null || r.volume < VOLUME_MIN_USD) {
+            const volStr = r.volume != null ? `$${r.volume.toFixed(0)}` : "null";
+            log("screening", `Filtered ${r.poolName} — volume ${volStr} < $${VOLUME_MIN_USD}`);
             try {
               appendDecision({
                 type: "skip",
                 actor: "RULE_ENGINE",
                 pool: r.pool,
                 pool_name: r.poolName,
-                summary: `Skipped ${r.poolName} — low volume`,
-                reason: `volume $${r.volume.toFixed(0)} < $${VOLUME_MIN_USD} — illiquid pool causes gap-through on SL (2026-05-08 hardgate)`,
+                summary: `Skipped ${r.poolName} — low/unknown volume`,
+                reason: `volume ${volStr} < $${VOLUME_MIN_USD} — illiquid pool causes gap-through on SL (gate extended to null 2026-05-31)`,
                 metrics: { volume: r.volume },
               });
             } catch { /**/ }
