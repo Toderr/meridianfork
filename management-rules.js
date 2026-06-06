@@ -40,11 +40,17 @@ const HARD_HOLD_PROFITABLE_EXTEND_MIN = 20;
  */
 export function evaluatePosition(p) {
   const pnl     = p.pnl;
-  const pnlPctPrice = pnl?.pnl_pct ?? null;  // price-only %
-  const initUsd = p.initial_value_usd || p.initial_value_usd_api || 0;
   const fees    = parseFloat(pnl?.unclaimed_fee_usd) || 0;
-  const feePct  = (initUsd > 0 && fees > 0) ? fees / initUsd * 100 : 0;
-  const pnlPct  = pnlPctPrice !== null ? pnlPctPrice + feePct : null;  // fee-inclusive for threshold comparisons
+  // SOL-denominated, fee-inclusive PnL % drives all thresholds so SOL price
+  // swings don't distort the percentage. Falls back to USD fee-inclusive only
+  // when the position has no SOL deposit (e.g. USDC-quoted pools).
+  let pnlPct = pnl?.pnl_pct_sol ?? null;
+  if (pnlPct === null) {
+    const pnlPctPrice = pnl?.pnl_pct ?? null;  // price-only USD %
+    const initUsd = p.initial_value_usd || p.initial_value_usd_api || 0;
+    const feePct  = (initUsd > 0 && fees > 0) ? fees / initUsd * 100 : 0;
+    pnlPct = pnlPctPrice !== null ? pnlPctPrice + feePct : null;
+  }
   const age     = p.age_minutes ?? 0;
   const feeTvl  = p.feeTvl24h;
   const bins    = p.binsAbove;

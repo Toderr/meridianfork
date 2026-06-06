@@ -234,6 +234,9 @@ export async function deployPosition({
   bins_below,
   bins_above,
   single_sided_x,  // if true, deposit only token X across all bins (ask-side / sell wall)
+  // blend: add a secondary liquidity layer after primary deploy
+  blend_secondary_strategy,  // e.g. "bid_ask"
+  blend_secondary_pct,       // fraction of total Y for secondary (e.g. 0.25)
   // optional pool metadata for learning (passed by agent when available)
   pool_name,
   bin_step,
@@ -299,7 +302,11 @@ export async function deployPosition({
   const finalAmountY = amount_y ?? amount_sol ?? 0;
   const finalAmountX = amount_x ?? 0;
 
-  const totalYLamports = new BN(Math.floor(finalAmountY * 1e9));
+  // Blend: scale primary amount down, secondary gets the remainder
+  const blendSecondaryPct = (blend_secondary_pct > 0 && blend_secondary_strategy) ? blend_secondary_pct : 0;
+  const primaryPct = 1 - blendSecondaryPct;
+
+  const totalYLamports = new BN(Math.floor(finalAmountY * primaryPct * 1e9));
   // For X, we assume it's also 9 decimals for now, or we'd need to fetch mint decimals.
   // Most Meteora pools base tokens are 6 or 9. To be safe, we should fetch.
   let totalXLamports = new BN(0);
@@ -401,6 +408,35 @@ export async function deployPosition({
       txHashes.push(txHash);
     }
 
+    // ── Blended secondary add (e.g. 25% bid_ask on top of 75% spot) ──────
+    if (blendSecondaryPct > 0 && blend_secondary_strategy) {
+      const secondaryStrategyMap = {
+        spot: strategyMap.spot,
+        curve: strategyMap.curve,
+        bid_ask: strategyMap.bid_ask,
+      };
+      const secondaryType = secondaryStrategyMap[blend_secondary_strategy];
+      if (secondaryType !== undefined) {
+        const secondaryYLamports = new BN(Math.floor(finalAmountY * blendSecondaryPct * 1e9));
+        log("deploy", `Blend: adding ${blend_secondary_strategy} layer (${blendSecondaryPct * 100}% = ${(finalAmountY * blendSecondaryPct).toFixed(4)} SOL)`);
+        const blendTx = await pool.addLiquidityByStrategy({
+          positionPubKey: newPosition.publicKey,
+          totalXAmount: new BN(0),
+          totalYAmount: secondaryYLamports,
+          strategy: { maxBinId, minBinId, strategyType: secondaryType },
+          user: wallet.publicKey,
+          slippage: 100,
+        });
+        for (const t of Array.isArray(blendTx) ? blendTx : [blendTx]) {
+          const txHash = await sendWithRetry(getConnection(), t, [wallet], "deploy:blend");
+          txHashes.push(txHash);
+          log("deploy", `Blend tx: ${txHash}`);
+        }
+      } else {
+        log("deploy", `Blend: unknown secondary strategy "${blend_secondary_strategy}" — skipped`);
+      }
+    }
+
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
 
     _positionsCacheAt = 0;
@@ -415,6 +451,7 @@ export async function deployPosition({
       pool: pool_address,
       bin_range: { min: minBinId, max: maxBinId, active: activeBin.binId },
       strategy: activeStrategy,
+      blend: blendSecondaryPct > 0 ? `${Math.round(primaryPct * 100)}% ${activeStrategy} + ${Math.round(blendSecondaryPct * 100)}% ${blend_secondary_strategy}` : null,
       wide_range: isWideRange,
       amount_x: finalAmountX,
       amount_y: finalAmountY,
@@ -431,6 +468,46 @@ const POSITIONS_CACHE_TTL = 5 * 60_000; // 5 minutes
 let _positionsCache = null;
 let _positionsCacheAt = 0;
 let _positionsInflight = null; // deduplicates concurrent calls
+
+// ─── Re-price the non-SOL (tokenX) side with the live pool price ──
+// The datapi occasionally values a thin token's tokenX side far below the live
+// pool price (seen ~2.6× too low), which flips a real profit into a reported
+// loss and breaks TP/SL. Re-price tokenX using poolActivePrice (SOL per tokenX)
+// and roll the deltas into the aggregates every consumer reads. Falls back to
+// the datapi's own figures untouched when poolActivePrice / SOL price is absent.
+// Assumes tokenY is the SOL/quote side (true for our SOL-quoted pools).
+function repriceTokenX(p) {
+  const ap = parseFloat(p?.poolActivePrice ?? 0);
+  const u = p?.unrealizedPnl;
+  if (!(ap > 0) || !u) return; // fallback: trust datapi
+  const solSol = parseFloat(u.balanceTokenY?.amountSol ?? 0);
+  const solUsd = parseFloat(u.balanceTokenY?.usd ?? 0);
+  const solPriceUsd = solSol > 0 ? solUsd / solSol : 0;
+  if (!(solPriceUsd > 0)) return; // fallback: can't derive USD without SOL price
+
+  let balDeltaUsd = 0, balDeltaSol = 0, feeDeltaUsd = 0, feeDeltaSol = 0;
+  if (u.balanceTokenX) {
+    const liveSol = parseFloat(u.balanceTokenX.amount ?? 0) * ap;
+    const liveUsd = liveSol * solPriceUsd;
+    balDeltaSol = liveSol - parseFloat(u.balanceTokenX.amountSol ?? 0);
+    balDeltaUsd = liveUsd - parseFloat(u.balanceTokenX.usd ?? 0);
+    u.balanceTokenX.amountSol = liveSol;
+    u.balanceTokenX.usd = liveUsd;
+  }
+  if (u.unclaimedFeeTokenX) {
+    const liveSol = parseFloat(u.unclaimedFeeTokenX.amount ?? 0) * ap;
+    const liveUsd = liveSol * solPriceUsd;
+    feeDeltaSol = liveSol - parseFloat(u.unclaimedFeeTokenX.amountSol ?? 0);
+    feeDeltaUsd = liveUsd - parseFloat(u.unclaimedFeeTokenX.usd ?? 0);
+    u.unclaimedFeeTokenX.amountSol = liveSol;
+    u.unclaimedFeeTokenX.usd = liveUsd;
+  }
+  if (u.balances != null)    u.balances    = parseFloat(u.balances)    + balDeltaUsd;
+  if (u.balancesSol != null) u.balancesSol = parseFloat(u.balancesSol) + balDeltaSol;
+  // pnlUsd/pnlSol are fee-inclusive totals → shift by both balance and fee deltas
+  if (p.pnlUsd != null) p.pnlUsd = parseFloat(p.pnlUsd) + balDeltaUsd + feeDeltaUsd;
+  if (p.pnlSol != null) p.pnlSol = parseFloat(p.pnlSol) + balDeltaSol + feeDeltaSol;
+}
 
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
@@ -460,6 +537,10 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
         allTimeFees: firstPos.allTimeFees?.total?.usd,
       }));
     }
+    // Re-price the tokenX side with the live pool price before any consumer
+    // reads these objects (corrects datapi's thin-token undervaluation).
+    for (const p of positions) repriceTokenX(p);
+
     const byAddress = {};
     for (const p of positions) {
       const addr = p.positionAddress || p.address || p.position;
@@ -501,6 +582,8 @@ export async function getPositionPnl({ pool_address, position_address }) {
           pnl_usd:           null,
           pnl_sol:           null,
           pnl_pct:           null,
+          pnl_pct_sol:       null,
+          deposit_sol:       null,
           current_value_usd: onchain.current_value_usd,
           unclaimed_fee_usd: onchain.unclaimed_fee_usd,
           all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
@@ -518,10 +601,18 @@ export async function getPositionPnl({ pool_address, position_address }) {
       }
     }
 
+    // SOL-denominated, fee-inclusive PnL — drives management thresholds so SOL
+    // price swings don't distort the percentage (pnlSol is repriced + fee-inclusive).
+    const depositSol = parseFloat(p.allTimeDeposits?.total?.sol ?? 0);
+    const pnlSolVal  = parseFloat(p.pnlSol ?? 0);
+    const pnlPctSol  = depositSol > 0 ? Math.round((pnlSolVal / depositSol * 100) * 100) / 100 : null;
+
     return {
       pnl_usd:           Math.round(pnlUsdPrice * 100) / 100,     // price-only (fees stripped)
-      pnl_sol:           Math.round((parseFloat(p.pnlSol ?? 0)) * 10000) / 10000,
+      pnl_sol:           Math.round(pnlSolVal * 10000) / 10000,
       pnl_pct:           Math.round(computedPnlPct * 100) / 100,
+      pnl_pct_sol:       pnlPctSol,                                // SOL-denominated, fee-inclusive
+      deposit_sol:       depositSol || null,
       current_value_usd: Math.round(currentValueUsd * 100) / 100,
       unclaimed_fee_usd: Math.round(unclaimedUsd * 100) / 100,
       all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
