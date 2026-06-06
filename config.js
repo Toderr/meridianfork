@@ -71,6 +71,12 @@ export const config = {
     binsBelow: u.binsBelow ?? 69,
     forceSolSingleSided: u.forceSolSingleSided ?? false,
     strategyMatrixEnabled: u.strategyMatrixEnabled ?? true,
+    blendedDeploy: {
+      enabled:           u.blendedDeploy?.enabled           ?? false,
+      primaryStrategy:   u.blendedDeploy?.primaryStrategy   ?? "spot",
+      primaryPct:        u.blendedDeploy?.primaryPct        ?? 0.75,
+      secondaryStrategy: u.blendedDeploy?.secondaryStrategy ?? "bid_ask",
+    },
     strategyRules: u.strategyRules ?? {
       highVol: "bid_ask",   // volatility >= 5
       medVol:  "bid_ask",   // volatility 2-5
@@ -251,6 +257,7 @@ export function reloadConfig() {
     if (f.forceSolSingleSided != null) st.forceSolSingleSided = f.forceSolSingleSided;
     if (f.strategyMatrixEnabled != null) st.strategyMatrixEnabled = f.strategyMatrixEnabled;
     if (f.strategyRules != null) st.strategyRules = f.strategyRules;
+    if (f.blendedDeploy != null) st.blendedDeploy = { ...st.blendedDeploy, ...f.blendedDeploy };
 
     const le = config.learning;
     if (f.freezeLessons != null) le.freezeLessons = f.freezeLessons;

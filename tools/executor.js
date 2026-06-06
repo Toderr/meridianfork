@@ -448,6 +448,18 @@ export async function executeTool(name, args) {
         }
       }
 
+      // ── Blended deploy: inject secondary strategy params from config ────
+      const blendCfg = config.strategy.blendedDeploy;
+      if (blendCfg?.enabled) {
+        args = {
+          ...args,
+          strategy: blendCfg.primaryStrategy ?? "spot",
+          blend_secondary_strategy: blendCfg.secondaryStrategy ?? "bid_ask",
+          blend_secondary_pct: 1 - (blendCfg.primaryPct ?? 0.75),
+        };
+        log("executor", `Blended deploy: ${args.strategy} ${Math.round((blendCfg.primaryPct ?? 0.75) * 100)}% + ${args.blend_secondary_strategy} ${Math.round((1 - (blendCfg.primaryPct ?? 0.75)) * 100)}%`);
+      }
+
       // Always compute initial_value_usd from wallet sol_price × deposit size.
       // LLM-provided values have been observed to hallucinate (e.g. 137.44 where
       // 2 SOL × $85.90 = $171.80), which poisons tracked state and every downstream
