@@ -8,7 +8,7 @@ import { getWalletBalances, sweepDustTokens } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
-import { evolveThresholds, getPerformanceSummary, addLesson } from "./lessons.js";
+import { evolveThresholds, getPerformanceSummary, addLesson, areLessonsFrozen, setLessonsFrozen } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyGasLow, notifyMaxPositions, notifyInstructionClose, isEnabled as telegramEnabled } from "./telegram.js";
 import { startJournalPolling, stopJournalPolling, startJournalCrons } from "./telegram-journal.js";
@@ -101,6 +101,33 @@ function buildPrompt() {
   const mgmt = formatCountdown(nextManagementCountdown());
   const scrn = formatCountdown(nextRunIn(timers.screeningLastRun, config.schedule.screeningIntervalMin));
   return `[manage: ${mgmt} | screen: ${scrn}]\n> `;
+}
+
+async function handleFreezeCommand(text, reply) {
+  const parts = String(text || "").trim().split(/\s+/);
+  const cmd = (parts[0] || "").split("@")[0].toLowerCase();
+  if (cmd !== "/freeze") return false;
+
+  const arg = (parts[1] || "on").toLowerCase();
+  if (["status", "?"].includes(arg)) {
+    await reply(`🧊 Lessons freeze: ${areLessonsFrozen() ? "ON" : "OFF"}\n\n/freeze or /freeze on — stop adding new lessons\n/freeze off — allow new lessons again\n/freeze status — show status`);
+    return true;
+  }
+
+  if (["off", "false", "0", "unlock", "unfreeze"].includes(arg)) {
+    setLessonsFrozen(false, "telegram /freeze off");
+    await reply("✅ Lessons freeze OFF — Meridian may add new lessons again.");
+    return true;
+  }
+
+  if (["on", "true", "1", "lock", "freeze"].includes(arg)) {
+    setLessonsFrozen(true, "telegram /freeze");
+    await reply("🧊 Lessons freeze ON — performance/journal still record, but no new lessons will be added.");
+    return true;
+  }
+
+  await reply("Usage: /freeze [on|off|status]");
+  return true;
 }
 
 // ═══════════════════════════════════════════
@@ -1093,6 +1120,8 @@ if (isTTY) {
   startJournalCrons();
 
   startPolling(async (text) => {
+    if (await handleFreezeCommand(text, (msg) => sendMessage(msg).catch(() => {}))) return;
+
     if (busy) {
       sendMessage("Agent is busy with another chat — try again in a moment.").catch(() => {});
       return;
@@ -1200,6 +1229,7 @@ Commands:
   /thresholds    Show current screening thresholds + performance stats
   /evolve        Manually trigger threshold evolution from performance data
   /review        Trigger Claude lesson review (analyzes last 20 closes)
+  /freeze [on|off|status]  Freeze/unfreeze lesson creation
   /claude <q>    Ask Claude anything about positions, lessons, journal
   /reconcile     Re-sync local state.json against on-chain positions
   /stop          Shut down
@@ -1253,6 +1283,11 @@ Commands:
     }
 
     // ── Slash commands ───────────────────────
+    if (await handleFreezeCommand(input, async (msg) => {
+      console.log(`\n${msg}\n`);
+      if (telegramEnabled()) sendMessage(msg).catch(() => {});
+    })) { rl.prompt(); return; }
+
     if (input === "/stop") { await shutdown("user command"); return; }
 
     if (input === "/status") {
@@ -1453,6 +1488,8 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
 
   // Telegram chat handler (non-TTY / VPS mode)
   startPolling(async (text) => {
+    if (await handleFreezeCommand(text, (msg) => sendMessage(msg).catch(() => {}))) return;
+
     if (busy) {
       sendMessage("Agent is busy with another chat — try again in a moment.").catch(() => {});
       return;

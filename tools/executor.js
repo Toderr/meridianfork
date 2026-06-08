@@ -390,8 +390,8 @@ export async function executeTool(name, args) {
       } else if (name === "close_position") {
         _stats.positionsClosed++;
         const _tracked = getTrackedPosition(args.position_address);
-        const _pair = _tracked?.pool_name || args.position_address?.slice(0, 8);
-        notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.close_reason }).catch(() => {});
+        const _pair = _tracked?.pool_name || result.pool_name || args.position_address?.slice(0, 8);
+        notifyClose({ pair: _pair, strategy: _tracked?.strategy, pnlUsd: result.pnl_usd ?? 0, pnlSol: result.pnl_sol ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, solPrice: result.sol_price ?? 0, reason: args.close_reason }).catch(() => {});
         appendDecision({
           type: "close",
           actor: "AGENT",

@@ -55,7 +55,6 @@ export async function generateReport(period = "daily") {
   const closes = getJournalEntries({ from: fromISO, to: toISO, type: "close" });
   const claims = getJournalEntries({ from: fromISO, to: toISO, type: "claim" });
 
-  // Compute period metrics
   const positions_opened = opens.length;
   const positions_closed = closes.length;
 
@@ -64,22 +63,20 @@ export async function generateReport(period = "daily") {
   const total_fees_usd = claims.reduce((s, e) => s + (e.fees_usd || 0), 0)
     + closes.reduce((s, e) => s + (e.fees_earned_usd || 0), 0);
 
-  // Weighted PnL% by initial value
   const totalInitial = closes.reduce((s, e) => s + (e.initial_value_usd || 0), 0);
   const total_pnl_pct = totalInitial > 0
     ? (total_pnl_usd / totalInitial) * 100
     : 0;
 
-  const wins   = closes.filter(e => (e.pnl_usd || 0) > 0);
-  const losses = closes.filter(e => (e.pnl_usd || 0) <= 0);
+  const wins   = closes.filter(e => (e.pnl_usd ?? 0) >= 0);
+  const losses = closes.filter(e => (e.pnl_usd ?? 0) <  0);
   const win_rate = closes.length > 0 ? Math.round((wins.length / closes.length) * 100) : null;
 
-  // Avg profit % and avg loss %
   const avg_profit_pct = wins.length > 0
-    ? wins.reduce((s, e) => s + (e.pnl_pct || 0), 0) / wins.length
+    ? wins.reduce((s, e) => s + (e.pnl_pct ?? 0), 0) / wins.length
     : null;
   const avg_loss_pct = losses.length > 0
-    ? losses.reduce((s, e) => s + (e.pnl_pct || 0), 0) / losses.length
+    ? losses.reduce((s, e) => s + (e.pnl_pct ?? 0), 0) / losses.length
     : null;
 
   // Lessons from both regular + experiment files, filtered by created_at
@@ -94,7 +91,6 @@ export async function generateReport(period = "daily") {
   const allPositions = Object.values(state.positions || {});
   const openPositions = allPositions.filter(p => !p.closed);
 
-  // All-time PnL from all closes in journal
   const allCloses = getJournalEntries({ type: "close" });
   const allTimePnlUsd = allCloses.reduce((s, e) => s + (e.pnl_usd || 0), 0);
 
@@ -118,6 +114,9 @@ export async function generateReport(period = "daily") {
   lines.push(`💰 Net PnL: ${pnlSign}$${total_pnl_usd.toFixed(2)}${solPart}`);
   lines.push(`📈 PnL %: ${pnlSign}${total_pnl_pct.toFixed(2)}%`);
   lines.push(`💎 Fees Earned: $${total_fees_usd.toFixed(2)}`);
+  const total_combined_usd = total_pnl_usd + total_fees_usd;
+  const combinedSign = total_combined_usd >= 0 ? "+" : "";
+  lines.push(`💼 Total (PnL + Fees): ${combinedSign}$${total_combined_usd.toFixed(2)}`);
   lines.push(win_rate !== null
     ? `🎯 Win Rate: ${win_rate}% (${wins.length}/${closes.length})`
     : `🎯 Win Rate: N/A`);
@@ -125,23 +124,21 @@ export async function generateReport(period = "daily") {
   if (avg_loss_pct !== null)   lines.push(`📉 Avg Loss: ${avg_loss_pct.toFixed(2)}%`);
   lines.push("");
 
-  // Weekly/monthly extras
   if (period === "weekly" || period === "monthly") {
     if (closes.length > 0) {
-      const bestTrade  = closes.reduce((best, e) => (e.pnl_usd || 0) > (best.pnl_usd || 0) ? e : best, closes[0]);
-      const worstTrade = closes.reduce((worst, e) => (e.pnl_usd || 0) < (worst.pnl_usd || 0) ? e : worst, closes[0]);
+      const best  = closes.reduce((b, e) => (e.pnl_usd ?? 0) > (b.pnl_usd ?? 0) ? e : b, closes[0]);
+      const worst = closes.reduce((w, e) => (e.pnl_usd ?? 0) < (w.pnl_usd ?? 0) ? e : w, closes[0]);
 
-      lines.push(`*Best Trade:* ${bestTrade.pool_name || "?"} +$${(bestTrade.pnl_usd || 0).toFixed(2)} (${(bestTrade.pnl_pct || 0).toFixed(1)}%)`);
-      lines.push(`*Worst Trade:* ${worstTrade.pool_name || "?"} $${(worstTrade.pnl_usd || 0).toFixed(2)} (${(worstTrade.pnl_pct || 0).toFixed(1)}%)`);
+      lines.push(`*Best Trade:* ${best.pool_name || "?"} +$${(best.pnl_usd ?? 0).toFixed(2)} (${(best.pnl_pct ?? 0).toFixed(1)}%)`);
+      lines.push(`*Worst Trade:* ${worst.pool_name || "?"} $${(worst.pnl_usd ?? 0).toFixed(2)} (${(worst.pnl_pct ?? 0).toFixed(1)}%)`);
       lines.push("");
 
-      // Strategy breakdown
       const strategies = {};
       for (const e of closes) {
         const s = e.strategy || "unknown";
         if (!strategies[s]) strategies[s] = { wins: 0, total: 0 };
         strategies[s].total++;
-        if ((e.pnl_usd || 0) > 0) strategies[s].wins++;
+        if ((e.pnl_usd ?? 0) >= 0) strategies[s].wins++;
       }
       if (Object.keys(strategies).length > 0) {
         lines.push(`*Strategy Breakdown:*`);
@@ -152,16 +149,15 @@ export async function generateReport(period = "daily") {
         lines.push("");
       }
 
-      // A/B variant breakdown (weekly/monthly only)
-      const closesWithVariant = closes.filter(e => e.variant);
-      if (closesWithVariant.length > 0) {
+      const withVariant = closes.filter(e => e.variant);
+      if (withVariant.length > 0) {
         const variants = {};
-        for (const e of closesWithVariant) {
+        for (const e of withVariant) {
           const v = e.variant;
           if (!variants[v]) variants[v] = { wins: 0, total: 0, pnl: 0 };
           variants[v].total++;
-          if ((e.pnl_usd || 0) > 0) variants[v].wins++;
-          variants[v].pnl += (e.pnl_usd || 0);
+          if ((e.pnl_usd ?? 0) >= 0) variants[v].wins++;
+          variants[v].pnl += (e.pnl_usd ?? 0);
         }
         lines.push(`*A/B Variant Results:*`);
         for (const [v, stats] of Object.entries(variants)) {
@@ -171,10 +167,27 @@ export async function generateReport(period = "daily") {
         lines.push("");
       }
 
-      // Average hold time
       const avgHold = closes.reduce((s, e) => s + (e.minutes_held || 0), 0) / closes.length;
       lines.push(`⏱ Avg Hold Time: ${Math.round(avgHold)}m`);
       lines.push("");
+
+      let maxConsecutiveLosses = 0, currentStreak = 0;
+      let maxDrawdownUsd = 0, runningPnl = 0, peakPnl = 0;
+      for (const e of closes) {
+        const pnl = e.pnl_usd ?? 0;
+        runningPnl += pnl;
+        if (runningPnl > peakPnl) peakPnl = runningPnl;
+        const dd = peakPnl - runningPnl;
+        if (dd > maxDrawdownUsd) maxDrawdownUsd = dd;
+        if (pnl < 0) { currentStreak++; maxConsecutiveLosses = Math.max(maxConsecutiveLosses, currentStreak); }
+        else currentStreak = 0;
+      }
+      if (maxConsecutiveLosses > 0 || maxDrawdownUsd > 0) {
+        lines.push(`*Risk:*`);
+        if (maxDrawdownUsd > 0) lines.push(`📉 Max Drawdown: -$${maxDrawdownUsd.toFixed(2)}`);
+        if (maxConsecutiveLosses > 0) lines.push(`🔻 Max Consecutive Losses: ${maxConsecutiveLosses}`);
+        lines.push("");
+      }
     }
   }
 

@@ -54,6 +54,37 @@ function loadAll() {
 function load() { return loadRegular(); }
 function save(data) { saveRegular(data); }
 
+// ─── Lessons Freeze Switch ─────────────────────────────────────
+// Persisted in user-config.json so it survives restarts. When enabled,
+// performance/journal data is still recorded, but no new lessons are added.
+function loadUserConfig() {
+  try {
+    return fs.existsSync(USER_CONFIG_PATH)
+      ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUserConfig(cfg) {
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+}
+
+export function areLessonsFrozen() {
+  return !!loadUserConfig().lessonsFrozen;
+}
+
+export function setLessonsFrozen(frozen, reason = "manual") {
+  const cfg = loadUserConfig();
+  cfg.lessonsFrozen = !!frozen;
+  cfg._lessonsFrozenUpdatedAt = new Date().toISOString();
+  cfg._lessonsFrozenReason = reason;
+  saveUserConfig(cfg);
+  log("lessons", `Lessons ${cfg.lessonsFrozen ? "frozen" : "unfrozen"} (${reason})`);
+  return { frozen: cfg.lessonsFrozen, updated_at: cfg._lessonsFrozenUpdatedAt, reason };
+}
+
 // ─── One-time migration: split experiment lessons into own file ──
 (function migrateExperimentLessons() {
   if (fs.existsSync(EXPERIMENT_LESSONS_FILE)) return;
@@ -140,29 +171,35 @@ export async function recordPerformance(perf) {
 
   data.performance.push(entry);
 
-  // Derive and store a lesson — route to correct file by source
-  const lesson = derivLesson(entry);
-  if (lesson) {
-    const isExp = lesson.source === "experiment";
-    const targetData = isExp ? loadExperiment() : data;
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const duplicate = lesson.pool
-      ? targetData.lessons.find(
-          (l) =>
-            l.outcome === lesson.outcome &&
-            l.pool === lesson.pool &&
-            l.created_at >= sevenDaysAgo
-        )
-      : null;
+  // Derive and store a lesson — route to correct file by source.
+  // If lessons are frozen, still keep performance/journal data but do not mutate lessons.
+  const lessonsFrozen = areLessonsFrozen();
+  if (lessonsFrozen) {
+    log("lessons", "Lessons frozen — performance recorded, no new derived lesson");
+  } else {
+    const lesson = derivLesson(entry);
+    if (lesson) {
+      const isExp = lesson.source === "experiment";
+      const targetData = isExp ? loadExperiment() : data;
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const duplicate = lesson.pool
+        ? targetData.lessons.find(
+            (l) =>
+              l.outcome === lesson.outcome &&
+              l.pool === lesson.pool &&
+              l.created_at >= sevenDaysAgo
+          )
+        : null;
 
-    if (duplicate) {
-      duplicate.rule = lesson.rule;
-      log("lessons", `Updated existing lesson (dedup): ${lesson.rule}`);
-    } else {
-      targetData.lessons.push(lesson);
-      log("lessons", `New lesson [${lesson.source}]: ${lesson.rule}`);
+      if (duplicate) {
+        duplicate.rule = lesson.rule;
+        log("lessons", `Updated existing lesson (dedup): ${lesson.rule}`);
+      } else {
+        targetData.lessons.push(lesson);
+        log("lessons", `New lesson [${lesson.source}]: ${lesson.rule}`);
+      }
+      if (isExp) saveExperiment(targetData);
     }
-    if (isExp) saveExperiment(targetData);
   }
 
   saveRegular(data);
@@ -194,10 +231,15 @@ export async function recordPerformance(perf) {
       log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
     }
 
-    // Claude lesson updater — fire-and-forget, runs after evolveThresholds
-    import("./scripts/claude-lesson-updater.js")
-      .then(m => m.claudeUpdateLessons())
-      .catch(e => log("claude_review_error", `claudeUpdateLessons failed: ${e.message}`));
+    // Claude lesson updater — fire-and-forget, runs after evolveThresholds.
+    // Skip while frozen because it can create new lesson records.
+    if (areLessonsFrozen()) {
+      log("lessons", "Lessons frozen — skipped Claude lesson updater");
+    } else {
+      import("./scripts/claude-lesson-updater.js")
+        .then(m => m.claudeUpdateLessons())
+        .catch(e => log("claude_review_error", `claudeUpdateLessons failed: ${e.message}`));
+    }
   }
 }
 
@@ -634,17 +676,21 @@ export function evolveThresholds(perfData, config) {
     if (telegramEnabled()) notifyThresholdEvolved({ field: "positionSizePct", oldVal, newVal: changes.positionSizePct, reason: rationale.positionSizePct }).catch(() => {});
   }
 
-  // Log a lesson summarizing the evolution
-  const data = load();
-  data.lessons.push({
-    id: Date.now(),
-    rule: `[AUTO-EVOLVED @ ${perfData.length} positions] ${Object.entries(changes).map(([k, v]) => `${k}=${v}`).join(", ")} — ${Object.values(rationale).join("; ")}`,
-    tags: ["evolution", "config_change"],
-    outcome: "manual",
-    category: "general",
-    created_at: new Date().toISOString(),
-  });
-  save(data);
+  // Log a lesson summarizing the evolution unless lessons are frozen.
+  if (areLessonsFrozen()) {
+    log("lessons", "Lessons frozen — skipped auto-evolution lesson summary");
+  } else {
+    const data = load();
+    data.lessons.push({
+      id: Date.now(),
+      rule: `[AUTO-EVOLVED @ ${perfData.length} positions] ${Object.entries(changes).map(([k, v]) => `${k}=${v}`).join(", ")} — ${Object.values(rationale).join("; ")}`,
+      tags: ["evolution", "config_change"],
+      outcome: "manual",
+      category: "general",
+      created_at: new Date().toISOString(),
+    });
+    save(data);
+  }
 
   return { changes, rationale };
 }
@@ -691,6 +737,10 @@ function nudge(current, target, maxChange) {
  * @param {string}   opts.role   - "SCREENER" | "MANAGER" | "GENERAL" | null (all roles)
  */
 export function addLesson(rule, tags = [], { pinned = false, role = null, category = null, source = "regular" } = {}) {
+  if (areLessonsFrozen()) {
+    log("lessons", `Lessons frozen — skipped manual lesson: ${String(rule || "").slice(0, 80)}`);
+    return { skipped: true, frozen: true };
+  }
   const src = source || "regular";
   const lesson = {
     id: Date.now(),

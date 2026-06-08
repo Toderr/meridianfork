@@ -101,17 +101,36 @@ function fmtBins(bin_range, bin_step) {
   return `${bin_range} bins`;
 }
 
+function fmtShape(bin_range) {
+  if (!bin_range || typeof bin_range !== "object") return null;
+  const below = bin_range.bins_below ?? 0;
+  const above = bin_range.bins_above ?? 0;
+  if (below + above === 0) return null;
+  return (below === 0 || above === 0) ? "single-sided" : "double-sided";
+}
+
 // ─── Notification ────────────────────────────────────────────────
-export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, minutes_held, close_reason }) {
+export async function notifyJournalClose({ pool_name, strategy, bin_range, bin_step, amount_sol, initial_value_usd, pnl_usd, pnl_sol, pnl_pct, fees_earned_usd = 0, sol_price = 0, minutes_held, close_reason }) {
   if (!TOKEN || !chatId) return;
-  const su = (pnl_usd ?? 0) >= 0 ? "+" : "";
-  const ss = (pnl_sol ?? 0) >= 0 ? "+" : "";
-  const sp = (pnl_pct ?? 0) >= 0 ? "+" : "";
-  const stratLine = [strategy, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
+  const usdVal = +pnl_usd || 0;
+  const solVal = +pnl_sol || 0;
+  const pctVal = +pnl_pct || 0;
+  const feesVal = +fees_earned_usd || 0;
+  const su = usdVal >= 0 ? "+" : "";
+  const ss = solVal >= 0 ? "+" : "";
+  const sp = pctVal >= 0 ? "+" : "";
+  const shape = fmtShape(bin_range);
+  const stratHead = [strategy, shape].filter(Boolean).join(" · ");
+  const stratLine = [stratHead, fmtBins(bin_range, bin_step)].filter(Boolean).join(" | ");
   const usdPart = (initial_value_usd > 0) ? ` ($${(+initial_value_usd).toFixed(2)})` : "";
+  const netVal = usdVal + feesVal;
+  const sn = netVal >= 0 ? "+" : "";
   await sendMessage(
     `📍 ${pool_name}\n` +
-    `💰 ${sp}${(pnl_pct ?? 0).toFixed(2)}% | ${su}$${(pnl_usd ?? 0).toFixed(2)} | ${ss}${(pnl_sol ?? 0).toFixed(4)} SOL\n\n` +
+    (feesVal > 0 ? `💼 Total (PnL + Fees): ${sn}$${netVal.toFixed(2)}\n` : ``) +
+    `💰 ${sp}${pctVal.toFixed(2)}% | ${su}$${usdVal.toFixed(2)} | ${ss}${solVal.toFixed(4)} SOL\n` +
+    (feesVal > 0 ? `🏦 Fees Earned: $${feesVal.toFixed(2)}\n` : ``) +
+    `\n` +
     (stratLine ? `📊 ${stratLine}\n` : ``) +
     `💵 Invested: ${(amount_sol ?? 0).toFixed(4)} SOL${usdPart}\n` +
     (close_reason ? `💡 ${close_reason}\n` : ``) +
@@ -151,7 +170,7 @@ export async function notifyJournalExperimentConverged({ poolName, experimentId,
   );
 }
 
-export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, rationale = "" }) {
+export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, rationale = "", autoresearchData = null }) {
   if (!TOKEN || !chatId) return;
   const parts = ["🧠 CLAUDE REVIEW"];
 
@@ -171,29 +190,147 @@ export async function notifyClaudeReview({ newLessons = [], appliedConfig = {}, 
 
   if (rationale) parts.push(`\n💡 ${rationale}`);
 
+  if (autoresearchData) {
+    const m = autoresearchData.metrics || {};
+    parts.push(`\n📊 Backtest: ${autoresearchData.poolName || autoresearchData.pool} (${autoresearchData.horizon})`);
+    if (m.net_pnl_pct != null) parts.push(`• Net PnL: ${m.net_pnl_pct}%`);
+    if (m.win_rate_pct != null) parts.push(`• Win rate: ${m.win_rate_pct}%`);
+    if (m.time_in_range_pct != null) parts.push(`• Time in range: ${m.time_in_range_pct}%`);
+    if (m.net_apr != null) parts.push(`• APR: ${m.net_apr}%`);
+  }
+
   await sendMessage(parts.join("\n"));
+}
+
+// ─── Config change notification ─────────────────────────────────
+
+/**
+ * Notify journal bot when screening/config parameters are changed by the agent.
+ * @param {Object} applied - key→value of applied changes
+ * @param {Object} before  - key→previousValue
+ * @param {string} reason  - why the change was made
+ * @param {string} source  - who made the change ("agent", "claude-review", "user")
+ */
+export async function notifyConfigChange({ applied = {}, before = {}, reason = "", source = "agent" }) {
+  if (!TOKEN || !chatId) return;
+  const keys = Object.keys(applied);
+  if (keys.length === 0) return;
+  const lines = [`⚙️ CONFIG CHANGED (${source})`];
+  for (const k of keys) {
+    const prev = before[k] !== undefined ? JSON.stringify(before[k]) : "?";
+    lines.push(`• ${k}: ${prev} → ${JSON.stringify(applied[k])}`);
+  }
+  if (reason) lines.push(`\n💡 ${reason}`);
+  await sendMessage(lines.join("\n"));
+}
+
+// ─── Error notification (throttled: same source once per 15 min) ─
+const _errorNotifiedAt = new Map();
+
+export async function notifyError(source, message) {
+  if (!TOKEN || !chatId) return;
+  const now = Date.now();
+  const last = _errorNotifiedAt.get(source) || 0;
+  if (now - last < 15 * 60_000) return; // 15 min throttle per source
+  _errorNotifiedAt.set(source, now);
+  await sendMessage(
+    `🚨 ERROR — ${source}\n\n${String(message).slice(0, 3800)}`
+  );
+}
+
+// ─── SL slippage alert (throttled: once per 30 min, global) ─────
+// 2026-04-23 big-loss audit: 43% of SL closes realized past trigger, several
+// by >5% (gap-through on meme dumps). Alert fires when realized is >3% worse
+// than the SL trigger value parsed from close_reason.
+let _slSlippageNotifiedAt = 0;
+
+export async function notifySlSlippage({ pair, triggerPct, realizedPct, feesUsd, closeReason }) {
+  if (!TOKEN || !chatId) return;
+  const now = Date.now();
+  if (now - _slSlippageNotifiedAt < 30 * 60_000) return;
+  _slSlippageNotifiedAt = now;
+  const slippage = (triggerPct - realizedPct).toFixed(2);
+  await sendMessage(
+    `🔴 SL SLIPPAGE — ${pair || "?"}\n\n` +
+    `Trigger: ${triggerPct.toFixed(2)}%\n` +
+    `Realized: ${realizedPct.toFixed(2)}%\n` +
+    `Slippage: ${slippage}pp past trigger\n` +
+    `Fees: $${(feesUsd ?? 0).toFixed(2)}\n\n` +
+    `Reason: ${String(closeReason || "").slice(0, 200)}`
+  );
+}
+
+// ─── RPC limit notice (throttled: once per hour) ─────────────────
+let _rpcLimitNotifiedAt = 0;
+
+export async function notifyRpcLimit() {
+  if (!TOKEN || !chatId) return;
+  if (Date.now() - _rpcLimitNotifiedAt < 60 * 60_000) return; // 1h throttle
+  _rpcLimitNotifiedAt = Date.now();
+  await sendMessage(
+    `⚠️ HELIUS RATE LIMIT\n\n` +
+    `Wallet balance API returning 429.\n` +
+    `Token balances unavailable — using RPC fallback (SOL only).\n` +
+    `Post-close swaps may use direct RPC token lookup.`
+  );
+}
+
+// ─── Helius key rotation notices ─────────────────────────────────
+// rotated: throttled 5 min (noisy if keys keep flipping)
+// allFailed: throttled 15 min (more urgent, fire sooner)
+let _heliusRotatedNotifiedAt = 0;
+let _heliusAllFailedNotifiedAt = 0;
+
+export async function notifyHeliusRotated({ fromKey, toKey, totalKeys }) {
+  if (!TOKEN || !chatId) return;
+  if (Date.now() - _heliusRotatedNotifiedAt < 5 * 60_000) return;
+  _heliusRotatedNotifiedAt = Date.now();
+  await sendMessage(
+    `🔄 HELIUS KEY ROTATED\n\n` +
+    `Key ${fromKey} → Key ${toKey} (${totalKeys} keys available)\n` +
+    `Reason: key ${fromKey} hit 429 rate limit.`
+  );
+}
+
+export async function notifyHeliusAllFailed({ totalKeys, fallback }) {
+  if (!TOKEN || !chatId) return;
+  if (Date.now() - _heliusAllFailedNotifiedAt < 15 * 60_000) return;
+  _heliusAllFailedNotifiedAt = Date.now();
+  const fallbackNote = fallback === "rpc"
+    ? "Using RPC fallback — SOL balance only, token data unavailable."
+    : "No fallback available.";
+  await sendMessage(
+    `🚨 HELIUS ALL KEYS RATE LIMITED\n\n` +
+    `All ${totalKeys} Helius API key(s) returned 429.\n` +
+    `${fallbackNote}\n\n` +
+    `Consider upgrading Helius plan or adding more API keys.`
+  );
 }
 
 // ─── Shared report builder ───────────────────────────────────────
 function buildSummaryReport(closes, header) {
   if (!closes.length) return `${header}\n\nNo closed positions.`;
 
-  const wins   = closes.filter(e => (e.pnl_pct ?? 0) >= 0);
-  const losses = closes.filter(e => (e.pnl_pct ?? 0) < 0);
-  const totalUsd = closes.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
-  const totalSol = closes.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
-  const totalInvested = closes.reduce((s, e) => s + (e.initial_value_usd ?? 0), 0);
+  const rows = closes;
+  const wins   = rows.filter(e => (e.pnl_usd ?? 0) >= 0);
+  const losses = rows.filter(e => (e.pnl_usd ?? 0) <  0);
+  const totalUsd = rows.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
+  const totalSol = rows.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+  const totalFeesUsd = rows.reduce((s, e) => s + (e.fees_earned_usd ?? 0), 0);
+  const totalNetUsd = totalUsd + totalFeesUsd;
+  const totalInvested = rows.reduce((s, e) => s + (e.initial_value_usd ?? 0), 0);
   const totalPct = totalInvested > 0 ? (totalUsd / totalInvested) * 100 : 0;
-  const winRate = Math.round((wins.length / closes.length) * 100);
+  const winRate = Math.round((wins.length / rows.length) * 100);
   const avgProfit = wins.length  > 0 ? wins.reduce((s, e)   => s + (e.pnl_pct ?? 0), 0) / wins.length   : 0;
   const avgLoss   = losses.length > 0 ? losses.reduce((s, e) => s + (e.pnl_pct ?? 0), 0) / losses.length : 0;
 
   const suT = totalUsd >= 0 ? "+" : "";
   const ssT = totalSol >= 0 ? "+" : "";
   const spT = totalPct >= 0 ? "+" : "";
+  const snT = totalNetUsd >= 0 ? "+" : "";
 
   const stratMap = {};
-  for (const e of closes) {
+  for (const e of rows) {
     const s = e.strategy ?? "unknown";
     if (!stratMap[s]) stratMap[s] = [];
     stratMap[s].push(e.pnl_pct ?? 0);
@@ -209,8 +346,10 @@ function buildSummaryReport(closes, header) {
 
   return [
     `${header}\n`,
-    `📊 ${closes.length} trades | ${wins.length}W ${losses.length}L`,
+    `📊 ${rows.length} trades | ${wins.length}W ${losses.length}L`,
     `💰 PnL: ${suT}$${totalUsd.toFixed(2)} | ${ssT}${totalSol.toFixed(4)} SOL | ${spT}${totalPct.toFixed(2)}%`,
+    `🏦 Fees: $${totalFeesUsd.toFixed(2)}`,
+    `💼 Total (PnL + Fees): ${snT}$${totalNetUsd.toFixed(2)}`,
     `📈 Win rate: ${winRate}%`,
     `✅ Avg profit: ${avgProfit >= 0 ? "+" : ""}${avgProfit.toFixed(2)}%`,
     `❌ Avg loss: ${avgLoss.toFixed(2)}%`,
@@ -225,9 +364,11 @@ function fmtEntry(e) {
     return `📗 [${t}] OPEN ${e.pool_name} — ${(e.amount_sol ?? 0).toFixed(4)} SOL`;
   }
   if (e.type === "close") {
-    const sp = (e.pnl_pct ?? 0) >= 0 ? "+" : "";
-    const su = (e.pnl_usd ?? 0) >= 0 ? "+" : "";
-    return `📕 [${t}] CLOSE ${e.pool_name} — ${su}$${(e.pnl_usd ?? 0).toFixed(2)} (${sp}${(e.pnl_pct ?? 0).toFixed(2)}%) ${e.close_reason ? `· ${e.close_reason}` : ""}`;
+    const pct = e.pnl_pct ?? 0;
+    const usd = e.pnl_usd ?? 0;
+    const sp = pct >= 0 ? "+" : "";
+    const su = usd >= 0 ? "+" : "";
+    return `📕 [${t}] CLOSE ${e.pool_name} — ${su}$${usd.toFixed(2)} (${sp}${pct.toFixed(2)}%) ${e.close_reason ? `· ${e.close_reason}` : ""}`;
   }
   if (e.type === "claim") {
     return `💸 [${t}] CLAIM ${e.pool_name} — $${(e.fees_usd ?? 0).toFixed(2)}`;
@@ -262,16 +403,21 @@ async function handleCommand(text) {
   if (cmd === "/stats") {
     const closes = getJournalEntries({ type: "close" });
     if (!closes.length) return sendMessage("No closed positions yet.");
-    const wins = closes.filter(e => (e.pnl_pct ?? 0) >= 0).length;
+    const wins = closes.filter(e => (e.pnl_usd ?? 0) >= 0).length;
     const totalPnlUsd = closes.reduce((s, e) => s + (e.pnl_usd ?? 0), 0);
     const totalPnlSol = closes.reduce((s, e) => s + (e.pnl_sol ?? 0), 0);
+    const totalFeesUsd = closes.reduce((s, e) => s + (e.fees_earned_usd ?? 0), 0);
+    const totalNetUsd = totalPnlUsd + totalFeesUsd;
     const winRate = ((wins / closes.length) * 100).toFixed(0);
     const su = totalPnlUsd >= 0 ? "+" : "";
     const ss = totalPnlSol >= 0 ? "+" : "";
+    const sn = totalNetUsd >= 0 ? "+" : "";
     return sendMessage(
       `📊 Journal Stats\n\n` +
       `Trades: ${closes.length} | Win rate: ${winRate}%\n` +
-      `Total PnL: ${su}$${totalPnlUsd.toFixed(2)} | ${ss}${totalPnlSol.toFixed(4)} SOL`
+      `Total PnL: ${su}$${totalPnlUsd.toFixed(2)} | ${ss}${totalPnlSol.toFixed(4)} SOL\n` +
+      `Fees: $${totalFeesUsd.toFixed(2)}\n` +
+      `Total (PnL + Fees): ${sn}$${totalNetUsd.toFixed(2)}`
     );
   }
 

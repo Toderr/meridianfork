@@ -364,11 +364,12 @@ export async function getPositionPnl({ pool_address, position_address }) {
 
     const unclaimedUsd    = parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0);
     const currentValueUsd = parseFloat(p.unrealizedPnl?.balances || 0);
-    const pnlUsdRaw       = parseFloat(p.pnlUsd ?? 0);
-    const initialValueUsd = currentValueUsd - pnlUsdRaw;
-    const computedPnlPct  = initialValueUsd > 0 ? (pnlUsdRaw + unclaimedUsd) / initialValueUsd * 100 : 0;
+    const pnlUsdTotal     = parseFloat(p.pnlUsd ?? 0);   // fee-inclusive total PnL from Meteora datapi
+    const pnlUsdPrice     = pnlUsdTotal - unclaimedUsd;   // price-only; fees are reported separately
+    const initialValueUsd = currentValueUsd - pnlUsdPrice; // initial = current_value - price_change
+    const computedPnlPct  = initialValueUsd > 0 ? pnlUsdPrice / initialValueUsd * 100 : 0;
     return {
-      pnl_usd:           Math.round(pnlUsdRaw * 100) / 100,
+      pnl_usd:           Math.round(pnlUsdPrice * 100) / 100,
       pnl_sol:           Math.round((parseFloat(p.pnlSol ?? 0)) * 10000) / 10000,
       pnl_pct:           Math.round(computedPnlPct * 100) / 100,
       current_value_usd: Math.round(currentValueUsd * 100) / 100,
@@ -739,11 +740,13 @@ export async function closePosition({ position_address, close_reason }) {
 
       _positionsCacheAt = 0; // invalidate cache
       const initialUsd = tracked.initial_value_usd || 0;
+      const solPrice = freshPnl?.sol_price || (await getWalletBalances().catch(() => null))?.sol_price || 0;
+      const poolName = tracked.pool_name || poolAddress.slice(0, 8);
 
       await recordPerformance({
         position: position_address,
         pool: poolAddress,
-        pool_name: tracked.pool_name || poolAddress.slice(0, 8),
+        pool_name: poolName,
         strategy: tracked.strategy,
         bin_range: tracked.bin_range,
         bin_step: tracked.bin_step || null,
@@ -757,16 +760,17 @@ export async function closePosition({ position_address, close_reason }) {
         pnl_usd: pnlUsd,       // Meteora's authoritative value — avoids formula error when initial_value_usd is missing
         pnl_pct: pnlPct,       // pass API value so journal matches what agent saw
         pnl_sol: pnlSolNative,
+        sol_price: solPrice,
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
         close_reason: close_reason || "agent decision",
         variant: tracked.variant || null,
       });
 
-      return { success: true, position: position_address, pool: poolAddress, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, base_mint: pool.lbPair.tokenXMint.toString() };
+      return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, fees_earned_usd: feesUsd, sol_price: solPrice, base_mint: pool.lbPair.tokenXMint.toString() };
     }
 
-    return { success: true, position: position_address, pool: poolAddress, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };
+    return { success: true, position: position_address, pool: poolAddress, pool_name: poolAddress.slice(0, 8), txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };
   } catch (error) {
     log("close_error", error.message);
     return { success: false, error: error.message };

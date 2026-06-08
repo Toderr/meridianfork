@@ -146,15 +146,23 @@ export async function notifyDeploy({ pair, amountSol, strategy, position, tx }) 
   );
 }
 
-export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, reason }) {
-  const su = (pnlUsd ?? 0) >= 0 ? "+" : "";
-  const ss = (pnlSol ?? 0) >= 0 ? "+" : "";
-  const sp = (pnlPct ?? 0) >= 0 ? "+" : "";
+export async function notifyClose({ pair, strategy, pnlUsd, pnlSol, pnlPct, feesUsd = 0, solPrice = 0, reason }) {
+  const usdVal = +pnlUsd || 0;
+  const solVal = +pnlSol || 0;
+  const pctVal = +pnlPct || 0;
+  const feesVal = +feesUsd || 0;
+  const su = usdVal >= 0 ? "+" : "";
+  const ss = solVal >= 0 ? "+" : "";
+  const sp = pctVal >= 0 ? "+" : "";
+  const netVal = usdVal + feesVal;
+  const sn = netVal >= 0 ? "+" : "";
   await sendMessage(
     `🔒 CLOSE\n\n` +
     `📍 ${pair}\n` +
     (strategy ? `📊 Strategy: ${strategy}\n` : ``) +
-    `💰 PnL: ${su}$${(pnlUsd ?? 0).toFixed(2)} | ${ss}${(pnlSol ?? 0).toFixed(4)} SOL | ${sp}${(pnlPct ?? 0).toFixed(2)}%` +
+    (feesVal > 0 ? `💼 Total (PnL + Fees): ${sn}$${netVal.toFixed(2)}\n` : ``) +
+    `💰 PnL: ${su}$${usdVal.toFixed(2)} | ${ss}${solVal.toFixed(4)} SOL | ${sp}${pctVal.toFixed(2)}%` +
+    (feesVal > 0 ? `\n🏦 Fees Earned: $${feesVal.toFixed(2)}` : "") +
     (reason ? `\n💡 ${reason}` : "")
   );
 }
