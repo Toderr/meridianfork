@@ -83,6 +83,10 @@ async function sendMessage(text) {
   }
 }
 
+export async function sendJournalMessage(text) {
+  return sendMessage(text);
+}
+
 // ─── bin_range helper ────────────────────────────────────────────
 function fmtBins(bin_range, bin_step) {
   if (bin_range == null) return null;

@@ -7,7 +7,7 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
-import { notifyJournalClose, isEnabled as journalBotEnabled } from "./telegram-journal.js";
+import { notifyJournalClose, sendJournalMessage, isEnabled as journalBotEnabled } from "./telegram-journal.js";
 
 const JOURNAL_FILE = "./journal.json";
 
@@ -134,6 +134,15 @@ export function recordJournalClose(d) {
         minutes_held: d.minutes_held,
         close_reason: d.close_reason,
       }).catch(() => {});
+
+      // Also send an up-to-date daily report after every close so the journal bot
+      // always shows the close in period context (PnL, fees, total, win rate).
+      import("./reports.js")
+        .then(async ({ generateReport }) => {
+          const report = await generateReport("daily");
+          await sendJournalMessage(`📌 POST-CLOSE DAILY REPORT\n\n${report}`);
+        })
+        .catch((e) => log("journal_error", `post-close report failed: ${e.message}`));
     }
   } catch (e) {
     log("journal_error", `recordJournalClose failed: ${e.message}`);

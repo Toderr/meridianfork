@@ -137,17 +137,15 @@ async function _attemptSwap({ wallet, connection, input_mint, output_mint, amoun
  * Retry wrapper: try up to 3 times with increasing slippage.
  */
 async function swapWithRetry(wallet, connection, input_mint, output_mint, amountStr, initialSlippageBps = 1000) {
-  const slippageSteps = [
-    initialSlippageBps,
-    Math.round(initialSlippageBps * 1.5),
-    initialSlippageBps * 2,
-  ];
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const MAX_ATTEMPTS = 5;
+  // Escalate slippage each attempt: 1x, 1.5x, 2x, 2.5x, 3x
+  const slippageSteps = [1, 1.5, 2, 2.5, 3].map(m => Math.round(initialSlippageBps * m));
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       return await _attemptSwap({ wallet, connection, input_mint, output_mint, amountStr, slippageBps: slippageSteps[attempt] });
     } catch (e) {
-      if (attempt === 2) throw e;
-      log("swap", `Swap attempt ${attempt + 1} failed (${e.message}), retrying with higher slippage...`);
+      if (attempt === MAX_ATTEMPTS - 1) throw e;
+      log("swap", `Swap attempt ${attempt + 1}/${MAX_ATTEMPTS} failed (${e.message}), retrying with higher slippage...`);
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
   }

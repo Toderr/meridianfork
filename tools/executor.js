@@ -33,6 +33,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+import { sendJournalMessage, isEnabled as journalBotEnabled } from "../telegram-journal.js";
 import { _stats, _flags } from "../stats.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
@@ -426,20 +427,51 @@ export async function executeTool(name, args) {
             });
           }).catch(e => log("experiment_error", `Experiment hook failed: ${e.message}`));
         }
-        // Auto-swap base token back to SOL unless user said to hold
+        // Auto-swap base token back to SOL unless user said to hold.
+        // Retry up to 5x: right after close the token balance may not be
+        // settled/indexed yet, so we re-fetch balances each attempt.
         if (!args.skip_swap && result.base_mint) {
-          try {
-            const balances = await getWalletBalances({});
-            const token = balances.tokens?.find(t => t.mint === result.base_mint);
-            if (token && token.usd >= 0.10) {
-              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
+          const MAX_SWAP_RETRIES = 5;
+          let swapped = false;
+          for (let attempt = 1; attempt <= MAX_SWAP_RETRIES && !swapped; attempt++) {
+            try {
+              const balances = await getWalletBalances({});
+              const token = balances.tokens?.find(t => t.mint === result.base_mint);
+              if (!token || token.usd < 0.10) {
+                // Balance not settled yet (or nothing to swap) — wait and retry
+                log("executor", `Auto-swap ${attempt}/${MAX_SWAP_RETRIES}: ${result.base_mint.slice(0, 8)} not settled yet (usd=${token?.usd?.toFixed(2) ?? "n/a"}), retrying...`);
+                if (attempt < MAX_SWAP_RETRIES) await new Promise(r => setTimeout(r, 3000 * attempt));
+                continue;
+              }
+              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL (attempt ${attempt}/${MAX_SWAP_RETRIES})`);
               const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
               if (swapResult?.success !== false) {
+                swapped = true;
                 notifySwap({ pair: _pair, tokenSymbol: token.symbol || result.base_mint.slice(0, 8), usdValue: token.usd }).catch(() => {});
+              } else if (swapResult?.skipped) {
+                // Token blacklisted by recent failures — no point retrying
+                log("executor_warn", `Auto-swap skipped: ${swapResult.error}`);
+                break;
+              } else {
+                log("executor_warn", `Auto-swap ${attempt}/${MAX_SWAP_RETRIES} failed: ${swapResult?.error || "unknown"}`);
+                if (attempt < MAX_SWAP_RETRIES) await new Promise(r => setTimeout(r, 3000 * attempt));
               }
+            } catch (e) {
+              log("executor_warn", `Auto-swap ${attempt}/${MAX_SWAP_RETRIES} after close errored: ${e.message}`);
+              if (attempt < MAX_SWAP_RETRIES) await new Promise(r => setTimeout(r, 3000 * attempt));
             }
-          } catch (e) {
-            log("executor_warn", `Auto-swap after close failed: ${e.message}`);
+          }
+          if (!swapped) {
+            log("executor_warn", `Auto-swap after close did not complete after ${MAX_SWAP_RETRIES} attempts for ${result.base_mint.slice(0, 8)}`);
+            if (journalBotEnabled()) {
+              sendJournalMessage(
+                `⚠️ AUTO-SWAP FAILED\n\n` +
+                `📍 ${_pair}\n` +
+                `Token: ${result.base_mint}\n` +
+                `Gagal swap ke SOL setelah ${MAX_SWAP_RETRIES}x percobaan.\n` +
+                `Perlu swap manual.`
+              ).catch(() => {});
+            }
           }
         }
       }

@@ -20,7 +20,7 @@ import {
   syncOpenPositions,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
-import { normalizeMint } from "./wallet.js";
+import { normalizeMint, getWalletBalances } from "./wallet.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -743,29 +743,37 @@ export async function closePosition({ position_address, close_reason }) {
       const solPrice = freshPnl?.sol_price || (await getWalletBalances().catch(() => null))?.sol_price || 0;
       const poolName = tracked.pool_name || poolAddress.slice(0, 8);
 
-      await recordPerformance({
-        position: position_address,
-        pool: poolAddress,
-        pool_name: poolName,
-        strategy: tracked.strategy,
-        bin_range: tracked.bin_range,
-        bin_step: tracked.bin_step || null,
-        volatility: tracked.volatility || null,
-        fee_tvl_ratio: tracked.fee_tvl_ratio || null,
-        organic_score: tracked.organic_score || null,
-        amount_sol: tracked.amount_sol,
-        fees_earned_usd: feesUsd,
-        final_value_usd: finalValueUsd,
-        initial_value_usd: initialUsd,
-        pnl_usd: pnlUsd,       // Meteora's authoritative value — avoids formula error when initial_value_usd is missing
-        pnl_pct: pnlPct,       // pass API value so journal matches what agent saw
-        pnl_sol: pnlSolNative,
-        sol_price: solPrice,
-        minutes_in_range: minutesHeld - minutesOOR,
-        minutes_held: minutesHeld,
-        close_reason: close_reason || "agent decision",
-        variant: tracked.variant || null,
-      });
+      // The position is already closed on-chain at this point. Never let a
+      // failure in performance/journal recording (e.g. a missing import or API
+      // error) bubble up and turn a successful close into a failed result —
+      // that would skip the journal close notification entirely.
+      try {
+        await recordPerformance({
+          position: position_address,
+          pool: poolAddress,
+          pool_name: poolName,
+          strategy: tracked.strategy,
+          bin_range: tracked.bin_range,
+          bin_step: tracked.bin_step || null,
+          volatility: tracked.volatility || null,
+          fee_tvl_ratio: tracked.fee_tvl_ratio || null,
+          organic_score: tracked.organic_score || null,
+          amount_sol: tracked.amount_sol,
+          fees_earned_usd: feesUsd,
+          final_value_usd: finalValueUsd,
+          initial_value_usd: initialUsd,
+          pnl_usd: pnlUsd,       // Meteora's authoritative value — avoids formula error when initial_value_usd is missing
+          pnl_pct: pnlPct,       // pass API value so journal matches what agent saw
+          pnl_sol: pnlSolNative,
+          sol_price: solPrice,
+          minutes_in_range: minutesHeld - minutesOOR,
+          minutes_held: minutesHeld,
+          close_reason: close_reason || "agent decision",
+          variant: tracked.variant || null,
+        });
+      } catch (perfErr) {
+        log("close_error", `recordPerformance failed after on-chain close: ${perfErr.message}`);
+      }
 
       return { success: true, position: position_address, pool: poolAddress, pool_name: poolName, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, pnl_sol: pnlSolNative, fees_earned_usd: feesUsd, sol_price: solPrice, base_mint: pool.lbPair.tokenXMint.toString() };
     }

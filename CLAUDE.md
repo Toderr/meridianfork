@@ -306,6 +306,10 @@ close_position (on-chain claim + remove liquidity)
 → _flags.gasLowNotified = false (reset gas warning)
 ```
 
+**Resilience:** `recordPerformance` (and thus `recordJournalClose` → journal-bot close notification) is wrapped in try/catch inside `closePosition`. Once the position is closed on-chain, a failure in performance/journal recording is logged but never bubbles up to turn a successful close into a failed result — this guarantees the journal-bot notification path is always attempted. `getWalletBalances` must be imported in `tools/dlmm.js` (used to resolve `sol_price` at close).
+
+**Post-close auto-swap retry:** the auto-swap in `executor.js` retries up to **5×**, re-fetching wallet balances each attempt (backoff 3s·N) because the base token may not be settled/indexed immediately after close. A token blacklisted by recent swap failures (`skipped`) stops retrying early. If all 5 attempts fail, a `⚠️ AUTO-SWAP FAILED` message is sent to the journal bot (manual swap needed). The swap primitive itself (`swapWithRetry` in `wallet.js`) also retries 5× with escalating slippage (1×→3×).
+
 ### PnL Checker (every 30s, no LLM)
 
 Runs alongside the management cycle via `setInterval`. Skips when `_managementBusy`. If a position has an `instruction` set, it is skipped entirely (deferred to management cycle).
