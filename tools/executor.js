@@ -433,10 +433,12 @@ export async function executeTool(name, args) {
         if (!args.skip_swap && result.base_mint) {
           const MAX_SWAP_RETRIES = 5;
           let swapped = false;
+          let lastUsd = 0; // last observed token USD value (to gate dust notifications)
           for (let attempt = 1; attempt <= MAX_SWAP_RETRIES && !swapped; attempt++) {
             try {
               const balances = await getWalletBalances({});
               const token = balances.tokens?.find(t => t.mint === result.base_mint);
+              if (token?.usd != null) lastUsd = token.usd;
               if (!token || token.usd < 0.10) {
                 // Balance not settled yet (or nothing to swap) — wait and retry
                 log("executor", `Auto-swap ${attempt}/${MAX_SWAP_RETRIES}: ${result.base_mint.slice(0, 8)} not settled yet (usd=${token?.usd?.toFixed(2) ?? "n/a"}), retrying...`);
@@ -462,12 +464,14 @@ export async function executeTool(name, args) {
             }
           }
           if (!swapped) {
-            log("executor_warn", `Auto-swap after close did not complete after ${MAX_SWAP_RETRIES} attempts for ${result.base_mint.slice(0, 8)}`);
-            if (journalBotEnabled()) {
+            log("executor_warn", `Auto-swap after close did not complete after ${MAX_SWAP_RETRIES} attempts for ${result.base_mint.slice(0, 8)} (usd=${lastUsd.toFixed(4)})`);
+            // Only alert if the leftover token is worth bothering with; ignore dust < $0.01.
+            if (lastUsd >= 0.01 && journalBotEnabled()) {
               sendJournalMessage(
                 `⚠️ AUTO-SWAP FAILED\n\n` +
                 `📍 ${_pair}\n` +
                 `Token: ${result.base_mint}\n` +
+                `Nilai: ~$${lastUsd.toFixed(2)}\n` +
                 `Gagal swap ke SOL setelah ${MAX_SWAP_RETRIES}x percobaan.\n` +
                 `Perlu swap manual.`
               ).catch(() => {});
