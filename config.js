@@ -42,6 +42,8 @@ if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
 if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
 if (u.telegramChatId) process.env.TELEGRAM_CHAT_ID ||= String(u.telegramChatId);
+if (u.telegramJournalBotToken) process.env.TELEGRAM_JOURNAL_BOT_TOKEN ||= u.telegramJournalBotToken;
+if (u.telegramJournalChatId) process.env.TELEGRAM_JOURNAL_CHAT_ID ||= String(u.telegramJournalChatId);
 
 const indicatorUserConfig = u.chartIndicators ?? {};
 

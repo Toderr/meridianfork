@@ -9,6 +9,7 @@
 import fs from "fs";
 import { log } from "./logger.js";
 import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "./hivemind.js";
+import { notifyJournalClose, isEnabled as journalBotEnabled } from "./telegram-journal.js";
 import { repoPath } from "./repo-root.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
@@ -210,6 +211,23 @@ export async function recordPerformance(perf) {
     eventId: `close:${perf.position}:${entry.recorded_at}`,
   });
 
+  if (journalBotEnabled()) {
+    const pnl_sol = perf.amount_sol > 0 ? Math.round(perf.amount_sol * (entry.pnl_pct / 100) * 10000) / 10000 : null;
+    notifyJournalClose({
+      pool_name: perf.pool_name,
+      strategy: perf.strategy,
+      bin_range: perf.bin_range ?? null,
+      bin_step: perf.bin_step ?? null,
+      amount_sol: perf.amount_sol,
+      initial_value_usd: perf.initial_value_usd,
+      pnl_usd: entry.pnl_usd,
+      pnl_sol,
+      pnl_pct: entry.pnl_pct,
+      fees_earned_usd: perf.fees_earned_usd ?? 0,
+      minutes_held: perf.minutes_held,
+      close_reason: perf.close_reason,
+    }).catch(() => {});
+  }
 }
 
 /**
