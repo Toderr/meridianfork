@@ -425,6 +425,62 @@ export async function sweepDustTokens() {
   return results;
 }
 
+/**
+ * Retry-sweep mints tracked in state.stranded_tokens — leftovers from a
+ * close_position whose auto-swap-back-to-SOL failed (see tools/executor.js).
+ * Unlike sweepDustTokens, this is NOT capped at $0.10: these mints are known
+ * to have come from a real position close, so any balance found is swept.
+ * Tokens not from this registry are never touched.
+ *
+ * Gives up (and stops retrying) after STRANDED_MAX_ATTEMPTS, leaving a final
+ * "swap manually" alert via the journal bot.
+ */
+const STRANDED_MAX_ATTEMPTS = 8; // ~2h at a 15min cron
+
+export async function sweepStrandedTokens() {
+  const { getStrandedTokens, removeStrandedToken, bumpStrandedAttempt } = await import("../state.js");
+  const tracked = getStrandedTokens();
+  if (tracked.length === 0) return [];
+
+  const balances = await getWalletBalances({});
+  const results = [];
+
+  for (const entry of tracked) {
+    const token = (balances.tokens || []).find(t => t.mint === entry.mint);
+
+    if (!token || !(token.balance > 0)) {
+      // Already gone — swapped manually or by a previous sweep.
+      removeStrandedToken(entry.mint);
+      continue;
+    }
+
+    try {
+      const result = await swapToken({ input_mint: entry.mint, output_mint: "SOL", amount: token.balance });
+      if (result?.success !== false) {
+        log("stranded_sweep", `Swapped stranded ${entry.symbol} ($${token.usd?.toFixed(2) ?? "?"}) → SOL`);
+        removeStrandedToken(entry.mint);
+        results.push({ mint: entry.mint, symbol: entry.symbol, usd_value: token.usd, success: true, pair: entry.pair });
+      } else {
+        const attempts = bumpStrandedAttempt(entry.mint);
+        log("stranded_sweep_warn", `Stranded swap failed for ${entry.symbol} (attempt ${attempts}/${STRANDED_MAX_ATTEMPTS}): ${result?.error}`);
+        if (attempts >= STRANDED_MAX_ATTEMPTS) {
+          removeStrandedToken(entry.mint);
+          results.push({ mint: entry.mint, symbol: entry.symbol, usd_value: token.usd, success: false, gaveUp: true, pair: entry.pair });
+        }
+      }
+    } catch (e) {
+      const attempts = bumpStrandedAttempt(entry.mint);
+      log("stranded_sweep_error", `Stranded swap error for ${entry.symbol} (attempt ${attempts}/${STRANDED_MAX_ATTEMPTS}): ${e.message}`);
+      if (attempts >= STRANDED_MAX_ATTEMPTS) {
+        removeStrandedToken(entry.mint);
+        results.push({ mint: entry.mint, symbol: entry.symbol, usd_value: token.usd, success: false, gaveUp: true, pair: entry.pair });
+      }
+    }
+  }
+
+  return results;
+}
+
 async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr, slippageBps = 300 }) {
   // ─── Get quote ─────────────────────────────────────────────
   const quoteRes = await fetch(

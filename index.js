@@ -4,7 +4,7 @@ import readline from "readline";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, getPositionPnl } from "./tools/dlmm.js";
-import { getWalletBalances, sweepDustTokens } from "./tools/wallet.js";
+import { getWalletBalances, sweepDustTokens, sweepStrandedTokens } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadConfig, reloadScreeningThresholds, computeDeployAmount, USER_CONFIG_PATH } from "./config.js";
 import fs from "fs";
@@ -936,9 +936,38 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   });
 
+  // Retry sweep for tokens stranded by a failed post-close auto-swap (see
+  // tools/executor.js → state.js stranded_tokens registry). Scoped to mints
+  // that came from a real position close — never arbitrary wallet tokens.
+  const strandedSweepTask = cron.schedule(`*/15 * * * *`, async () => {
+    try {
+      const swept = await sweepStrandedTokens();
+      for (const r of swept) {
+        if (r.success) {
+          await import("./telegram.js").then(({ notifySwap }) =>
+            notifySwap({ pair: r.pair || r.symbol, tokenSymbol: r.symbol, usdValue: r.usd_value }));
+        } else if (r.gaveUp) {
+          const { sendJournalMessage } = await import("./telegram-journal.js");
+          await sendJournalMessage(
+            `🛑 STRANDED SWAP — MENYERAH\n\n` +
+            `${r.pair || r.symbol}\n` +
+            `Token: ${r.mint}\n` +
+            `Nilai: ~$${(r.usd_value || 0).toFixed(2)}\n` +
+            `Gagal swap setelah berkali-kali — swap manual via Jupiter.`
+          ).catch(() => {});
+        }
+      }
+      if (swept.length > 0) {
+        log("cron", `Stranded sweep: ${swept.length} mint(s) processed`);
+      }
+    } catch (e) {
+      log("cron_error", `Stranded sweep failed: ${e.message}`);
+    }
+  });
+
   _pnlCheckerInterval = setInterval(() => runPnlChecker().catch(() => {}), 30_000);
 
-  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask];
+  _cronTasks = [screenTask, healthTask, briefingTask, briefingWatchdog, weeklyTask, monthlyTask, dustTask, strandedSweepTask];
   const t = config.schedule.managementTiers;
   log("cron", `Cycles started — management: high=${t.high.intervalMin}m, med=${t.med.intervalMin}m, low=${t.low.intervalMin}m | screening every ${config.schedule.screeningIntervalMin}m | pnl-check every 30s`);
 }

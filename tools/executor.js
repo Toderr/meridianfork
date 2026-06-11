@@ -14,7 +14,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction, getTrackedPosition } from "../state.js";
+import { setPositionInstruction, getTrackedPosition, addStrandedToken } from "../state.js";
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
@@ -434,11 +434,13 @@ export async function executeTool(name, args) {
           const MAX_SWAP_RETRIES = 5;
           let swapped = false;
           let lastUsd = 0; // last observed token USD value (to gate dust notifications)
+          let lastSymbol = null;
           for (let attempt = 1; attempt <= MAX_SWAP_RETRIES && !swapped; attempt++) {
             try {
               const balances = await getWalletBalances({});
               const token = balances.tokens?.find(t => t.mint === result.base_mint);
               if (token?.usd != null) lastUsd = token.usd;
+              if (token?.symbol) lastSymbol = token.symbol;
               if (!token || token.usd < 0.10) {
                 // Balance not settled yet (or nothing to swap) — wait and retry
                 log("executor", `Auto-swap ${attempt}/${MAX_SWAP_RETRIES}: ${result.base_mint.slice(0, 8)} not settled yet (usd=${token?.usd?.toFixed(2) ?? "n/a"}), retrying...`);
@@ -473,8 +475,14 @@ export async function executeTool(name, args) {
                 `Token: ${result.base_mint}\n` +
                 `Nilai: ~$${lastUsd.toFixed(2)}\n` +
                 `Gagal swap ke SOL setelah ${MAX_SWAP_RETRIES}x percobaan.\n` +
-                `Perlu swap manual.`
+                `Akan dicoba lagi otomatis setiap 15 menit.`
               ).catch(() => {});
+            }
+            // Track this mint so the periodic stranded-token sweep retries it,
+            // regardless of the $0.10 dust threshold (this token is known-real,
+            // not arbitrary wallet clutter).
+            if (lastUsd >= 0.01) {
+              addStrandedToken({ mint: result.base_mint, symbol: lastSymbol, pair: _pair });
             }
           }
         }

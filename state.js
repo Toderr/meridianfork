@@ -325,3 +325,53 @@ export function syncOpenPositions(active_addresses) {
 
   if (changed) save(state);
 }
+
+// ─── Stranded token registry ───────────────────────────────────
+// Tokens left over from a close_position whose auto-swap-back-to-SOL failed
+// (or raced the withdraw and was skipped). Tracked here — and ONLY here — so
+// the periodic sweep retries exactly these mints, never arbitrary wallet tokens.
+
+/**
+ * Record a token left in the wallet after a failed/incomplete post-close swap.
+ * No-op if this mint is already tracked.
+ */
+export function addStrandedToken({ mint, symbol, pair }) {
+  const state = load();
+  state.stranded_tokens ||= {};
+  if (state.stranded_tokens[mint]) return;
+  state.stranded_tokens[mint] = {
+    mint,
+    symbol: symbol || mint.slice(0, 8),
+    pair: pair || null,
+    addedAt: new Date().toISOString(),
+    attempts: 0,
+  };
+  save(state);
+  log("state", `Stranded token tracked: ${symbol || mint.slice(0, 8)} (${mint.slice(0, 8)}…)`);
+}
+
+/**
+ * Stop tracking a mint (swept successfully, or gave up).
+ */
+export function removeStrandedToken(mint) {
+  const state = load();
+  if (!state.stranded_tokens?.[mint]) return;
+  delete state.stranded_tokens[mint];
+  save(state);
+}
+
+/**
+ * Increment the retry counter for a stranded mint. Returns the new count.
+ */
+export function bumpStrandedAttempt(mint) {
+  const state = load();
+  if (!state.stranded_tokens?.[mint]) return 0;
+  state.stranded_tokens[mint].attempts = (state.stranded_tokens[mint].attempts || 0) + 1;
+  save(state);
+  return state.stranded_tokens[mint].attempts;
+}
+
+export function getStrandedTokens() {
+  const state = load();
+  return Object.values(state.stranded_tokens || {});
+}
