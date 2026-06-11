@@ -9,7 +9,7 @@ import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
+import { addLesson, evolveThresholds, getPerformanceSummary, listLessons, runManualEvolve } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import {
   startPolling,
@@ -1256,6 +1256,9 @@ function formatHelpText() {
     "/briefing — morning briefing",
     "/hive — HiveMind sync status",
     "/hive pull — manual HiveMind pull now",
+    "/lessons — show recorded lessons",
+    "/addlessons <text> — add a manual lesson",
+    "/evolve — manually run threshold evolution",
     "/pause — stop cron cycles",
     "/resume — start cron cycles again",
     "/stop — shut down agent",
@@ -1613,6 +1616,52 @@ async function telegramHandler(msg) {
       ].join("\n")).catch(() => {});
     } catch (e) {
       await sendMessage(`HiveMind error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/lessons") {
+    try {
+      const { total, lessons } = listLessons({ limit: 15 });
+      if (total === 0) { await sendMessage("No lessons recorded yet."); return; }
+      const lines = lessons.map((l) => {
+        const flags = [l.pinned ? "📌" : null, l.role !== "all" ? l.role : null].filter(Boolean).join(" ");
+        return `#${l.id} ${flags ? `[${flags}] ` : ""}${l.rule}`;
+      });
+      await sendMessage(`📚 Lessons (showing last ${lessons.length} of ${total}):\n\n${lines.join("\n\n")}`).catch(() => {});
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  const addLessonMatch = text.match(/^\/addlessons?\s+(.+)$/is);
+  if (addLessonMatch) {
+    try {
+      const rule = addLessonMatch[1].trim();
+      addLesson(rule, ["manual"]);
+      await sendMessage(`✅ Lesson added:\n"${rule}"`).catch(() => {});
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/evolve") {
+    try {
+      const result = await runManualEvolve();
+      if (result?.error) {
+        await sendMessage(`⚠️ ${result.error}`).catch(() => {});
+        return;
+      }
+      if (!result || Object.keys(result.changes || {}).length === 0) {
+        await sendMessage("No threshold changes — current data doesn't show a clear signal yet.").catch(() => {});
+        return;
+      }
+      const lines = Object.entries(result.changes).map(([k, v]) => `${k} → ${v}\n  ${result.rationale[k] || ""}`);
+      await sendMessage(`🧬 Thresholds evolved:\n\n${lines.join("\n\n")}`).catch(() => {});
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
     return;
   }

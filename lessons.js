@@ -458,6 +458,24 @@ export function evolveThresholds(perfData, config) {
   return { changes, rationale };
 }
 
+/**
+ * Manually trigger threshold evolution (bypasses the every-5-closes cadence).
+ * Tool handler: /evolve telegram command.
+ */
+export async function runManualEvolve() {
+  const data = load();
+  if (data.performance.length < MIN_EVOLVE_POSITIONS) {
+    return { error: `Need at least ${MIN_EVOLVE_POSITIONS} closed positions to evolve thresholds (have ${data.performance.length}).` };
+  }
+  const { config, reloadScreeningThresholds } = await import("./config.js");
+  const result = evolveThresholds(data.performance, config);
+  if (result?.changes && Object.keys(result.changes).length > 0) {
+    reloadScreeningThresholds();
+    log("evolve", `Manual evolve: ${JSON.stringify(result.changes)}`);
+  }
+  return result;
+}
+
 // ─── Helpers ───────────────────────────────────────────────────
 
 function isFiniteNum(n) {

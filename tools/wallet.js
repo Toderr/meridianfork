@@ -8,6 +8,7 @@ import {
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { notifyHeliusAllFailed, notifyHeliusRotated, notifyRpcLimit } from "../telegram.js";
 
 let _connection = null;
 let _wallet = null;
@@ -31,6 +32,24 @@ const DEFAULT_JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
 function getJupiterApiKey() {
   return config.jupiter.apiKey || process.env.JUPITER_API_KEY || DEFAULT_JUPITER_API_KEY;
+}
+
+// ─── Helius API Key Rotation ───────────────────────────────────
+// Supports HELIUS_API_KEY, HELIUS_API_KEY_2, HELIUS_API_KEY_3 — switches on 429.
+const _heliusKeys = [process.env.HELIUS_API_KEY, process.env.HELIUS_API_KEY_2, process.env.HELIUS_API_KEY_3].filter(Boolean);
+let _heliusKeyIndex = _heliusKeys.length > 1 ? 1 : 0; // start on key 2 to spread load
+
+function getHeliusKey() {
+  if (_heliusKeys.length === 0) return null;
+  return _heliusKeys[_heliusKeyIndex % _heliusKeys.length];
+}
+
+function rotateHeliusKey() {
+  if (_heliusKeys.length <= 1) return false;
+  const prev = _heliusKeyIndex;
+  _heliusKeyIndex = (_heliusKeyIndex + 1) % _heliusKeys.length;
+  log("wallet", `Helius key rotated: key ${prev + 1} → key ${_heliusKeyIndex + 1}`);
+  return true;
 }
 
 function getJupiterReferralParams() {
@@ -64,21 +83,82 @@ export async function getWalletBalances() {
     return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
   }
 
-  const HELIUS_KEY = process.env.HELIUS_API_KEY;
-  if (!HELIUS_KEY) {
+  const heliusKey = getHeliusKey();
+  if (!heliusKey) {
     log("wallet_error", "HELIUS_API_KEY not set in .env");
     return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
   }
 
-  try {
-    const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
+  async function fetchBalances(key) {
+    const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${key || getHeliusKey()}`;
     const res = await fetch(url);
-    
     if (!res.ok) {
       throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
     }
+    return res.json();
+  }
 
-    const data = await res.json();
+  // Fallback: get SOL balance directly from RPC when Helius is unavailable.
+  async function fetchSolBalanceViaRpc() {
+    const lamports = await getConnection().getBalance(new PublicKey(walletAddress));
+    const sol = lamports / LAMPORTS_PER_SOL;
+    log("wallet", `RPC fallback SOL balance: ${sol.toFixed(4)}`);
+    return sol;
+  }
+
+  try {
+    let data;
+    try {
+      data = await fetchBalances();
+    } catch (e) {
+      if (!e.message.includes("429")) throw e;
+      // Rate limited — try all remaining keys before falling back to RPC.
+      let recovered = false;
+      const keysToTry = _heliusKeys.length > 1 ? _heliusKeys.length - 1 : 1;
+      for (let attempt = 0; attempt < keysToTry; attempt++) {
+        const prevIdx = _heliusKeyIndex;
+        const rotated = rotateHeliusKey();
+        const prevKey = prevIdx + 1;
+        if (rotated) {
+          log("wallet", `Helius rate limited (429) on key ${prevKey}, trying key ${_heliusKeyIndex + 1}...`);
+        } else {
+          log("wallet", `Helius rate limited (429), retrying in 2s...`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+        try {
+          data = await fetchBalances();
+          recovered = true;
+          // Notify rotation success only when we had multiple keys to try.
+          if (rotated) {
+            notifyHeliusRotated({
+              fromKey: prevKey,
+              toKey: _heliusKeyIndex + 1,
+              totalKeys: _heliusKeys.length,
+            }).catch(() => {});
+          }
+          break;
+        } catch (e2) {
+          if (!e2.message.includes("429")) throw e2;
+          log("wallet", `Key ${_heliusKeyIndex + 1} also rate limited: ${e2.message}`);
+          if (attempt < keysToTry - 1) await new Promise(r => setTimeout(r, 500));
+        }
+      }
+      if (!recovered) {
+        notifyHeliusAllFailed({ totalKeys: _heliusKeys.length, fallback: "rpc" }).catch(() => {});
+        notifyRpcLimit().catch(() => {});
+        const solViaRpc = await fetchSolBalanceViaRpc();
+        return {
+          wallet: walletAddress,
+          sol: Math.round(solViaRpc * 1e6) / 1e6,
+          sol_price: 0,
+          sol_usd: 0,
+          usdc: 0,
+          tokens: [],
+          total_usd: 0,
+          rpc_fallback: true,
+        };
+      }
+    }
     const balances = data.balances || [];
 
     // ─── Find SOL and USDC ────────────────────────────────────
@@ -109,16 +189,31 @@ export async function getWalletBalances() {
     };
   } catch (error) {
     log("wallet_error", error.message);
-    return {
-      wallet: walletAddress,
-      sol: 0,
-      sol_price: 0,
-      sol_usd: 0,
-      usdc: 0,
-      tokens: [],
-      total_usd: 0,
-      error: error.message,
-    };
+    // Last resort: get SOL balance from RPC so screening isn't blocked by Helius outages.
+    try {
+      const solViaRpc = await fetchSolBalanceViaRpc();
+      return {
+        wallet: walletAddress,
+        sol: Math.round(solViaRpc * 1e6) / 1e6,
+        sol_price: 0,
+        sol_usd: 0,
+        usdc: 0,
+        tokens: [],
+        total_usd: 0,
+        rpc_fallback: true,
+      };
+    } catch {
+      return {
+        wallet: walletAddress,
+        sol: 0,
+        sol_price: 0,
+        sol_usd: 0,
+        usdc: 0,
+        tokens: [],
+        total_usd: 0,
+        error: error.message,
+      };
+    }
   }
 }
 

@@ -425,6 +425,9 @@ const BOT_COMMANDS = [
   { command: "deploy",     description: "Deploy candidate by cached index" },
   { command: "briefing",   description: "Morning briefing" },
   { command: "hive",       description: "HiveMind sync status" },
+  { command: "lessons",    description: "Show recorded lessons" },
+  { command: "addlessons", description: "Add a manual lesson" },
+  { command: "evolve",     description: "Manually run threshold evolution" },
   { command: "pause",      description: "Stop cron cycles" },
   { command: "resume",     description: "Start cron cycles again" },
   { command: "stop",       description: "Shut down agent" },
@@ -507,6 +510,47 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
     `⚠️ <b>Out of Range</b> ${pair}\n` +
     `Been OOR for ${minutesOOR} minutes`
   );
+}
+
+// ─── Helius key rotation notices ─────────────────────────────────
+// rpcLimit: throttled 1h, rotated: throttled 5min, allFailed: throttled 15min
+let _rpcLimitNotifiedAt = 0;
+let _heliusRotatedNotifiedAt = 0;
+let _heliusAllFailedNotifiedAt = 0;
+
+export async function notifyRpcLimit() {
+  if (Date.now() - _rpcLimitNotifiedAt < 60 * 60_000) return;
+  _rpcLimitNotifiedAt = Date.now();
+  await sendMessage(
+    `⚠️ HELIUS RATE LIMIT\n\n` +
+    `Wallet balance API returning 429.\n` +
+    `Token balances unavailable — using RPC fallback (SOL only).\n` +
+    `Post-close swaps may use direct RPC token lookup.`
+  ).catch(() => {});
+}
+
+export async function notifyHeliusRotated({ fromKey, toKey, totalKeys }) {
+  if (Date.now() - _heliusRotatedNotifiedAt < 5 * 60_000) return;
+  _heliusRotatedNotifiedAt = Date.now();
+  await sendMessage(
+    `🔄 HELIUS KEY ROTATED\n\n` +
+    `Key ${fromKey} → Key ${toKey} (${totalKeys} keys available)\n` +
+    `Reason: key ${fromKey} hit 429 rate limit.`
+  ).catch(() => {});
+}
+
+export async function notifyHeliusAllFailed({ totalKeys, fallback }) {
+  if (Date.now() - _heliusAllFailedNotifiedAt < 15 * 60_000) return;
+  _heliusAllFailedNotifiedAt = Date.now();
+  const fallbackNote = fallback === "rpc"
+    ? "Using RPC fallback — SOL balance only, token data unavailable."
+    : "No fallback available.";
+  await sendMessage(
+    `🚨 HELIUS ALL KEYS RATE LIMITED\n\n` +
+    `All ${totalKeys} Helius API key(s) returned 429.\n` +
+    `${fallbackNote}\n\n` +
+    `Consider upgrading Helius plan or adding more API keys.`
+  ).catch(() => {});
 }
 
 function sleep(ms) {
