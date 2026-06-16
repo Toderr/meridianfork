@@ -9,7 +9,7 @@ import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { addLesson, evolveThresholds, getPerformanceSummary, listLessons, runManualEvolve } from "./lessons.js";
+import { addLesson, evolveThresholds, freezeLessons, getPerformanceSummary, isLessonsFrozen, listLessons, runManualEvolve, unfreezeLessons } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import {
   startPolling,
@@ -979,6 +979,7 @@ function formatConfigSnapshot() {
     `Screening: ${config.screening.category} / ${config.screening.timeframe} | TVL ${config.screening.minTvl}-${config.screening.maxTvl}`,
     `Intervals: manage ${config.schedule.managementIntervalMin}m | screen ${config.schedule.screeningIntervalMin}m`,
     `HiveMind: ${isHiveMindEnabled() ? "enabled" : "disabled"}${config.hiveMind.agentId ? ` | ${config.hiveMind.agentId}` : ""}`,
+    `Lesson evolution: ${isLessonsFrozen() ? "🧊 FROZEN" : "active"}`,
   ].join("\n");
 }
 
@@ -1259,6 +1260,8 @@ function formatHelpText() {
     "/lessons — show recorded lessons",
     "/addlessons <text> — add a manual lesson",
     "/evolve — manually run threshold evolution",
+    "/freeze — freeze auto lesson evolution",
+    "/unfreeze — re-enable auto lesson evolution",
     "/pause — stop cron cycles",
     "/resume — start cron cycles again",
     "/stop — shut down agent",
@@ -1648,6 +1651,10 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/evolve") {
+    if (isLessonsFrozen()) {
+      await sendMessage("🧊 Evolution is frozen. Use /unfreeze first.").catch(() => {});
+      return;
+    }
     try {
       const result = await runManualEvolve();
       if (result?.error) {
@@ -1663,6 +1670,18 @@ async function telegramHandler(msg) {
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
+    return;
+  }
+
+  if (text === "/freeze") {
+    freezeLessons();
+    await sendMessage("🧊 Lesson evolution frozen. Auto-evolve is disabled until /unfreeze.\nManual /evolve is also blocked while frozen.").catch(() => {});
+    return;
+  }
+
+  if (text === "/unfreeze") {
+    unfreezeLessons();
+    await sendMessage("🔥 Lesson evolution unfrozen. Auto-evolve is re-enabled.").catch(() => {});
     return;
   }
 

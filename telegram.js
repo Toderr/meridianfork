@@ -428,6 +428,8 @@ const BOT_COMMANDS = [
   { command: "lessons",    description: "Show recorded lessons" },
   { command: "addlessons", description: "Add a manual lesson" },
   { command: "evolve",     description: "Manually run threshold evolution" },
+  { command: "freeze",     description: "Freeze auto lesson evolution" },
+  { command: "unfreeze",   description: "Re-enable auto lesson evolution" },
   { command: "pause",      description: "Stop cron cycles" },
   { command: "resume",     description: "Start cron cycles again" },
   { command: "stop",       description: "Shut down agent" },

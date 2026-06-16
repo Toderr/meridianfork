@@ -34,6 +34,46 @@ const PERFORMANCE_SIGNAL_FIELDS = [
 ];
 const MAX_MANUAL_LESSON_LENGTH = 400;
 
+// ─── Freeze flag ──────────────────────────────────────────────
+// When frozen, auto-evolve is skipped but lessons are still recorded.
+// State is persisted to user-config.json so it survives restarts.
+
+function loadFreezeState() {
+  try {
+    if (!fs.existsSync(USER_CONFIG_PATH)) return false;
+    const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    return !!cfg.lessonsFrozen;
+  } catch { return false; }
+}
+
+let _lessonsFrozen = loadFreezeState();
+
+export function isLessonsFrozen() { return _lessonsFrozen; }
+
+export function freezeLessons() {
+  _lessonsFrozen = true;
+  try {
+    const cfg = fs.existsSync(USER_CONFIG_PATH)
+      ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+      : {};
+    cfg.lessonsFrozen = true;
+    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  } catch (e) { log("lessons_warn", `Could not persist lessonsFrozen: ${e.message}`); }
+  log("lessons", "Lesson evolution FROZEN — auto-evolve disabled");
+}
+
+export function unfreezeLessons() {
+  _lessonsFrozen = false;
+  try {
+    const cfg = fs.existsSync(USER_CONFIG_PATH)
+      ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+      : {};
+    cfg.lessonsFrozen = false;
+    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  } catch (e) { log("lessons_warn", `Could not persist lessonsFrozen: ${e.message}`); }
+  log("lessons", "Lesson evolution UNFROZEN — auto-evolve enabled");
+}
+
 function sanitizeLessonText(text, maxLen = MAX_MANUAL_LESSON_LENGTH) {
   if (text == null) return null;
   const cleaned = String(text)
@@ -185,8 +225,8 @@ export async function recordPerformance(perf) {
     });
   }
 
-  // Evolve thresholds every 5 closed positions
-  if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
+  // Evolve thresholds every 5 closed positions (unless frozen)
+  if (!_lessonsFrozen && data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
     const { config, reloadScreeningThresholds } = await import("./config.js");
     const result = evolveThresholds(data.performance, config);
     if (result?.changes && Object.keys(result.changes).length > 0) {
